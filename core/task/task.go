@@ -162,9 +162,51 @@ type LedgerEntry struct {
 	UpdatedAt  time.Time   `json:"updated_at"`
 }
 
-var errNotImplemented = errors.New("not implemented")
-
 // Replay rebuilds a task snapshot from its events in seq order.
 func Replay(events []Event) (Snapshot, error) {
-	return Snapshot{}, errNotImplemented
+	var s Snapshot
+	for _, e := range events {
+		switch e.Type {
+		case EvCreated:
+			if err := json.Unmarshal(e.Payload, &s.Created); err != nil {
+				return Snapshot{}, fmt.Errorf("decode created event seq %d: %w", e.Seq, err)
+			}
+		case EvState:
+			var c StateChange
+			if err := json.Unmarshal(e.Payload, &c); err != nil {
+				return Snapshot{}, fmt.Errorf("decode state event seq %d: %w", e.Seq, err)
+			}
+			if s.State == "" && c.State == Pending {
+				s.State = Pending
+				continue
+			}
+			if err := Transition(s.State, c.State); err != nil {
+				return Snapshot{}, fmt.Errorf("replay seq %d: %w", e.Seq, err)
+			}
+			s.State, s.Reason = c.State, c.Reason
+		case EvMessage:
+			var m Message
+			if err := json.Unmarshal(e.Payload, &m); err != nil {
+				return Snapshot{}, fmt.Errorf("decode message event seq %d: %w", e.Seq, err)
+			}
+			s.History = append(s.History, m)
+			switch m.Role {
+			case RoleSystem, RoleUser:
+				s.Trusted = append(s.Trusted, m.Text)
+			case RoleAssistant:
+				s.Steps++
+			case RoleTool:
+				for _, r := range m.Results {
+					s.Tainted = s.Tainted || r.Untrusted
+				}
+			}
+		case EvUsage:
+			var u Usage
+			if err := json.Unmarshal(e.Payload, &u); err != nil {
+				return Snapshot{}, fmt.Errorf("decode usage event seq %d: %w", e.Seq, err)
+			}
+			s.Tokens += u.InputTokens + u.OutputTokens
+		}
+	}
+	return s, nil
 }
