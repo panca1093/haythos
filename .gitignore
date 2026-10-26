@@ -1,0 +1,5 @@
+/haythosd
+*.db
+*.db-*
+node_modules/
+.env
