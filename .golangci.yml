@@ -33,6 +33,7 @@ linters:
         linters:
           - gosec
           - unparam
+          - contextcheck
       - path: ^spikes/
         linters:
           - gosec
