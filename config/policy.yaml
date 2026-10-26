@@ -1,0 +1,3 @@
+version: "1"
+tiers:
+  vmhealth.read: 0

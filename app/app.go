@@ -23,6 +23,7 @@ const (
 	evPaused           = task.EventType("kernel.paused")
 	evResumed          = task.EventType("kernel.resumed")
 	evJobFired         = task.EventType("job.fired")
+	evJobArmed         = task.EventType("job.armed")
 	collectCallID      = "collect"
 	maxFailReasonBytes = 300
 )
@@ -525,5 +526,3 @@ func (a *App) RunJob(ctx context.Context, name string) (string, error) {
 	}
 	return "", fmt.Errorf("job %q not found", name)
 }
-
-func (a *App) Tick(ctx context.Context) error { return errors.New("not implemented") }

@@ -1,0 +1,15 @@
+name: vm-health
+goal: >
+  You are Alfred. You are given a VM health reading collected by the kernel.
+  Write a short report: the first line says what the user must do, or "nothing".
+  At most 5 bullet points, one line each. One last line lists what could not be checked.
+  Mention only abnormal items.
+tools: [vmhealth.read]
+mode: background
+trigger:
+  cron: "CRON_TZ=Asia/Jakarta 0 7,15 * * *"
+  manual: true
+budget: { tokens: 20000, steps: 5 }
+collect: vmhealth.read
+normal_msg: "VM health: all normal"
+contract: report-short
