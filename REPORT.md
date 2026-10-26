@@ -12,7 +12,7 @@ Run date: 2026-10-27 (Asia/Jakarta). I treated "get things done tonight, I'll ch
 | 3 adapters | `adapters: ...` and later commits | sqlite, anthropic, openai, claudesdk + TS sidecar, vault/file, discord, local tools + vmhealth. |
 | 4 VM health | later commits | `jobs/vm-health.yaml`, scheduler `Tick`, `run-job`, `auth`, e2e test with fake clock, README. |
 
-All 7 Phase 1 contract tests pass. The phase 0 to 2 gates were run per commit; the final gate is below.
+All 7 Phase 1 contract tests pass. Honest gate history: the Phase 1 commits had `go test` red by design; the Phase 2 commit had one contract test (claudesdk) still red because that adapter was Phase 3 work; fmt, vet and lint were green at each commit. Only the final state below was gated as a whole.
 
 ## Phase gate (final, `make gate`, exit 0)
 
