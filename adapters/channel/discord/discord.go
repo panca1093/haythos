@@ -16,6 +16,19 @@ const (
 	maxMessage = 1900
 	idPrefix   = "ap"
 	handleTO   = 30 * time.Minute
+
+	modelSelectID = "mdl"
+	modelTO       = 30 * time.Second
+	maxMenuItems  = 25
+	maxFieldLen   = 100
+)
+
+type componentKind int
+
+const (
+	kindUnknown componentKind = iota
+	kindApproval
+	kindModel
 )
 
 type Handler interface {
@@ -23,6 +36,9 @@ type Handler interface {
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
+	ListModels(ctx context.Context) ([]app.ModelChoice, error)
+	CurrentModel() string
+	SelectModel(ctx context.Context, value string) error
 }
 
 type Config struct {
@@ -59,6 +75,7 @@ func (c *Channel) Open() error {
 	cmds := []*discordgo.ApplicationCommand{
 		{Name: "pause", Description: "Stop all writes immediately"},
 		{Name: "resume", Description: "Allow writes again"},
+		{Name: "model", Description: "Show or switch the model"},
 	}
 	if _, err := c.s.ApplicationCommandBulkOverwrite(c.s.State.User.ID, "", cmds); err != nil {
 		return fmt.Errorf("register slash commands: %w", err)
@@ -139,6 +156,54 @@ func parseCustomID(id string) (taskID, approvalID string, approve, ok bool) {
 	return p[1], p[2], p[3] == "y", true
 }
 
+func classify(id string) componentKind {
+	if id == modelSelectID {
+		return kindModel
+	}
+	if _, _, _, ok := parseCustomID(id); ok {
+		return kindApproval
+	}
+	return kindUnknown
+}
+
+func truncate(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n-1]) + "…"
+}
+
+func modelMenu(current string, choices []app.ModelChoice) (string, []discordgo.MessageComponent) {
+	cur := "not set"
+	if current != "" {
+		cur = "`" + current + "`"
+	}
+	content := "Current model: " + cur
+	var opts []discordgo.SelectMenuOption
+	for _, ch := range choices {
+		if ch.Value == "" || len(ch.Value) > maxFieldLen || len(opts) == maxMenuItems {
+			continue
+		}
+		name := ch.Name
+		if name == "" {
+			name = ch.Value
+		}
+		opts = append(opts, discordgo.SelectMenuOption{
+			Label:       truncate(name, maxFieldLen),
+			Value:       ch.Value,
+			Description: truncate(ch.Description, maxFieldLen),
+			Default:     ch.Value == current,
+		})
+	}
+	if len(opts) == 0 {
+		return content + "\nNo models available.", []discordgo.MessageComponent{}
+	}
+	return content, []discordgo.MessageComponent{discordgo.ActionsRow{Components: []discordgo.MessageComponent{
+		discordgo.SelectMenu{MenuType: discordgo.StringSelectMenu, CustomID: modelSelectID, Placeholder: "Switch model", MaxValues: 1, Options: opts},
+	}}}
+}
+
 func (c *Channel) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if m.Author == nil || m.Author.Bot || !c.authorized(m.Author.ID, m.ChannelID) || strings.TrimSpace(m.Content) == "" {
 		return
@@ -168,27 +233,87 @@ func (c *Channel) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 	case discordgo.InteractionApplicationCommand:
 		c.onCommand(s, i)
 	case discordgo.InteractionMessageComponent:
-		taskID, approvalID, approve, ok := parseCustomID(i.MessageComponentData().CustomID)
-		if !ok {
+		switch classify(i.MessageComponentData().CustomID) {
+		case kindApproval:
+			c.onApproval(s, i)
+		case kindModel:
+			c.onModelSelect(s, i)
+		}
+	}
+}
+
+func (c *Channel) onApproval(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	taskID, approvalID, approve, _ := parseCustomID(i.MessageComponentData().CustomID)
+	verdict := "Rejected"
+	if approve {
+		verdict = "Approved"
+	}
+	c.respond(s, i, discordgo.InteractionResponseUpdateMessage, i.Message.Content+"\n**"+verdict+"**", []discordgo.MessageComponent{})
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), handleTO)
+		defer cancel()
+		if err := c.h.HandleApproval(ctx, taskID, approvalID, approve); err != nil {
+			slog.Error("handle approval failed", "err", err)
+			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error()})
+		}
+	}()
+}
+
+func (c *Channel) onModelCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
+		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
+		Data: &discordgo.InteractionResponseData{Flags: discordgo.MessageFlagsEphemeral},
+	})
+	if err != nil {
+		slog.Error("interaction respond failed", "err", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), modelTO)
+		defer cancel()
+		choices, err := c.h.ListModels(ctx)
+		if err != nil {
+			c.edit(s, i, "Could not list models: "+err.Error(), []discordgo.MessageComponent{})
 			return
 		}
-		verdict := "Rejected"
-		if approve {
-			verdict = "Approved"
+		content, comps := modelMenu(c.h.CurrentModel(), choices)
+		c.edit(s, i, content, comps)
+	}()
+}
+
+func (c *Channel) onModelSelect(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate})
+	if err != nil {
+		slog.Error("interaction respond failed", "err", err)
+		return
+	}
+	values := i.MessageComponentData().Values
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), modelTO)
+		defer cancel()
+		if len(values) != 1 {
+			c.edit(s, i, "No model selected.", []discordgo.MessageComponent{})
+			return
 		}
-		c.respond(s, i, discordgo.InteractionResponseUpdateMessage, i.Message.Content+"\n**"+verdict+"**", []discordgo.MessageComponent{})
-		go func() {
-			ctx, cancel := context.WithTimeout(context.Background(), handleTO)
-			defer cancel()
-			if err := c.h.HandleApproval(ctx, taskID, approvalID, approve); err != nil {
-				slog.Error("handle approval failed", "err", err)
-				_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error()})
-			}
-		}()
+		if err := c.h.SelectModel(ctx, values[0]); err != nil {
+			c.edit(s, i, "Model switch failed: "+err.Error(), []discordgo.MessageComponent{})
+			return
+		}
+		c.edit(s, i, "Model switched to `"+values[0]+"`. New steps use it.", []discordgo.MessageComponent{})
+	}()
+}
+
+func (c *Channel) edit(s *discordgo.Session, i *discordgo.InteractionCreate, content string, comps []discordgo.MessageComponent) {
+	if _, err := s.InteractionResponseEdit(i.Interaction, &discordgo.WebhookEdit{Content: &content, Components: &comps}); err != nil {
+		slog.Error("interaction edit failed", "err", err)
 	}
 }
 
 func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if i.ApplicationCommandData().Name == "model" {
+		c.onModelCommand(s, i)
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	var msg string

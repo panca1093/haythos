@@ -44,6 +44,9 @@ type Deps struct {
 	StepTimeout time.Duration
 	// Hook is called at named crash points; a non-nil error aborts the operation as if the process died.
 	Hook func(point string) error
+
+	// ModelSelector is optional; nil disables /model.
+	ModelSelector ModelSelector
 }
 
 type App struct {

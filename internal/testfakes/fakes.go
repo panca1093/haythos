@@ -2,6 +2,7 @@ package testfakes
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -137,3 +138,83 @@ func (c *Clock) Advance(d time.Duration) {
 	defer c.mu.Unlock()
 	c.t = c.t.Add(d)
 }
+
+type ModelSelector struct {
+	mu        sync.Mutex
+	Choices   []app.ModelChoice
+	Cur       string
+	ListErr   error
+	SelectErr error
+}
+
+func (m *ModelSelector) List(ctx context.Context) ([]app.ModelChoice, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.ListErr != nil {
+		return nil, m.ListErr
+	}
+	return append([]app.ModelChoice(nil), m.Choices...), nil
+}
+
+func (m *ModelSelector) Current() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.Cur
+}
+
+func (m *ModelSelector) Select(ctx context.Context, value string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.SelectErr != nil {
+		return m.SelectErr
+	}
+	m.Cur = value
+	return nil
+}
+
+type Events struct {
+	mu        sync.Mutex
+	Appended  []task.Event
+	AppendErr error
+}
+
+func (e *Events) Append(ctx context.Context, taskID string, typ task.EventType, payload any) (task.Event, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.AppendErr != nil {
+		return task.Event{}, e.AppendErr
+	}
+	raw, err := json.Marshal(payload)
+	if err != nil {
+		return task.Event{}, fmt.Errorf("marshal payload: %w", err)
+	}
+	ev := task.Event{Cursor: int64(len(e.Appended) + 1), TaskID: taskID, Type: typ, Payload: raw}
+	e.Appended = append(e.Appended, ev)
+	return ev, nil
+}
+
+func (e *Events) Load(ctx context.Context, taskID string) ([]task.Event, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []task.Event
+	for _, ev := range e.Appended {
+		if ev.TaskID == taskID {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+func (e *Events) Since(ctx context.Context, cursor int64) ([]task.Event, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	var out []task.Event
+	for _, ev := range e.Appended {
+		if ev.Cursor > cursor {
+			out = append(out, ev)
+		}
+	}
+	return out, nil
+}
+
+func (e *Events) TasksIn(ctx context.Context, state task.State) ([]string, error) { return nil, nil }

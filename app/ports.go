@@ -87,3 +87,15 @@ type Job struct {
 type Input struct {
 	Text string
 }
+
+type ModelChoice struct {
+	Value       string
+	Name        string
+	Description string
+}
+
+type ModelSelector interface {
+	List(ctx context.Context) ([]ModelChoice, error)
+	Current() string
+	Select(ctx context.Context, value string) error
+}

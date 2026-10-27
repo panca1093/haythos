@@ -1,9 +1,11 @@
 package discord
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/bwmarrin/discordgo"
 
@@ -55,5 +57,97 @@ func TestLongMessagesAreChunked(t *testing.T) {
 	msgs := render(app.Notice{Kind: app.NoticeMessage, Text: strings.Repeat("x", maxMessage*2+10)})
 	if len(msgs) != 3 {
 		t.Errorf("chunks = %d, want 3", len(msgs))
+	}
+}
+
+func TestComponentKind(t *testing.T) {
+	tests := []struct {
+		name string
+		id   string
+		want componentKind
+	}{
+		{"approve button", customID("t", "a", true), kindApproval},
+		{"reject button", customID("t", "a", false), kindApproval},
+		{"model select", modelSelectID, kindModel},
+		{"empty", "", kindUnknown},
+		{"approval-shaped but bad verdict", "ap|t|a|maybe", kindUnknown},
+		{"model id with suffix", modelSelectID + "|x", kindUnknown},
+		{"task id equal to model id", customID(modelSelectID, "a", true), kindApproval},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := classify(tt.id); got != tt.want {
+				t.Errorf("classify(%q) = %v, want %v", tt.id, got, tt.want)
+			}
+		})
+	}
+	if _, _, _, ok := parseCustomID(modelSelectID); ok {
+		t.Error("approval parser accepted the model select id")
+	}
+}
+
+func menuOptions(t *testing.T, comps []discordgo.MessageComponent) []discordgo.SelectMenuOption {
+	t.Helper()
+	if len(comps) != 1 {
+		t.Fatalf("rows = %d", len(comps))
+	}
+	row := comps[0].(discordgo.ActionsRow)
+	menu := row.Components[0].(discordgo.SelectMenu)
+	if menu.CustomID != modelSelectID || menu.MenuType != discordgo.StringSelectMenu {
+		t.Errorf("menu = %+v", menu)
+	}
+	return menu.Options
+}
+
+func TestModelMenu(t *testing.T) {
+	many := make([]app.ModelChoice, 30)
+	for i := range many {
+		many[i] = app.ModelChoice{Value: fmt.Sprintf("m%d", i), Name: "M"}
+	}
+	long := strings.Repeat("x", 300)
+	tests := []struct {
+		name        string
+		current     string
+		choices     []app.ModelChoice
+		wantOpts    int
+		wantDefault string
+		wantContent string
+	}{
+		{"current is marked default", "sonnet", []app.ModelChoice{{Value: "default", Name: "Default"}, {Value: "sonnet", Name: "Sonnet", Description: "fast"}}, 2, "sonnet", "`sonnet`"},
+		{"capped at 25", "m0", many, 25, "m0", "`m0`"},
+		{"over-long fields are clipped", "", []app.ModelChoice{{Value: "a", Name: long, Description: long}}, 1, "", "not set"},
+		{"empty name falls back to value", "", []app.ModelChoice{{Value: "a"}}, 1, "", ""},
+		{"empty and oversized values are skipped", "", []app.ModelChoice{{Value: ""}, {Value: long}, {Value: "ok", Name: "OK"}}, 1, "", ""},
+		{"no choices means no menu", "x", nil, 0, "", "`x`"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			content, comps := modelMenu(tt.current, tt.choices)
+			if !strings.Contains(content, tt.wantContent) {
+				t.Errorf("content = %q, want to contain %q", content, tt.wantContent)
+			}
+			if tt.wantOpts == 0 {
+				if len(comps) != 0 {
+					t.Errorf("components = %d, want none", len(comps))
+				}
+				return
+			}
+			opts := menuOptions(t, comps)
+			if len(opts) != tt.wantOpts {
+				t.Fatalf("options = %d, want %d", len(opts), tt.wantOpts)
+			}
+			def := ""
+			for _, o := range opts {
+				if n := utf8.RuneCountInString; n(o.Label) == 0 || n(o.Label) > 100 || len(o.Value) == 0 || len(o.Value) > 100 || n(o.Description) > 100 {
+					t.Errorf("option violates Discord limits: %+v", o)
+				}
+				if o.Default {
+					def = o.Value
+				}
+			}
+			if def != tt.wantDefault {
+				t.Errorf("default = %q, want %q", def, tt.wantDefault)
+			}
+		})
 	}
 }
