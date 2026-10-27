@@ -81,13 +81,18 @@ func (t *Tools) Count(name string) int {
 }
 
 type Notifier struct {
-	mu      sync.Mutex
-	Notices []app.Notice
+	mu       sync.Mutex
+	Notices  []app.Notice
+	FailNext int
 }
 
 func (n *Notifier) Publish(ctx context.Context, notice app.Notice) error {
 	n.mu.Lock()
 	defer n.mu.Unlock()
+	if n.FailNext > 0 {
+		n.FailNext--
+		return errors.New("fake notifier: publish failed")
+	}
 	n.Notices = append(n.Notices, notice)
 	return nil
 }

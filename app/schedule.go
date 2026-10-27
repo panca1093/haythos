@@ -8,6 +8,8 @@ import (
 	"time"
 
 	"github.com/robfig/cron/v3"
+
+	"github.com/panca/haythos/core/task"
 )
 
 type jobMark struct {
@@ -31,6 +33,9 @@ func (a *App) Tick(ctx context.Context) error {
 	}
 
 	var errs []error
+	if err := a.sweepApprovals(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	for _, j := range a.d.Jobs {
 		if j.Trigger.Cron == "" {
 			continue
@@ -67,4 +72,52 @@ func (a *App) Tick(ctx context.Context) error {
 		}
 	}
 	return errors.Join(errs...)
+}
+
+// sweepApprovals re-sends approval requests whose publish failed and fails tasks whose approval expired.
+func (a *App) sweepApprovals(ctx context.Context) error {
+	ids, err := a.d.Events.TasksIn(ctx, task.WaitingApproval)
+	if err != nil {
+		return fmt.Errorf("list waiting tasks: %w", err)
+	}
+	var errs []error
+	for _, id := range ids {
+		if err := a.sweepApproval(ctx, id); err != nil {
+			errs = append(errs, fmt.Errorf("sweep approval %s: %w", id, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (a *App) sweepApproval(ctx context.Context, id string) error {
+	unlock := a.lock(id)
+	defer unlock()
+	s, err := a.Snapshot(ctx, id)
+	if err != nil || s.State != task.WaitingApproval {
+		return err
+	}
+	events, err := a.d.Events.Load(ctx, id)
+	if err != nil {
+		return fmt.Errorf("load task %s: %w", id, err)
+	}
+	var rec approvalRequested
+	for _, e := range events {
+		var r approvalRequested
+		if e.Type == task.EvApprovalRequested && json.Unmarshal(e.Payload, &r) == nil {
+			rec = r
+		}
+	}
+	if rec.Approval.ID == "" {
+		return nil
+	}
+	if a.d.Clock().Before(rec.Approval.Expiry) {
+		return a.notifyApproval(ctx, id, rec)
+	}
+	if err := a.setState(ctx, id, task.Running, "approval expired"); err != nil {
+		return err
+	}
+	if err := a.appendResult(ctx, id, task.ToolResult{CallID: rec.CallID, Content: "approval expired", IsError: true}); err != nil {
+		return err
+	}
+	return a.fail(ctx, id, "approval expired")
 }

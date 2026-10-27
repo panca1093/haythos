@@ -354,9 +354,13 @@ func (a *App) requestApproval(ctx context.Context, id string, call task.ToolCall
 	if err := a.setState(ctx, id, task.WaitingApproval, "approval "+p.Approval.ID); err != nil {
 		return err
 	}
-	return a.notify(ctx, id, "approval:"+p.Approval.ID, Notice{
-		Kind: NoticeApproval, Text: p.Preview,
-		Approval: &ApprovalRequest{Approval: p.Approval, Tier: p.Tier, Escalated: p.Escalated, Preview: p.Preview},
+	return a.notifyApproval(ctx, id, rec)
+}
+
+func (a *App) notifyApproval(ctx context.Context, id string, rec approvalRequested) error {
+	return a.notify(ctx, id, "approval:"+rec.Approval.ID, Notice{
+		Kind: NoticeApproval, Text: rec.Preview,
+		Approval: &ApprovalRequest{Approval: rec.Approval, Tier: rec.Tier, Escalated: rec.Escalated, Preview: rec.Preview},
 	})
 }
 
