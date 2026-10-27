@@ -52,3 +52,8 @@ test("passes options.model only when a model is given", async () => {
     assert.equal("model" in (seen.opts ?? {}), false);
   }
 });
+
+test("fails on an error result even when subtype is success", async () => {
+  const msg = { type: "result", subtype: "success", is_error: true, result: "Failed to authenticate. API Error: 401", usage: {} };
+  await assert.rejects(step(params, fakeQuery({}, msg)), /sdk error: Failed to authenticate/);
+});

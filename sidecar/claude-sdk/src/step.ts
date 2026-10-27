@@ -36,6 +36,7 @@ export async function step(p: StepParams, q: QueryFn = query): Promise<StepResul
   for await (const m of stream) {
     if (m.type !== "result") continue;
     if (m.subtype !== "success") throw new Error(`sdk result: ${m.subtype}`);
+    if (m.is_error) throw new Error(`sdk error: ${m.result}`);
     text = m.structured_output !== undefined ? JSON.stringify(m.structured_output) : m.result;
     usage = { input_tokens: m.usage.input_tokens ?? 0, output_tokens: m.usage.output_tokens ?? 0 };
   }
