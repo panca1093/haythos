@@ -56,9 +56,9 @@ type GPU struct {
 }
 
 type Report struct {
-	LoadPerCore float64   `json:"load_per_core"`
-	MemUsedPct  float64   `json:"mem_used_pct"`
-	DiskUsedPct float64   `json:"disk_used_pct"`
+	LoadPerCore *float64  `json:"load_per_core,omitempty"`
+	MemUsedPct  *float64  `json:"mem_used_pct,omitempty"`
+	DiskUsedPct *float64  `json:"disk_used_pct,omitempty"`
 	GPUs        []GPU     `json:"gpus,omitempty"`
 	TopProcs    []Process `json:"top_processes"`
 	Anomalies   []string  `json:"anomalies"`
@@ -71,15 +71,17 @@ func (c Collector) Collect(ctx context.Context) Report {
 	if load, err := c.load1(ctx); err != nil {
 		r.Gaps = append(r.Gaps, "load: "+err.Error())
 	} else {
-		r.LoadPerCore = round(load / float64(max(c.NumCPU, 1)))
-		if r.LoadPerCore > maxLoadPerCore {
-			r.Anomalies = append(r.Anomalies, fmt.Sprintf("load per core %.2f > %.1f", r.LoadPerCore, maxLoadPerCore))
+		perCore := round(load / float64(max(c.NumCPU, 1)))
+		r.LoadPerCore = &perCore
+		if perCore > maxLoadPerCore {
+			r.Anomalies = append(r.Anomalies, fmt.Sprintf("load per core %.2f > %.1f", perCore, maxLoadPerCore))
 		}
 	}
 	if pct, err := c.memUsedPct(); err != nil {
 		r.Gaps = append(r.Gaps, "memory: "+err.Error())
 	} else {
-		r.MemUsedPct = round(pct)
+		mem := round(pct)
+		r.MemUsedPct = &mem
 		if pct > maxMemUsedPct {
 			r.Anomalies = append(r.Anomalies, fmt.Sprintf("memory used %.0f%% > %.0f%%", pct, maxMemUsedPct))
 		}
@@ -87,7 +89,7 @@ func (c Collector) Collect(ctx context.Context) Report {
 	if pct, err := c.diskUsedPct(ctx); err != nil {
 		r.Gaps = append(r.Gaps, "disk: "+err.Error())
 	} else {
-		r.DiskUsedPct = pct
+		r.DiskUsedPct = &pct
 		if pct > maxDiskUsedPct {
 			r.Anomalies = append(r.Anomalies, fmt.Sprintf("disk / used %.0f%% > %.0f%%", pct, maxDiskUsedPct))
 		}

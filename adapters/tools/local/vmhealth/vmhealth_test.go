@@ -2,6 +2,7 @@ package vmhealth
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -43,7 +44,7 @@ func TestCollectNormal(t *testing.T) {
 	if len(r.Anomalies) != 0 || len(r.Gaps) != 0 {
 		t.Fatalf("anomalies=%v gaps=%v", r.Anomalies, r.Gaps)
 	}
-	if r.LoadPerCore != 0.3 || r.MemUsedPct != 50 || r.DiskUsedPct != 40 {
+	if r.LoadPerCore == nil || r.MemUsedPct == nil || r.DiskUsedPct == nil || *r.LoadPerCore != 0.3 || *r.MemUsedPct != 50 || *r.DiskUsedPct != 40 {
 		t.Errorf("report = %+v", r)
 	}
 	if len(r.TopProcs) != 3 || r.TopProcs[0].Command != "python worker" {
@@ -69,5 +70,67 @@ func TestMissingSourcesBecomeGapsNotAnomalies(t *testing.T) {
 	r := c.Collect(context.Background())
 	if len(r.Anomalies) != 0 || len(r.Gaps) != 4 {
 		t.Errorf("anomalies=%v gaps=%v", r.Anomalies, r.Gaps)
+	}
+}
+
+func TestUnmeasuredMetricsAreOmittedFromJSON(t *testing.T) {
+	tests := []struct {
+		name    string
+		c       Collector
+		absent  []string
+		present []string
+	}{
+		{
+			name: "no proc and no commands",
+			c: Collector{NumCPU: 2,
+				ReadFile: func(string) ([]byte, error) { return nil, errors.New("nope") },
+				Run:      func(context.Context, string, ...string) ([]byte, error) { return nil, errors.New("nope") },
+			},
+			absent:  []string{"load_per_core", "mem_used_pct", "disk_used_pct"},
+			present: []string{"gaps"},
+		},
+		{
+			name: "only memory unavailable",
+			c: func() Collector {
+				c := collector("500000", "1.2", "40", "")
+				rf := c.ReadFile
+				c.ReadFile = func(p string) ([]byte, error) {
+					if p == "/proc/meminfo" {
+						return nil, errors.New("nope")
+					}
+					return rf(p)
+				}
+				return c
+			}(),
+			absent:  []string{"mem_used_pct"},
+			present: []string{"load_per_core", "disk_used_pct", "gaps"},
+		},
+		{
+			name:    "measured zero stays present",
+			c:       collector("1000000", "0.0", "0", ""),
+			present: []string{"load_per_core", "mem_used_pct", "disk_used_pct"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b, err := json.Marshal(tt.c.Collect(context.Background()))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var m map[string]any
+			if err := json.Unmarshal(b, &m); err != nil {
+				t.Fatal(err)
+			}
+			for _, k := range tt.absent {
+				if _, ok := m[k]; ok {
+					t.Errorf("%s present in %s", k, b)
+				}
+			}
+			for _, k := range tt.present {
+				if _, ok := m[k]; !ok {
+					t.Errorf("%s missing in %s", k, b)
+				}
+			}
+		})
 	}
 }
