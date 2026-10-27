@@ -281,10 +281,14 @@ func targetOf(spec task.ToolSpec, args json.RawMessage) string {
 	return s
 }
 
+// mentioned reports whether target appears as a whole whitespace-separated token, ignoring surrounding punctuation.
+// TODO: uncertain — a negated mention ("don't post to #x") still counts as trusted, verify before prod
 func mentioned(trusted []string, target string) bool {
 	for _, t := range trusted {
-		if strings.Contains(t, target) {
-			return true
+		for _, w := range strings.Fields(t) {
+			if strings.Trim(w, ".,;:!?()[]{}<>\"'`") == target {
+				return true
+			}
 		}
 	}
 	return false

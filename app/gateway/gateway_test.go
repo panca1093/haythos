@@ -144,3 +144,31 @@ func TestSecretNotBoundToToolIsNeverResolved(t *testing.T) {
 		t.Errorf("out=%+v calls=%d seen=%q", out, tools.Count("read"), seen)
 	}
 }
+
+func TestTrustedTargetMustMatchAWholeToken(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		trusted   string
+		target    string
+		escalated bool
+	}{
+		{"exact", "post the summary to #general", "#general", false},
+		{"trailing punctuation", "post it to #general.", "#general", false},
+		{"quoted", `send to "#ops", thanks`, "#ops", false},
+		{"prefix of a trusted word", "post the summary to #general", "#gen", true},
+		{"suffix of a trusted word", "email bob@corp.example", "corp.example", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			gw, _, _ := newGW(t)
+			r := req("write", `{"to":"`+tc.target+`"}`, nil)
+			r.Tainted, r.Trusted = true, []string{tc.trusted}
+			out, err := gw.Execute(context.Background(), r)
+			if err != nil || out.Pending == nil {
+				t.Fatalf("want pending, got %+v err=%v", out, err)
+			}
+			if out.Pending.Escalated != tc.escalated {
+				t.Errorf("escalated = %v, want %v", out.Pending.Escalated, tc.escalated)
+			}
+		})
+	}
+}
