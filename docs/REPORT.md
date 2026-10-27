@@ -62,6 +62,7 @@ ok    github.com/panca/haythos/internal/config  (cached)
 - `claude-sub` can now pick a model (`model:` on a `kind: claudesdk` entry, passed as SDK `options.model`); empty means the SDK default.
 - Spike 3 (`experiments/agentsdk/token-precedence.mjs`): with an invalid `CLAUDE_CODE_OAUTH_TOKEN` the SDK fails with `401 OAuth access token is invalid`, with the real or an empty `HOME`. Without a token it fails with `Not logged in`. So the env token is what authenticates and the sidecar does not fall back to the Mac's Claude Code login.
 - Spike 2 overhead (`experiments/agentsdk/probe.mjs`, same options as `step.ts`, 3 calls, Agent SDK 0.3.310, model = SDK default): 4.3 s, 4.7 s, 6.0 s per call for a one-word reply. Each call spawns a Claude Code subprocess and shows 2 assistant messages, yet still fits `maxTurns: 1`. Budget about 5 s per `Step` on `claude-sub`; a multi-step task pays this on every step. This run authenticated with the machine's existing Claude login, not the vault token (Spike 3 covers that path).
+- Discord live (2026-10-28 01:45 WIB): bot invited, owner chat answered by Alfred on `claude-sub`, and an ad-hoc VM-health check ran through the gateway and was summarized in the channel. Memory is still a gap on macOS (vmhealth reads only `/proc/meminfo`). Not yet checked live: `/pause`, `/resume`, and approval buttons (M1 has no write tool, so nothing asks for approval).
 
 ## Open TODOs (marked in code with `TODO: uncertain`)
 
@@ -72,7 +73,7 @@ ok    github.com/panca/haythos/internal/config  (cached)
 ## Needs a real account or you (not verified)
 
 1. Spike 3: validity period of `claude setup-token` (sources say about 1 year, unofficial). Token precedence is confirmed (see Live checks).
-2. Discord end to end: create the bot, enable Message Content intent, set `owner_id` and `channel_id`, check buttons and `/pause` live. Slash commands are registered globally and can take a while to appear.
+2. Discord: chat works live; still check `/pause` and `/resume`. Approval buttons need a write tool, which M1 does not have.
 3. The one-day local run with both scheduled reports arriving (Definition of done).
 4. Same job on all three model adapters with real keys: `claude-sub` done; `claude-api` and `openai` still only fixtures and `httptest`.
 
