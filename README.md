@@ -30,6 +30,8 @@ go run ./cmd/haythosd              # serve: Discord + scheduler
 go run ./cmd/haythosd run-job vm-health   # one-shot manual trigger, prints the report to stdout
 ```
 
+Only one `haythosd` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
+
 Discord: only `discord.owner_id` in `discord.channel_id` is obeyed. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
 
 ### Switching the model

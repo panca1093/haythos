@@ -78,6 +78,11 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	release, err := lockInstance(cfg.DB)
+	if err != nil {
+		return err
+	}
+	defer release()
 	store, err := sqlite.Open(cfg.DB)
 	if err != nil {
 		return err
@@ -118,18 +123,21 @@ func run(args []string) error {
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: tools, Events: store, Ledger: store,
 		Notifier: notifier, Vault: vault, Policy: pol,
 	})
-	if err := a.Start(ctx); err != nil {
-		return fmt.Errorf("start kernel: %w", err)
-	}
-
 	switch cmd {
 	case "run-job":
 		if len(rest) != 1 {
 			return errors.New("usage: haythosd run-job <name>")
 		}
+		// Other tasks are left for serve: resuming them here would deliver their notices to stdout.
+		if err := a.RestorePause(ctx); err != nil {
+			return err
+		}
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":
+		if err := a.Start(ctx); err != nil {
+			return fmt.Errorf("start kernel: %w", err)
+		}
 		channel.SetHandler(a)
 		if err := channel.Open(); err != nil {
 			return err

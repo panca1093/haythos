@@ -97,8 +97,8 @@ func (a *App) lock(taskID string) func() {
 	return mu.Unlock
 }
 
-// Start reconciles in-flight ledger rows and resumes unfinished tasks. Call before the scheduler runs.
-func (a *App) Start(ctx context.Context) error {
+// RestorePause loads the persisted /pause state. Start calls it; one-shot commands that skip Start must too.
+func (a *App) RestorePause(ctx context.Context) error {
 	sys, err := a.d.Events.Load(ctx, systemTask)
 	if err != nil {
 		return fmt.Errorf("load system events: %w", err)
@@ -110,6 +110,14 @@ func (a *App) Start(ctx context.Context) error {
 		case evResumed:
 			a.paused.Store(false)
 		}
+	}
+	return nil
+}
+
+// Start reconciles in-flight ledger rows and resumes unfinished tasks. Call before the scheduler runs.
+func (a *App) Start(ctx context.Context) error {
+	if err := a.RestorePause(ctx); err != nil {
+		return err
 	}
 
 	rows, err := a.d.Ledger.InState(ctx, task.LedgerDispatching)
