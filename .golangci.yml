@@ -34,7 +34,7 @@ linters:
           - gosec
           - unparam
           - contextcheck
-      - path: ^spikes/
+      - path: ^experiments/
         linters:
           - gosec
           - revive

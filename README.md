@@ -44,4 +44,22 @@ Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The
 make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + tests
 ```
 
-`acceptance/m1_test.go` holds the frozen M1 contract tests; never edit it to make a test pass.
+`tests/acceptance/m1_test.go` holds the frozen M1 contract tests; never edit it to make a test pass.
+
+## Repo layout
+
+| Folder | What it is |
+| --- | --- |
+| `cmd/haythosd/` | The `haythosd` binary: CLI subcommands and wiring of everything below |
+| `core/` | Pure rules with no I/O: task state machine, policy tiers, output contract |
+| `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
+| `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
+| `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
+| `internal/config/` | Go code that loads and validates the YAML in `config/` |
+| `internal/testfakes/` | In-memory fakes of the interfaces, for tests only |
+| `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |
+| `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
+| `skills/` | Markdown instructions the model reads (how to do it) |
+| `sidecar/claude-sdk/` | TypeScript helper that calls the Claude Agent SDK, one step per call |
+| `tests/acceptance/` | Whole-kernel tests with fakes; the gate for every milestone. Never delete |
+| `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `REPORT.md` are done |

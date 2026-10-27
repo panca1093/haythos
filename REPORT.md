@@ -6,8 +6,8 @@ Run date: 2026-10-27 (Asia/Jakarta). I treated "get things done tonight, I'll ch
 
 | Phase | Commit(s) | Result |
 | --- | --- | --- |
-| 0 scaffold + spikes | `scaffold: ...` | Module, layout, `.golangci.yml`, Makefile, `spikes/FINDINGS.md`. Spikes 1 and 4 confirmed, 2 and 3 partly (static evidence only, see TODOs). |
-| 1 contract tests | `stubs: ...`, `contract: M1 acceptance tests` | 7 contract tests committed alone, failing against stubs. `acceptance/m1_test.go` has 0 diff lines since that commit. |
+| 0 scaffold + spikes | `scaffold: ...` | Module, layout, `.golangci.yml`, Makefile, `experiments/FINDINGS.md`. Spikes 1 and 4 confirmed, 2 and 3 partly (static evidence only, see TODOs). |
+| 1 contract tests | `stubs: ...`, `contract: M1 acceptance tests` | 7 contract tests committed alone, failing against stubs. `tests/acceptance/m1_test.go` has 0 diff lines since that commit. |
 | 2 core + app | `core,app: ...` | `core/task`, `core/policy`, `app/gateway`, agent loop, SQLite store (needed so the contract tests could run). |
 | 3 adapters | `adapters: ...` and later commits | sqlite, anthropic, openai, claudesdk + TS sidecar, vault/file, discord, local tools + vmhealth. |
 | 4 VM health | later commits | `jobs/vm-health.yaml`, scheduler `Tick`, `run-job`, `auth`, e2e test with fake clock, README. |
@@ -35,7 +35,7 @@ ok    github.com/panca/haythos/internal/config  (cached)
 ℹ fail 0
 ```
 
-`go test -race -count=5 ./acceptance/` passed (no flakes seen).
+`go test -race -count=5 ./tests/acceptance/` passed (no flakes seen).
 
 ## Decisions made without me
 
@@ -53,7 +53,7 @@ ok    github.com/panca/haythos/internal/config  (cached)
 12. **Vault key** comes only from `HAYTHOS_VAULT_KEY`. OS keyring is not done.
 13. **Node sidecar** runs TypeScript with Node's built-in type stripping (`node src/index.ts`, Node 22.18+; this machine has v26). `tsc` is used for type checking only.
 14. **Dependencies added** (all justified by the kickoff or the lack of a stdlib option): `modernc.org/sqlite` (pure Go, no cgo), `bwmarrin/discordgo` (named in the kickoff), `robfig/cron/v3` (cron parsing, used in `app/schedule.go`; this is the one external import in `app`), `gopkg.in/yaml.v3`, `golang.org/x/term` (hidden input for `auth`), `google/go-cmp` (allowed). **Flag**: discordgo pulls an old `golang.org/x/crypto` (2021 pseudo-version); check it before running on a VPS.
-15. The MCP Go SDK is only spiked (`spikes/mcp`, its own module), not a dependency of the main module.
+15. The MCP Go SDK is only spiked (`experiments/mcp`, its own module), not a dependency of the main module.
 
 ## Open TODOs (marked in code with `TODO: uncertain`)
 
@@ -64,7 +64,7 @@ ok    github.com/panca/haythos/internal/config  (cached)
 
 ## Needs a real account or you (not verified)
 
-1. Spike 2: run `node spikes/agentsdk/probe.mjs` for per-call overhead and to confirm tool-less single turn plus structured output.
+1. Spike 2: run `node experiments/agentsdk/probe.mjs` for per-call overhead and to confirm tool-less single turn plus structured output.
 2. Spike 3: validity period of `claude setup-token` (sources say about 1 year, unofficial) and whether the SDK honours `CLAUDE_CODE_OAUTH_TOKEN` when `~/.claude` also exists.
 3. Discord end to end: create the bot, enable Message Content intent, set `owner_id` and `channel_id`, check buttons and `/pause` live. Slash commands are registered globally and can take a while to appear.
 4. The one-day local run with both scheduled reports arriving (Definition of done).
