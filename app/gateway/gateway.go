@@ -21,6 +21,7 @@ type Tools interface {
 type Ledger interface {
 	Get(ctx context.Context, idemKey string) (task.LedgerEntry, bool, error)
 	Put(ctx context.Context, e task.LedgerEntry) error
+	InState(ctx context.Context, s task.LedgerState) ([]task.LedgerEntry, error)
 }
 
 type Vault interface {
@@ -57,6 +58,8 @@ type Pending struct {
 type Outcome struct {
 	Result  task.ToolResult
 	Pending *Pending
+	// Unknown means the write may or may not have happened; the caller must tell the user.
+	Unknown bool
 }
 
 type Gateway struct{ d Deps }
@@ -114,6 +117,11 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 			}}, nil
 		}
 		entry = prior
+		if u, found, err := g.unknownTwin(ctx, req.TaskID, spec.Name, target); err != nil {
+			return Outcome{}, err
+		} else if found {
+			return denied(call, fmt.Sprintf("not executed: an earlier %s to %q in this task has an unknown outcome (%s). The user must check it first.", spec.Name, target, u.IdemKey)), nil
+		}
 	}
 
 	if dec.Action == policy.Ask {
@@ -162,17 +170,30 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	final, content := task.LedgerSucceeded, res.Content
 	switch {
 	case execErr != nil && (errors.Is(execErr, context.Canceled) || errors.Is(execErr, context.DeadlineExceeded)):
-		final, content = task.LedgerOutcomeUnknown, "interrupted: "+execErr.Error()
-	case execErr != nil || res.IsError:
+		final, content = task.LedgerOutcomeUnknown, "interrupted: "+res.Content
+	case execErr != nil:
+		// A transport error after dispatch cannot tell sent from not sent; only a tool-reported error is a definite failure.
+		final, content = task.LedgerOutcomeUnknown, "outcome unknown: "+res.Content
+	case res.IsError:
 		final = task.LedgerFailed
-		if execErr != nil {
-			content = execErr.Error()
-		}
 	}
 	if err := g.setLedger(ctx, &entry, final, content); err != nil {
 		return Outcome{}, err
 	}
-	return Outcome{Result: res}, nil
+	return Outcome{Result: res, Unknown: final == task.LedgerOutcomeUnknown}, nil
+}
+
+func (g *Gateway) unknownTwin(ctx context.Context, taskID, tool, target string) (task.LedgerEntry, bool, error) {
+	rows, err := g.d.Ledger.InState(ctx, task.LedgerOutcomeUnknown)
+	if err != nil {
+		return task.LedgerEntry{}, false, fmt.Errorf("read ledger: %w", err)
+	}
+	for _, r := range rows {
+		if r.TaskID == taskID && r.Tool == tool && r.Target == target {
+			return r, true, nil
+		}
+	}
+	return task.LedgerEntry{}, false, nil
 }
 
 func (g *Gateway) invoke(ctx context.Context, call task.ToolCall, spec task.ToolSpec) (task.ToolResult, error) {

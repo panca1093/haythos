@@ -330,6 +330,13 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err := a.appendResult(ctx, id, out.Result); err != nil {
 		return err
 	}
+	if out.Unknown {
+		if err := a.notify(ctx, id, "alert:unknown:"+id+"/"+call.ID, Notice{
+			Kind: NoticeAlert, Text: fmt.Sprintf("Could not tell whether %s completed. It will not be retried; please check.", call.Name),
+		}); err != nil {
+			return err
+		}
+	}
 	if out.Result.Normal && s.Created.NormalMsg != "" {
 		if err := a.appendMessage(ctx, id, task.Message{Role: task.RoleAssistant, Text: s.Created.NormalMsg}); err != nil {
 			return err

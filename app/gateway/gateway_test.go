@@ -25,6 +25,16 @@ func (m memLedger) Put(_ context.Context, e task.LedgerEntry) error {
 	return nil
 }
 
+func (m memLedger) InState(_ context.Context, st task.LedgerState) ([]task.LedgerEntry, error) {
+	var out []task.LedgerEntry
+	for _, e := range m {
+		if e.State == st {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
 var specs = []task.ToolSpec{
 	{Name: "read", InputSchema: json.RawMessage(`{}`)},
 	{Name: "write", Write: true, TargetArg: "to", InputSchema: json.RawMessage(`{}`)},
