@@ -1,3 +1,5 @@
 version: "1"
 tiers:
   vmhealth.read: 0
+# Vault names each tool's arguments may reference as secret://<name>. Unlisted handles are denied.
+secrets: {}

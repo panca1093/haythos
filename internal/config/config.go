@@ -70,18 +70,24 @@ func LoadMain(path string) (Main, error) {
 
 func LoadPolicy(path string) (policy.Policy, error) {
 	var f struct {
-		Version string         `yaml:"version"`
-		Tiers   map[string]int `yaml:"tiers"`
+		Version string              `yaml:"version"`
+		Tiers   map[string]int      `yaml:"tiers"`
+		Secrets map[string][]string `yaml:"secrets"`
 	}
 	if err := decode(path, &f); err != nil {
 		return policy.Policy{}, err
 	}
-	p := policy.Policy{Version: f.Version, Tiers: map[string]policy.Tier{}}
+	p := policy.Policy{Version: f.Version, Tiers: map[string]policy.Tier{}, Secrets: f.Secrets}
 	for tool, t := range f.Tiers {
 		if t < int(policy.TierRead) || t > int(policy.TierForbidden) {
 			return p, fmt.Errorf("%s: tool %s has tier %d, want 0-4", path, tool, t)
 		}
 		p.Tiers[tool] = policy.Tier(t)
+	}
+	for tool := range f.Secrets {
+		if _, ok := p.Tiers[tool]; !ok {
+			return p, fmt.Errorf("%s: secrets bound to %s, which has no tier", path, tool)
+		}
 	}
 	return p, nil
 }

@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
+	"strings"
 	"time"
 )
 
@@ -31,6 +33,8 @@ const (
 type Policy struct {
 	Version string
 	Tiers   map[string]Tier
+	// Secrets lists, per tool, the vault names its arguments may reference; any other handle is exfiltration.
+	Secrets map[string][]string
 }
 
 type Input struct {
@@ -38,6 +42,7 @@ type Input struct {
 	Write         bool
 	Tainted       bool
 	TargetTrusted bool
+	Secrets       []string
 }
 
 type Decision struct {
@@ -58,11 +63,16 @@ type Approval struct {
 
 var ErrApprovalVoid = errors.New("approval void")
 
-// Evaluate applies M1–M2 rules: reads auto, every write asks, tier 4 denied.
+// Evaluate applies M1–M2 rules: reads auto, every write asks, tier 4 and unbound secrets denied.
 func (p Policy) Evaluate(in Input) Decision {
 	tier, ok := p.Tiers[in.Tool]
 	if !ok {
 		return Decision{Action: Deny, Tier: TierForbidden, Reason: "no tier configured"}
+	}
+	for _, h := range in.Secrets {
+		if !slices.Contains(p.Secrets[in.Tool], strings.TrimPrefix(h, "secret://")) {
+			return Decision{Action: Deny, Tier: TierForbidden, Reason: h + " is not bound to this tool"}
+		}
 	}
 	d := Decision{Tier: tier}
 	if in.Write && d.Tier < TierInternalWrite {

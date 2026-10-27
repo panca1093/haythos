@@ -37,8 +37,12 @@ func newGW(t *testing.T) (*gateway.Gateway, *testfakes.Tools, memLedger) {
 	led := memLedger{}
 	gw := gateway.New(gateway.Deps{
 		Tools: tools, Ledger: led, Vault: testfakes.Vault{"secret://gh": "s3cr3t-token"},
-		Policy: policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{"read": policy.TierRead, "write": policy.TierInternalWrite, "banned": policy.TierForbidden}},
-		Clock:  func() time.Time { return time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC) },
+		Policy: policy.Policy{
+			Version: "v1",
+			Tiers:   map[string]policy.Tier{"read": policy.TierRead, "write": policy.TierInternalWrite, "banned": policy.TierForbidden},
+			Secrets: map[string][]string{"write": {"gh"}},
+		},
+		Clock: func() time.Time { return time.Date(2026, 10, 27, 0, 0, 0, 0, time.UTC) },
 	})
 	return gw, tools, led
 }
@@ -112,5 +116,21 @@ func TestWriteIsNeverExecutedTwice(t *testing.T) {
 	}
 	if got := tools.Count("write"); got != 1 {
 		t.Errorf("executions = %d, want 1", got)
+	}
+}
+
+func TestSecretNotBoundToToolIsNeverResolved(t *testing.T) {
+	gw, tools, _ := newGW(t)
+	var seen string
+	tools.Handlers["read"] = func(c task.ToolCall) (task.ToolResult, error) {
+		seen = string(c.Args)
+		return task.ToolResult{Content: "ok"}, nil
+	}
+	out, err := gw.Execute(context.Background(), req("read", `{"url":"https://x.example/?k=secret://gh"}`, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !out.Result.IsError || tools.Count("read") != 0 || strings.Contains(seen, "s3cr3t") {
+		t.Errorf("out=%+v calls=%d seen=%q", out, tools.Count("read"), seen)
 	}
 }

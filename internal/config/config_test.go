@@ -45,4 +45,16 @@ func TestRejectsUnknownFieldsAndBadValues(t *testing.T) {
 	if _, err := LoadPolicy(p); err == nil {
 		t.Error("tier 9 accepted")
 	}
+	p = write(t, dir, "p.yaml", "version: '1'\ntiers: {x: 1}\nsecrets: {y: [gh]}\n")
+	if _, err := LoadPolicy(p); err == nil {
+		t.Error("secret bound to a tool without a tier accepted")
+	}
+}
+
+func TestPolicySecrets(t *testing.T) {
+	p := write(t, t.TempDir(), "p.yaml", "version: '1'\ntiers: {x: 1}\nsecrets: {x: [gh]}\n")
+	pol, err := LoadPolicy(p)
+	if err != nil || len(pol.Secrets["x"]) != 1 || pol.Secrets["x"][0] != "gh" {
+		t.Fatalf("policy: %+v err=%v", pol, err)
+	}
 }

@@ -90,6 +90,7 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	dec := g.d.Policy.Evaluate(policy.Input{
 		Tool: spec.Name, Write: spec.Write, Tainted: req.Tainted,
 		TargetTrusted: target != "" && mentioned(req.Trusted, target),
+		Secrets:       secretRef.FindAllString(string(call.Args), -1),
 	})
 	if dec.Action == policy.Deny {
 		return denied(call, "denied by policy: "+dec.Reason), nil

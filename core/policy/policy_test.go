@@ -8,7 +8,11 @@ import (
 )
 
 func TestEvaluate(t *testing.T) {
-	p := Policy{Version: "v1", Tiers: map[string]Tier{"r": TierRead, "w1": TierInternalWrite, "w2": TierExternalWrite, "x": TierForbidden, "badread": TierRead}}
+	p := Policy{
+		Version: "v1",
+		Tiers:   map[string]Tier{"r": TierRead, "w1": TierInternalWrite, "w2": TierExternalWrite, "x": TierForbidden, "badread": TierRead},
+		Secrets: map[string][]string{"w1": {"gh"}},
+	}
 	for _, tc := range []struct {
 		name      string
 		in        Input
@@ -26,6 +30,9 @@ func TestEvaluate(t *testing.T) {
 		{"tainted write to untrusted target escalates", Input{Tool: "w1", Write: true, Tainted: true}, Ask, TierHighImpact, true},
 		{"tainted write to trusted target keeps tier", Input{Tool: "w1", Write: true, Tainted: true, TargetTrusted: true}, Ask, TierInternalWrite, false},
 		{"untainted write keeps tier", Input{Tool: "w1", Write: true, TargetTrusted: false}, Ask, TierInternalWrite, false},
+		{"bound secret keeps tier", Input{Tool: "w1", Write: true, Secrets: []string{"secret://gh"}}, Ask, TierInternalWrite, false},
+		{"unbound secret on read denied", Input{Tool: "r", Secrets: []string{"secret://gh"}}, Deny, TierForbidden, false},
+		{"other secret on bound tool denied", Input{Tool: "w1", Write: true, Secrets: []string{"secret://gh", "secret://anthropic"}}, Deny, TierForbidden, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
