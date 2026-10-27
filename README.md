@@ -1,6 +1,6 @@
 # HaythOS
 
-Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Milestone plan: `M1_KICKOFF.md`.
+Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Spec, milestone plans and run reports: `docs/`.
 
 ## Run locally (M1)
 
@@ -62,4 +62,5 @@ make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + 
 | `skills/` | Markdown instructions the model reads (how to do it) |
 | `sidecar/claude-sdk/` | TypeScript helper that calls the Claude Agent SDK, one step per call |
 | `tests/acceptance/` | Whole-kernel tests with fakes; the gate for every milestone. Never delete |
-| `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `REPORT.md` are done |
+| `docs/` | Notes for humans: spec, milestone kickoffs, run reports |
+| `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `docs/REPORT.md` are done |
