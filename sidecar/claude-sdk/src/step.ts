@@ -21,7 +21,6 @@ export async function step(p: StepParams, q: QueryFn = query): Promise<StepResul
   }
   let text = "";
   let usage = { input_tokens: 0, output_tokens: 0 };
-  // TODO: uncertain — json_schema output may consume an extra SDK turn so maxTurns: 1 could fail live, verify before prod
   const stream = q({
     prompt: p.prompt,
     options: {
