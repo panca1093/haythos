@@ -325,3 +325,51 @@ func TestRedactorHidesWrappedContinuationAndFlushesTail(t *testing.T) {
 		t.Errorf("got %q, want %q", got, want)
 	}
 }
+
+type fakeModelLister []claudesdk.ModelInfo
+
+func (f fakeModelLister) Models(context.Context) ([]claudesdk.ModelInfo, error) { return f, nil }
+
+type nopTransport struct{}
+
+func (nopTransport) Step(context.Context, claudesdk.StepRequest) (claudesdk.StepResponse, error) {
+	return claudesdk.StepResponse{}, nil
+}
+
+func TestClaudeSubSelectorSavesAndSwitches(t *testing.T) {
+	cfgPath := filepath.Join(t.TempDir(), "haythos.yaml")
+	if err := os.WriteFile(cfgPath, []byte("# keep me\ndefault_model: claude-sub\nmodels:\n  claude-sub: { kind: claudesdk }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	adapter := claudesdk.New(nopTransport{})
+	sel := claudeSubSelector{adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}, cfgPath: cfgPath, name: "claude-sub"}
+
+	if got := sel.Current(); got != "default" {
+		t.Errorf("Current with no model = %q, want default", got)
+	}
+	list, err := sel.List(context.Background())
+	if err != nil || len(list) != 1 || list[0] != (app.ModelChoice{Value: "sonnet", Name: "Sonnet 5.5", Description: "routine"}) {
+		t.Fatalf("List = %+v, %v", list, err)
+	}
+	if err := sel.Select(context.Background(), "sonnet"); err != nil {
+		t.Fatal(err)
+	}
+	if adapter.Model() != "sonnet" || sel.Current() != "sonnet" {
+		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
+	}
+	b, _ := os.ReadFile(cfgPath)
+	if !strings.Contains(string(b), "model: sonnet") || !strings.Contains(string(b), "# keep me") {
+		t.Errorf("config not saved with comments kept:\n%s", b)
+	}
+}
+
+func TestClaudeSubSelectorKeepsModelWhenSaveFails(t *testing.T) {
+	adapter := claudesdk.New(nopTransport{}, claudesdk.WithModel("haiku"))
+	sel := claudeSubSelector{adapter: adapter, cfgPath: filepath.Join(t.TempDir(), "missing.yaml"), name: "claude-sub"}
+	if err := sel.Select(context.Background(), "sonnet"); err == nil {
+		t.Fatal("select succeeded without a config file")
+	}
+	if adapter.Model() != "haiku" {
+		t.Errorf("adapter model = %q, want haiku unchanged", adapter.Model())
+	}
+}

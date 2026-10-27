@@ -109,7 +109,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	models, closeModels, err := buildModels(ctx, cfg, vault, jobs)
+	models, selector, closeModels, err := buildModels(ctx, cfg, *cfgPath, vault, jobs)
 	if err != nil {
 		return err
 	}
@@ -138,7 +138,7 @@ func run(args []string) error {
 	dj.Model = cfg.DefaultModel
 	a := app.New(app.Deps{
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: tools, Events: store, Ledger: store,
-		Notifier: notifier, Vault: vault, Policy: pol,
+		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,
 	})
 	switch cmd {
 	case "run-job":
@@ -178,7 +178,8 @@ func run(args []string) error {
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
-func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, func(), error) {
+// The selector is nil unless the default model is a claudesdk model, the only kind /model can switch for now.
+func buildModels(ctx context.Context, cfg config.Main, cfgPath string, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, func(), error) {
 	need := map[string]bool{cfg.DefaultModel: true}
 	for _, j := range jobs {
 		if j.Model != "" {
@@ -186,6 +187,7 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 		}
 	}
 	models := map[string]app.Model{}
+	var selector app.ModelSelector
 	var closers []func()
 	closeAll := func() {
 		for _, c := range closers {
@@ -196,7 +198,7 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 		m, ok := cfg.Models[name]
 		if !ok {
 			closeAll()
-			return nil, nil, fmt.Errorf("model %q is not defined in the config", name)
+			return nil, nil, nil, fmt.Errorf("model %q is not defined in the config", name)
 		}
 		switch m.Kind {
 		case "anthropic", "openai":
@@ -219,13 +221,56 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 			sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
 			if err != nil {
 				closeAll()
-				return nil, nil, fmt.Errorf("model %s: %w", name, err)
+				return nil, nil, nil, fmt.Errorf("model %s: %w", name, err)
 			}
 			closers = append(closers, func() { _ = sc.Close() })
-			models[name] = claudesdk.New(sc, claudesdk.WithModel(m.Model))
+			adapter := claudesdk.New(sc, claudesdk.WithModel(m.Model))
+			models[name] = adapter
+			if name == cfg.DefaultModel {
+				selector = claudeSubSelector{adapter: adapter, lister: sc, cfgPath: cfgPath, name: name}
+			}
 		}
 	}
-	return models, closeAll, nil
+	return models, selector, closeAll, nil
+}
+
+type modelLister interface {
+	Models(ctx context.Context) ([]claudesdk.ModelInfo, error)
+}
+
+type claudeSubSelector struct {
+	adapter *claudesdk.Adapter
+	lister  modelLister
+	cfgPath string
+	name    string
+}
+
+func (s claudeSubSelector) List(ctx context.Context) ([]app.ModelChoice, error) {
+	infos, err := s.lister.Models(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("list models: %w", err)
+	}
+	out := make([]app.ModelChoice, 0, len(infos))
+	for _, m := range infos {
+		out = append(out, app.ModelChoice{Value: m.Value, Name: m.DisplayName, Description: m.Description})
+	}
+	return out, nil
+}
+
+func (s claudeSubSelector) Current() string {
+	if m := s.adapter.Model(); m != "" {
+		return m
+	}
+	return "default"
+}
+
+// Select saves first so a failed write never leaves the running model out of sync with the config.
+func (s claudeSubSelector) Select(_ context.Context, value string) error {
+	if err := config.SaveModelChoice(s.cfgPath, s.name, value); err != nil {
+		return err
+	}
+	s.adapter.SetModel(value)
+	return nil
 }
 
 func sidecarConfig(cfg config.Main, token string) claudesdk.SidecarConfig {
