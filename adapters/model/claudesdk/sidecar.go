@@ -147,8 +147,8 @@ func (s *Sidecar) call(ctx context.Context, method string, params any) (json.Raw
 
 var errSidecarDown = errors.New("sidecar down")
 
-// Step implements Transport. A model step has no side effects, so one retry after a crash is safe.
-func (s *Sidecar) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
+// callWithRestart runs a side-effect-free call; one retry after a crash is safe.
+func (s *Sidecar) callWithRestart(ctx context.Context, method string, params any) (json.RawMessage, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	var lastErr error
@@ -156,23 +156,45 @@ func (s *Sidecar) Step(ctx context.Context, req StepRequest) (StepResponse, erro
 		if !s.alive() {
 			s.kill()
 			if err := s.spawn(ctx); err != nil {
-				return StepResponse{}, fmt.Errorf("restart sidecar: %w", err)
+				return nil, fmt.Errorf("restart sidecar: %w", err)
 			}
 		}
-		raw, err := s.call(ctx, "step", req)
+		raw, err := s.call(ctx, method, params)
 		if err == nil {
-			var resp StepResponse
-			if err := json.Unmarshal(raw, &resp); err != nil {
-				return StepResponse{}, fmt.Errorf("decode step result: %w", err)
-			}
-			return resp, nil
+			return raw, nil
 		}
 		if ctx.Err() != nil || s.alive() {
-			return StepResponse{}, err
+			return nil, err
 		}
 		lastErr = fmt.Errorf("%w: %w", errSidecarDown, err)
 	}
-	return StepResponse{}, lastErr
+	return nil, lastErr
+}
+
+// Step implements Transport.
+func (s *Sidecar) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
+	raw, err := s.callWithRestart(ctx, "step", req)
+	if err != nil {
+		return StepResponse{}, err
+	}
+	var resp StepResponse
+	if err := json.Unmarshal(raw, &resp); err != nil {
+		return StepResponse{}, fmt.Errorf("decode step result: %w", err)
+	}
+	return resp, nil
+}
+
+// Models asks the SDK for the live model list; it sends no model turn.
+func (s *Sidecar) Models(ctx context.Context) ([]ModelInfo, error) {
+	raw, err := s.callWithRestart(ctx, "models", nil)
+	if err != nil {
+		return nil, err
+	}
+	var models []ModelInfo
+	if err := json.Unmarshal(raw, &models); err != nil {
+		return nil, fmt.Errorf("decode models result: %w", err)
+	}
+	return models, nil
 }
 
 func (s *Sidecar) Close() error {

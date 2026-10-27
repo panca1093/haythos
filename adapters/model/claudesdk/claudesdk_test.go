@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/panca/haythos/core/task"
@@ -62,6 +63,8 @@ func TestHelperProcess(t *testing.T) {
 		switch req.Method {
 		case "ping":
 			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":\"pong\"}\n", req.ID)
+		case "models":
+			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":[{\"value\":\"opus\",\"displayName\":\"Opus\",\"description\":\"Best\"},{\"value\":\"haiku\",\"displayName\":\"Haiku\",\"description\":\"Fast\"}]}\n", req.ID)
 		case "step":
 			if m := os.Getenv("HELPER_CRASH_MARKER"); m != "" {
 				if _, err := os.Stat(m); err != nil {
@@ -149,4 +152,78 @@ func TestStepRequestCarriesConfiguredModel(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestSidecarModels(t *testing.T) {
+	sc, err := StartSidecar(context.Background(), helperConfig(t, ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = sc.Close() }()
+	got, err := sc.Models(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []ModelInfo{{Value: "opus", DisplayName: "Opus", Description: "Best"}, {Value: "haiku", DisplayName: "Haiku", Description: "Fast"}}
+	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
+		t.Errorf("models = %+v, want %+v", got, want)
+	}
+}
+
+func TestSetModelAppliesToNextStep(t *testing.T) {
+	tr := &captureTransport{}
+	a := New(tr, WithModel("opus"))
+	if a.Model() != "opus" {
+		t.Errorf("Model() = %q, want opus", a.Model())
+	}
+	history := []task.Message{{Role: task.RoleUser, Text: "hi"}}
+	for _, model := range []string{"haiku", ""} {
+		a.SetModel(model)
+		if a.Model() != model {
+			t.Errorf("Model() = %q, want %q", a.Model(), model)
+		}
+		if _, err := a.Step(context.Background(), history, nil); err != nil {
+			t.Fatal(err)
+		}
+		if got := tr.reqs[len(tr.reqs)-1].Model; got != model {
+			t.Errorf("request Model = %q, want %q", got, model)
+		}
+	}
+}
+
+type lockedTransport struct {
+	mu     sync.Mutex
+	models []string
+}
+
+func (l *lockedTransport) Step(_ context.Context, req StepRequest) (StepResponse, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.models = append(l.models, req.Model)
+	return StepResponse{Text: `{"text":"ok"}`}, nil
+}
+
+func TestSetModelIsSafeAgainstConcurrentSteps(t *testing.T) {
+	a := New(&lockedTransport{}, WithModel("opus"))
+	history := []task.Message{{Role: task.RoleUser, Text: "hi"}}
+	var wg sync.WaitGroup
+	for i := 0; i < 8; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				a.SetModel("haiku")
+				_ = a.Model()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 50; j++ {
+				if _, err := a.Step(context.Background(), history, nil); err != nil {
+					t.Error(err)
+				}
+			}
+		}()
+	}
+	wg.Wait()
 }

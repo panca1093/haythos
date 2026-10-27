@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"flag"
@@ -9,7 +10,10 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"os/signal"
+	"regexp"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -73,6 +77,14 @@ func run(args []string) error {
 	}
 	if cmd == "auth" {
 		return runAuth(rest, vault, os.Stdout, stdinSecret)
+	}
+	if cmd == "setup" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runSetup(ctx, setupDeps{
+			vault: vault, in: os.Stdin, out: os.Stdout, cfgPath: *cfgPath,
+			runCLI: runClaudeSetupToken, listModels: sidecarModels(cfg),
+		})
 	}
 
 	pol, err := config.LoadPolicy(*policyPath)
@@ -162,7 +174,7 @@ func run(args []string) error {
 			}
 		}
 	}
-	return fmt.Errorf("unknown command %q (serve, run-job, auth)", cmd)
+	return fmt.Errorf("unknown command %q (serve, run-job, auth, setup)", cmd)
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
@@ -204,10 +216,7 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 				slog.Warn("model skipped: credential missing, run `haythosd auth claude`", "model", name)
 				continue
 			}
-			sc, err := claudesdk.StartSidecar(ctx, claudesdk.SidecarConfig{
-				Command: cfg.Sidecar.Command, Args: cfg.Sidecar.Args, Dir: cfg.Sidecar.Dir,
-				Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
-			})
+			sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
 			if err != nil {
 				closeAll()
 				return nil, nil, fmt.Errorf("model %s: %w", name, err)
@@ -217,6 +226,13 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 		}
 	}
 	return models, closeAll, nil
+}
+
+func sidecarConfig(cfg config.Main, token string) claudesdk.SidecarConfig {
+	return claudesdk.SidecarConfig{
+		Command: cfg.Sidecar.Command, Args: cfg.Sidecar.Args, Dir: cfg.Sidecar.Dir,
+		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
+	}
 }
 
 type stdoutNotifier struct{}
@@ -293,4 +309,177 @@ func lockInstance(dbPath string) (func(), error) {
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	return func() { _ = f.Close() }, nil
+}
+
+const (
+	claudeSubModel = "claude-sub"
+	redacted       = "[stored in vault]"
+	modelListWait  = 60 * time.Second
+)
+
+var (
+	tokenRE    = regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]{20,}`)
+	redactRE   = regexp.MustCompile(`sk-ant-[A-Za-z0-9_-]+`)
+	tokenRunRE = regexp.MustCompile(`^[A-Za-z0-9_-]+$`)
+	ansiRE     = regexp.MustCompile(`\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)`)
+)
+
+type secretSetter interface {
+	Set(name, value string) error
+}
+
+type setupDeps struct {
+	vault      secretSetter
+	in         io.Reader
+	out        io.Writer
+	cfgPath    string
+	runCLI     func(ctx context.Context, stdout io.Writer) error
+	listModels func(ctx context.Context, token string) ([]claudesdk.ModelInfo, error)
+}
+
+// runSetup onboards the claude-sub model: capture the long-lived token from the official CLI, store it, pick a model from the live SDK list, persist the choice.
+func runSetup(ctx context.Context, d setupDeps) error {
+	_, _ = fmt.Fprintln(d.out, "Running `claude setup-token`; finish the login in your browser.")
+	var raw bytes.Buffer
+	red := newRedactor(d.out)
+	runErr := d.runCLI(ctx, io.MultiWriter(&raw, red))
+	_ = red.Flush()
+	if runErr != nil {
+		return fmt.Errorf("run claude setup-token: %w", runErr)
+	}
+	token := extractToken(raw.String())
+	if token == "" {
+		return errors.New("no token found in the `claude setup-token` output (it may be wrapped across lines); run `haythosd auth claude` and paste the token instead")
+	}
+	if err := d.vault.Set("claude", token); err != nil {
+		return fmt.Errorf("store token: %w", err)
+	}
+	_, _ = fmt.Fprintln(d.out, "\nToken stored as secret://claude. Fetching available models...")
+	models, err := d.listModels(ctx, token)
+	if err != nil {
+		return fmt.Errorf("list models (token is already stored): %w", err)
+	}
+	if len(models) == 0 {
+		return errors.New("the SDK returned no models (token is already stored)")
+	}
+	picked, err := chooseModel(bufio.NewReader(d.in), d.out, models)
+	if err != nil {
+		return err
+	}
+	if err := config.SaveModelChoice(d.cfgPath, claudeSubModel, picked.Value); err != nil {
+		return fmt.Errorf("save model choice: %w", err)
+	}
+	_, _ = fmt.Fprintf(d.out, "\nConfigured:\n  secret://claude   stored in vault\n  default_model     %s\n  %s.model  %s (%s)\n  config            %s\n",
+		claudeSubModel, claudeSubModel, picked.Value, picked.DisplayName, d.cfgPath)
+	return nil
+}
+
+func chooseModel(in *bufio.Reader, out io.Writer, models []claudesdk.ModelInfo) (claudesdk.ModelInfo, error) {
+	_, _ = fmt.Fprintln(out, "Available models:")
+	for i, m := range models {
+		_, _ = fmt.Fprintf(out, "  %d) %s - %s [%s]\n", i+1, m.DisplayName, m.Description, m.Value)
+	}
+	for {
+		_, _ = fmt.Fprintf(out, "Pick a model [1-%d]: ", len(models))
+		line, err := in.ReadString('\n')
+		if err != nil && strings.TrimSpace(line) == "" {
+			return claudesdk.ModelInfo{}, errors.New("no model chosen")
+		}
+		if n, convErr := strconv.Atoi(strings.TrimSpace(line)); convErr == nil && n >= 1 && n <= len(models) {
+			return models[n-1], nil
+		}
+		_, _ = fmt.Fprintln(out, "Enter a number from the list.")
+	}
+}
+
+// extractToken returns "" when the token is missing or may be truncated by a line wrap.
+func extractToken(out string) string {
+	lines := strings.Split(ansiRE.ReplaceAllString(out, ""), "\n")
+	for i, line := range lines {
+		tok := tokenRE.FindString(line)
+		if tok == "" {
+			continue
+		}
+		if i+1 < len(lines) && tokenRunRE.MatchString(strings.TrimSpace(lines[i+1])) {
+			return ""
+		}
+		return tok
+	}
+	return ""
+}
+
+// redactor streams CLI output to w with tokens replaced. It holds back only the trailing partial word, so prompts without a newline still appear.
+type redactor struct {
+	w            io.Writer
+	pending      string
+	atLineStart  bool
+	lineHasToken bool
+	afterToken   bool
+}
+
+func newRedactor(w io.Writer) *redactor { return &redactor{w: w, atLineStart: true} }
+
+func (r *redactor) Write(p []byte) (int, error) {
+	r.pending += string(p)
+	if i := strings.LastIndexAny(r.pending, " \t\r\n"); i >= 0 {
+		emit := r.pending[:i+1]
+		r.pending = r.pending[i+1:]
+		if err := r.emit(emit, false); err != nil {
+			return 0, err
+		}
+	}
+	return len(p), nil
+}
+
+func (r *redactor) Flush() error {
+	tail := r.pending
+	r.pending = ""
+	if tail == "" {
+		return nil
+	}
+	return r.emit(tail, true)
+}
+
+func (r *redactor) emit(text string, final bool) error {
+	for _, piece := range strings.SplitAfter(text, "\n") {
+		if piece == "" {
+			continue
+		}
+		complete := strings.HasSuffix(piece, "\n") || final
+		switch {
+		case redactRE.MatchString(piece):
+			piece = redactRE.ReplaceAllString(piece, redacted)
+			r.lineHasToken = true
+		case r.atLineStart && r.afterToken && complete && tokenRunRE.MatchString(strings.TrimSpace(ansiRE.ReplaceAllString(piece, ""))):
+			piece = redacted + piece[len(strings.TrimRight(piece, "\r\n")):]
+		}
+		if strings.HasSuffix(piece, "\n") {
+			r.atLineStart, r.afterToken, r.lineHasToken = true, r.lineHasToken, false
+		} else {
+			r.atLineStart = false
+		}
+		if _, err := io.WriteString(r.w, piece); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func runClaudeSetupToken(ctx context.Context, stdout io.Writer) error {
+	cmd := exec.CommandContext(ctx, "claude", "setup-token")
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, stdout, os.Stderr
+	return cmd.Run()
+}
+
+func sidecarModels(cfg config.Main) func(context.Context, string) ([]claudesdk.ModelInfo, error) {
+	return func(ctx context.Context, token string) ([]claudesdk.ModelInfo, error) {
+		ctx, cancel := context.WithTimeout(ctx, modelListWait)
+		defer cancel()
+		sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = sc.Close() }()
+		return sc.Models(ctx)
+	}
 }

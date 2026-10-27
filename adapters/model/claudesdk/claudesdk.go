@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	"github.com/panca/haythos/core/task"
 )
@@ -21,6 +22,13 @@ type StepRequest struct {
 	Model  string          `json:"model,omitempty"`
 }
 
+// ModelInfo is one entry of the SDK's live model list; Value is what goes into StepRequest.Model.
+type ModelInfo struct {
+	Value       string `json:"value"`
+	DisplayName string `json:"displayName"`
+	Description string `json:"description"`
+}
+
 type StepResponse struct {
 	Text  string     `json:"text"`
 	Usage task.Usage `json:"usage"`
@@ -32,12 +40,25 @@ type Transport interface {
 
 type Adapter struct {
 	t     Transport
+	mu    sync.RWMutex
 	model string
 }
 
 type Option func(*Adapter)
 
 func WithModel(model string) Option { return func(a *Adapter) { a.model = model } }
+
+func (a *Adapter) SetModel(model string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.model = model
+}
+
+func (a *Adapter) Model() string {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.model
+}
 
 func New(t Transport, opts ...Option) *Adapter {
 	a := &Adapter{t: t}
@@ -64,7 +85,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		Prompt: renderPrompt(history, tools),
 		Schema: json.RawMessage(outputSchema),
 		Tools:  []string{},
-		Model:  a.model,
+		Model:  a.Model(),
 	}
 	var usage task.Usage
 	var lastErr error

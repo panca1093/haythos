@@ -1,4 +1,5 @@
 import { createInterface } from "node:readline";
+import { listModels } from "./models.ts";
 import { step, type StepParams } from "./step.ts";
 
 type Request = { jsonrpc: "2.0"; id: number; method: string; params?: unknown };
@@ -14,6 +15,8 @@ export async function handle(req: Request): Promise<void> {
         return reply(req.id, { result: "pong" });
       case "step":
         return reply(req.id, { result: await step(req.params as StepParams) });
+      case "models":
+        return reply(req.id, { result: await listModels() });
       default:
         return reply(req.id, { error: { message: `unknown method ${req.method}` } });
     }
