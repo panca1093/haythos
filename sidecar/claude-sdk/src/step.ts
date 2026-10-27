@@ -5,6 +5,7 @@ export interface StepParams {
   prompt: string;
   schema: Record<string, unknown>;
   tools: string[];
+  model?: string;
 }
 
 export interface StepResult {
@@ -30,6 +31,7 @@ export async function step(p: StepParams, q: QueryFn = query): Promise<StepResul
       outputFormat: { type: "json_schema", schema: p.schema },
       settingSources: [],
       persistSession: false,
+      ...(p.model ? { model: p.model } : {}),
     },
   });
   for await (const m of stream) {

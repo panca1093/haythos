@@ -36,7 +36,7 @@ Discord: only `discord.owner_id` in `discord.channel_id` is obeyed. `/pause` sto
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name.
+Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default.
 
 ## Development
 

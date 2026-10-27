@@ -18,6 +18,7 @@ type StepRequest struct {
 	Prompt string          `json:"prompt"`
 	Schema json.RawMessage `json:"schema"`
 	Tools  []string        `json:"tools"`
+	Model  string          `json:"model,omitempty"`
 }
 
 type StepResponse struct {
@@ -29,9 +30,22 @@ type Transport interface {
 	Step(ctx context.Context, req StepRequest) (StepResponse, error)
 }
 
-type Adapter struct{ t Transport }
+type Adapter struct {
+	t     Transport
+	model string
+}
 
-func New(t Transport) *Adapter { return &Adapter{t: t} }
+type Option func(*Adapter)
+
+func WithModel(model string) Option { return func(a *Adapter) { a.model = model } }
+
+func New(t Transport, opts ...Option) *Adapter {
+	a := &Adapter{t: t}
+	for _, o := range opts {
+		o(a)
+	}
+	return a
+}
 
 const outputSchema = `{"type":"object","properties":{"text":{"type":"string"},"tool_calls":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"args":{"type":"object"}},"required":["name","args"]}}},"required":["text"]}`
 
@@ -50,6 +64,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		Prompt: renderPrompt(history, tools),
 		Schema: json.RawMessage(outputSchema),
 		Tools:  []string{},
+		Model:  a.model,
 	}
 	var usage task.Usage
 	var lastErr error

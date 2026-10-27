@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/panca/haythos/core/task"
@@ -114,5 +115,38 @@ func TestSidecarRestartsAfterCrash(t *testing.T) {
 func TestSidecarStartFailsWhenBinaryMissing(t *testing.T) {
 	if _, err := StartSidecar(context.Background(), SidecarConfig{Command: "/nonexistent/sidecar"}); err == nil {
 		t.Error("want error")
+	}
+}
+
+type captureTransport struct{ reqs []StepRequest }
+
+func (c *captureTransport) Step(_ context.Context, req StepRequest) (StepResponse, error) {
+	c.reqs = append(c.reqs, req)
+	return StepResponse{Text: `{"text":"ok"}`}, nil
+}
+
+func TestStepRequestCarriesConfiguredModel(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		model string
+		want  string
+		json  bool
+	}{
+		{"set", "claude-sonnet-4-5", "claude-sonnet-4-5", true},
+		{"empty", "", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tr := &captureTransport{}
+			if _, err := New(tr, WithModel(tc.model)).Step(context.Background(), []task.Message{{Role: task.RoleUser, Text: "hi"}}, nil); err != nil {
+				t.Fatal(err)
+			}
+			if got := tr.reqs[0].Model; got != tc.want {
+				t.Errorf("Model = %q, want %q", got, tc.want)
+			}
+			raw, _ := json.Marshal(tr.reqs[0])
+			if has := strings.Contains(string(raw), `"model"`); has != tc.json {
+				t.Errorf("model key present = %v, want %v: %s", has, tc.json, raw)
+			}
+		})
 	}
 }

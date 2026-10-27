@@ -213,7 +213,7 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 				return nil, nil, fmt.Errorf("model %s: %w", name, err)
 			}
 			closers = append(closers, func() { _ = sc.Close() })
-			models[name] = claudesdk.New(sc)
+			models[name] = claudesdk.New(sc, claudesdk.WithModel(m.Model))
 		}
 	}
 	return models, closeAll, nil
