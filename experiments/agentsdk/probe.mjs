@@ -13,7 +13,7 @@ for (let i = 0; i < 3; i++) {
   let structured;
   for await (const m of query({
     prompt: "Reply with text 'pong' and no tool calls.",
-    options: { tools: [], maxTurns: 1, outputFormat: { type: "json_schema", schema } },
+    options: { tools: [], maxTurns: 1, outputFormat: { type: "json_schema", schema }, settingSources: [], persistSession: false },
   })) {
     if (m.type === "assistant") turns++;
     if (m.type === "result") structured = m.structured_output ?? m.result;
