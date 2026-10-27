@@ -26,6 +26,7 @@ const (
 	evJobArmed         = task.EventType("job.armed")
 	collectCallID      = "collect"
 	maxFailReasonBytes = 300
+	defaultStepTimeout = 5 * time.Minute
 )
 
 type Deps struct {
@@ -40,6 +41,7 @@ type Deps struct {
 	Policy      policy.Policy
 	Clock       func() time.Time
 	ApprovalTTL time.Duration
+	StepTimeout time.Duration
 	// Hook is called at named crash points; a non-nil error aborts the operation as if the process died.
 	Hook func(point string) error
 }
@@ -74,6 +76,9 @@ func New(d Deps) *App {
 	}
 	if d.ApprovalTTL == 0 {
 		d.ApprovalTTL = time.Hour
+	}
+	if d.StepTimeout == 0 {
+		d.StepTimeout = defaultStepTimeout
 	}
 	a := &App{d: d}
 	a.gw = gateway.New(gateway.Deps{
@@ -288,10 +293,16 @@ func (a *App) run(ctx context.Context, id string) error {
 		if !ok {
 			return a.fail(ctx, id, fmt.Sprintf("model %q is not configured", s.Created.Model))
 		}
-		turn, err := model.Step(ctx, s.History, a.d.Tools.List(s.Created.Tools))
+		stepCtx, cancel := context.WithTimeout(ctx, a.d.StepTimeout)
+		turn, err := model.Step(stepCtx, s.History, a.d.Tools.List(s.Created.Tools))
+		timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded)
+		cancel()
 		if err != nil {
-			if ctx.Err() != nil {
+			switch {
+			case ctx.Err() != nil:
 				return ctx.Err()
+			case timedOut:
+				return a.fail(ctx, id, fmt.Sprintf("model step timed out after %s", a.d.StepTimeout))
 			}
 			return a.fail(ctx, id, truncate(err.Error(), maxFailReasonBytes))
 		}
