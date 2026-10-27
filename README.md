@@ -51,7 +51,7 @@ Discord: only `discord.owner_id` in `discord.channel_id` is obeyed. `/pause` sto
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default. `haythosd setup` sets it for you from the live SDK list.
+Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default. `haythosd setup` sets it for you from the live SDK list. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart; the choice is saved to `config/haythos.yaml`. This works only when `default_model` is a `claudesdk` model.
 
 ## Development
 
