@@ -144,3 +144,41 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 10. Ask Alfred to post a short message in a server channel and in your DM: the approval shows the channel and text, the message appears once after Approve, and Reject sends nothing.
 11. Ask him to post `@everyone hello` in a channel: it must appear without pinging anyone. Ask for an unknown channel ID and for a voice channel: refused with a readable error.
 12. Post a text over 1900 characters and check it arrives as several ordered messages.
+
+## M2B report
+
+### M2B decisions (Phase 1: conversation memory)
+
+1. **Turns are recorded on a per-conversation stream `conv:<reply_to>`**, not scanned from all tasks. `finish` appends a `conv.turn` event (task id, user text, final answer, time from the injected clock) before the task turns `done`, so a crash cannot lose it; readers drop duplicate task ids. Chosen over `_system` because lookup is one `Load` and `_system` is replayed whole at every start. Consequence: tasks finished before this change have no history, and failed tasks leave no turn.
+2. **DM flag lives on `app.Input.DM`**, set from `facts.DM` in the Discord adapter. It is not stored on `task.created`: the 24 h rule is applied to the current input and each turn carries its own timestamp. A DM turn exactly 24 h old is still kept.
+3. **History is injected as context messages when the task is created** (system summary, then user/assistant pairs), stored in the task's own events so a resumed task replays the same prompt. `task.Message` gained `Context bool`; `Replay` does not treat context messages as trusted text (taint escalation must not trust past answers) and does not count them as steps (budget).
+4. **Summary is a `conv.summary` event on the same stream** holding the text and the task ids it covers. It is rolled: the previous summary text plus the overflowing turns go back into one `Step` (no tools, system instruction "Summarize ... at most 200 words") on the default job's model. Only turns not already covered count toward the 7,000-token window, so the same turns are never summarized twice, including after restart.
+5. **Window is strict**: newest turns while the running total (`(len(user)+len(answer))/4`) stays at or under 7,000. A single turn above 7,000 tokens is folded straight into the summary.
+6. **DM expiry invalidates a summary** whose covered turns are no longer all inside 24 h (the summary cannot be split). The remaining in-window turns are then windowed afresh.
+7. **If the summary call fails** (error, timeout, empty text), a warning is logged (no bodies), nothing is stored, and the folded turns are left out of that one prompt; the next message retries. The user's message is never blocked by it.
+8. **Summary calls are not metered** against any task budget (no task exists yet) and use `StepTimeout`.
+9. A per-conversation lock (`app.lock("conv:<reply_to>")`) serialises history building so two quick messages cannot both summarize.
+10. **Process deviation**: `Input.DM` was committed alone first (`2e0fdc1`) so the frozen contract commit compiles; the contract file is the only content of its own commit.
+11. **Unit tests were written after the implementation** (not seen red); the five contract tests were red first.
+
+### Changed
+
+- `app/conversation.go` (new), `app/conversation_test.go` (new), `app/app.go` (`HandleInput` loads history, `createTask` takes optional prior messages, `finish` records the turn), `app/ports.go` (`Input.DM`), `core/task/task.go` (`Message.Context`), `internal/testfakes/fakes.go` (`Model.Histories`), `adapters/channel/discord/discord.go` (sets `DM`), `tests/acceptance/m2b_test.go` (new, frozen).
+
+### Uncertain
+
+- **Contract test M2B-5 is wrong and left failing, per the frozen-test rule.** It asserts `len(h) == 2` on `r.model.last()`, but `last()` is the history of the final step, which already contains the scripted `vm.read` call and its result, so it can never be 2. Everything else in that test passes. The one-line fix (`len(h) < 2 || ... || h[1].Context`) was checked locally (all five pass) and reverted. It needs your approval to apply.
+- Summary quality and the 200-word instruction are unverified against a real model.
+- Token estimate bytes/4 over-counts non-ASCII-light text and under-counts CJK/emoji; fine for the 7,000 budget here but not a real tokenizer.
+- Conversation turns hold full answers in the event log (already the case for task messages); no retention policy.
+- Answers to a thread that included untrusted tool content are replayed as plain context; they are not trusted as write targets but the model can still read them.
+
+### Next
+
+- Phase 2: MCP client + gbrain (see `docs/M2B_GBRAIN.md`).
+
+### Needs you live
+
+1. In a thread: ask something, then a follow-up that depends on it ("and the second one?"); Alfred should answer in context.
+2. Same in a DM; a DM message a day later should not see yesterday's turns, a thread message should.
+3. Paste several long answers into one thread until it exceeds roughly 28 KB of text, ask again, and check the reply still knows the early topic (summary) and that `sqlite3 <db> "select type from events where task_id like 'conv:%'"` shows one `conv.summary`.
