@@ -41,6 +41,9 @@ func (a *App) Tick(ctx context.Context) error {
 	if err := a.sweepApprovals(ctx); err != nil {
 		errs = append(errs, err)
 	}
+	if err := a.extractStale(ctx); err != nil {
+		errs = append(errs, err)
+	}
 	for _, j := range jobs {
 		if j.Trigger.Cron == "" {
 			continue
@@ -65,15 +68,29 @@ func (a *App) Tick(ctx context.Context) error {
 			continue
 		}
 		id := fmt.Sprintf("%s-%d", j.Name, due.Unix())
-		if _, err := a.createTask(ctx, id, j, "Run the scheduled job: "+j.Name, ""); err != nil {
+		in, err := a.jobInput(ctx, j, due)
+		if err != nil {
 			errs = append(errs, err)
 			continue
+		}
+		if in.run {
+			if _, err := a.createTask(ctx, id, j, in.text, ""); err != nil {
+				errs = append(errs, err)
+				continue
+			}
+			if err := a.recordBatch(ctx, id, in.batch); err != nil {
+				errs = append(errs, err)
+				continue
+			}
 		}
 		if _, err := a.d.Events.Append(ctx, systemTask, evJobFired, jobMark{Job: j.Name, At: due}); err != nil {
 			return fmt.Errorf("record job %s fired: %w", j.Name, err)
 		}
 		if err := a.hook("app.after_job_fired"); err != nil {
 			return err
+		}
+		if !in.run {
+			continue
 		}
 		if err := a.RunTask(ctx, id); err != nil {
 			errs = append(errs, fmt.Errorf("run %s: %w", id, err))

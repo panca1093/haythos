@@ -236,7 +236,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 	if job.Model == "" {
 		job.Model = a.d.DefaultJob.Model
 	}
-	var brainSource string
+	brainSource := job.BrainSource
 	if job.Name == a.d.DefaultJob.Name {
 		brainSource = "owner/" + replyTo
 	}
@@ -244,7 +244,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -385,6 +385,9 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err := a.appendResult(ctx, id, out.Result); err != nil {
 		return err
 	}
+	if err := a.noteBrainSave(ctx, id, s.Created, call, out.Result); err != nil {
+		return err
+	}
 	if out.Unknown {
 		if err := a.notify(ctx, id, "alert:unknown:"+id+"/"+call.ID, Notice{
 			Kind: NoticeAlert, Text: fmt.Sprintf("Could not tell whether %s completed. It will not be retried; please check.", call.Name),
@@ -455,6 +458,9 @@ func (a *App) finish(ctx context.Context, id, text string) error {
 	if err := a.recordTurn(ctx, id, text); err != nil {
 		return err
 	}
+	if err := a.recordOutcomes(ctx, id, text); err != nil {
+		return err
+	}
 	if err := a.setState(ctx, id, task.Done, ""); err != nil {
 		return err
 	}
@@ -497,6 +503,9 @@ func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
 	var created task.Created
+	if snap, err := task.Replay(events); err == nil {
+		n.Tainted = snap.Tainted
+	}
 	sent := map[string]bool{}
 	for _, e := range events {
 		switch e.Type {
@@ -508,6 +517,9 @@ func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 		case task.EvCreated:
 			_ = json.Unmarshal(e.Payload, &created)
 		}
+	}
+	if created.Silent && (n.Kind == NoticeMessage || n.Kind == NoticeState) {
+		return nil
 	}
 	// Tasks without targets record Target "" so notices sent before targets existed still dedupe.
 	type dest struct{ record, replyTo string }

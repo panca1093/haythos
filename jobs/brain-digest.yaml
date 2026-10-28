@@ -1,0 +1,9 @@
+name: brain-digest
+goal: >
+  Kernel-built: the kernel sends the digest of what consolidation saved or merged, with an Undo button per item.
+  No model is involved; this goal is never sent to one.
+tools: [brain.forget]
+mode: background
+trigger:
+  cron: "CRON_TZ=Asia/Jakarta 0 7 * * *"
+budget: { tokens: 1000, steps: 1 }

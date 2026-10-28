@@ -27,8 +27,11 @@ func TestShippedConfigLoads(t *testing.T) {
 		t.Fatalf("policy: %+v err=%v", p, err)
 	}
 	jobs, err := LoadJobs("../../jobs")
-	if err != nil || len(jobs) != 1 || jobs[0].Name != "vm-health" || jobs[0].Collect != "vmhealth.read" || jobs[0].Trigger.Cron == "" {
+	if err != nil || len(jobs) != 3 || jobs[2].Name != "vm-health" || jobs[2].Collect != "vmhealth.read" || jobs[2].Trigger.Cron == "" {
 		t.Fatalf("jobs: %+v err=%v", jobs, err)
+	}
+	if jobs[0].Name != "brain-consolidate" || !jobs[0].Silent || jobs[0].BrainSource != "auto/consolidate" || jobs[1].Name != "brain-digest" {
+		t.Fatalf("brain jobs: %+v err=%v", jobs[:2], err)
 	}
 }
 

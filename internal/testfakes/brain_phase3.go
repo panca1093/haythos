@@ -77,8 +77,8 @@ func NewBrainTools(b *Brain, specs ...task.ToolSpec) *BrainTools {
 	schema := json.RawMessage(`{"type":"object"}`)
 	specs = append(specs,
 		task.ToolSpec{Name: "brain.recall", InputSchema: schema},
-		task.ToolSpec{Name: "brain.remember", InputSchema: schema, Write: true},
-		task.ToolSpec{Name: "brain.forget", InputSchema: schema, Write: true},
+		task.ToolSpec{Name: "brain.remember", InputSchema: schema},
+		task.ToolSpec{Name: "brain.forget", InputSchema: schema},
 	)
 	return &BrainTools{Tools: NewTools(specs...), Brain: b}
 }
@@ -95,14 +95,14 @@ func (t *BrainTools) Call(ctx context.Context, call task.ToolCall) (task.ToolRes
 		Text  string `json:"text"`
 		Query string `json:"query"`
 	}
-	t.Tools.mu.Lock()
-	t.Tools.Called[call.Name]++
-	t.Tools.mu.Unlock()
-	if err := json.Unmarshal(call.Args, &args); err != nil {
-		return task.ToolResult{CallID: call.ID, Content: err.Error(), IsError: true}, nil
-	}
+	t.mu.Lock()
+	t.Called[call.Name]++
+	t.mu.Unlock()
 	fail := func(err error) (task.ToolResult, error) {
 		return task.ToolResult{CallID: call.ID, Content: err.Error(), IsError: true}, nil
+	}
+	if err := json.Unmarshal(call.Args, &args); err != nil {
+		return fail(err)
 	}
 	switch call.Name {
 	case "brain.recall":
