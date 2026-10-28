@@ -65,7 +65,7 @@ func (a *App) Tick(ctx context.Context) error {
 			continue
 		}
 		id := fmt.Sprintf("%s-%d", j.Name, due.Unix())
-		if _, err := a.createTask(ctx, id, j, "Run the scheduled job: "+j.Name); err != nil {
+		if _, err := a.createTask(ctx, id, j, "Run the scheduled job: "+j.Name, ""); err != nil {
 			errs = append(errs, err)
 			continue
 		}

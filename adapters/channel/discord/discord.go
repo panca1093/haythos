@@ -53,6 +53,7 @@ type Channel struct {
 	cfg Config
 	h   Handler
 	s   *discordgo.Session
+	dm  string
 }
 
 func New(cfg Config) (*Channel, error) {
@@ -71,6 +72,12 @@ func New(cfg Config) (*Channel, error) {
 func (c *Channel) SetHandler(h Handler) { c.h = h }
 
 func (c *Channel) Open() error {
+	// Resolved before the gateway opens so handlers never race on c.dm.
+	if dm, err := c.s.UserChannelCreate(c.cfg.OwnerID); err != nil {
+		slog.Warn("owner DM unavailable; replying in the channel only", "err", err)
+	} else {
+		c.dm = dm.ID
+	}
 	if err := c.s.Open(); err != nil {
 		return fmt.Errorf("open discord gateway: %w", err)
 	}
@@ -90,13 +97,20 @@ func (c *Channel) Open() error {
 func (c *Channel) Close() error { return c.s.Close() }
 
 func (c *Channel) authorized(userID, channelID string) bool {
-	return userID == c.cfg.OwnerID && (channelID == c.cfg.ChannelID || c.cfg.ChannelID == "")
+	return userID == c.cfg.OwnerID && (channelID == c.cfg.ChannelID || c.cfg.ChannelID == "" || (c.dm != "" && channelID == c.dm))
+}
+
+func (c *Channel) target(replyTo string) string {
+	if replyTo != "" && (replyTo == c.cfg.ChannelID || replyTo == c.dm) {
+		return replyTo
+	}
+	return c.cfg.ChannelID
 }
 
 // Publish never logs message content, which may carry secrets.
 func (c *Channel) Publish(ctx context.Context, n app.Notice) error {
 	for _, m := range render(n) {
-		if _, err := c.s.ChannelMessageSendComplex(c.cfg.ChannelID, m, discordgo.WithContext(ctx)); err != nil {
+		if _, err := c.s.ChannelMessageSendComplex(c.target(n.ReplyTo), m, discordgo.WithContext(ctx)); err != nil {
 			return fmt.Errorf("send discord message: %w", err)
 		}
 	}
@@ -215,9 +229,9 @@ func (c *Channel) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), handleTO)
 		defer cancel()
-		if _, err := c.h.HandleInput(ctx, app.Input{Text: m.Content}); err != nil {
+		if _, err := c.h.HandleInput(ctx, app.Input{Text: m.Content, ReplyTo: m.ChannelID}); err != nil {
 			slog.Error("handle input failed", "err", err)
-			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "I could not process that message: " + err.Error()})
+			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "I could not process that message: " + err.Error(), ReplyTo: m.ChannelID})
 		}
 	}()
 }
@@ -258,7 +272,7 @@ func (c *Channel) onApproval(s *discordgo.Session, i *discordgo.InteractionCreat
 		defer cancel()
 		if err := c.h.HandleApproval(ctx, taskID, approvalID, approve); err != nil {
 			slog.Error("handle approval failed", "err", err)
-			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error()})
+			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error(), ReplyTo: i.ChannelID})
 		}
 	}()
 }

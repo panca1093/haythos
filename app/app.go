@@ -199,11 +199,11 @@ func newID(prefix string) string {
 }
 
 func (a *App) CreateTask(ctx context.Context, job Job, input string) (string, error) {
-	return a.createTask(ctx, newID(job.Name), job, input)
+	return a.createTask(ctx, newID(job.Name), job, input, "")
 }
 
 // createTask is idempotent per id so the scheduler can retry after a crash.
-func (a *App) createTask(ctx context.Context, id string, job Job, input string) (string, error) {
+func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo string) (string, error) {
 	existing, err := a.d.Events.Load(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("check task %s: %w", id, err)
@@ -218,7 +218,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input string) 
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -252,7 +252,7 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	id, err := a.CreateTask(ctx, a.d.DefaultJob, in.Text)
+	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo)
 	if err != nil {
 		return "", err
 	}
@@ -461,6 +461,10 @@ func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 		var sent noticeSent
 		if e.Type == task.EvNoticeSent && json.Unmarshal(e.Payload, &sent) == nil && sent.Key == key {
 			return nil
+		}
+		var c task.Created
+		if e.Type == task.EvCreated && json.Unmarshal(e.Payload, &c) == nil {
+			n.ReplyTo = c.ReplyTo
 		}
 	}
 	n.Key, n.TaskID = key, id

@@ -112,6 +112,7 @@ type Created struct {
 	Budget    Budget   `json:"budget"`
 	Collect   string   `json:"collect,omitempty"`
 	NormalMsg string   `json:"normal_msg,omitempty"`
+	ReplyTo   string   `json:"reply_to,omitempty"`
 }
 
 type StateChange struct {

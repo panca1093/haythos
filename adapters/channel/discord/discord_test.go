@@ -38,6 +38,48 @@ func TestAuthorizedOnlyOwnerInConfiguredChannel(t *testing.T) {
 	}
 }
 
+func TestAuthorizedInOwnerDM(t *testing.T) {
+	t.Parallel()
+	c := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}, dm: "dm-me"}
+	tests := []struct {
+		name, user, channel string
+		want                bool
+	}{
+		{name: "owner in channel", user: "me", channel: "ch", want: true},
+		{name: "owner in own DM", user: "me", channel: "dm-me", want: true},
+		{name: "owner in another channel", user: "me", channel: "elsewhere"},
+		{name: "someone else in owner DM channel", user: "other", channel: "dm-me"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			if got := c.authorized(tt.user, tt.channel); got != tt.want {
+				t.Errorf("authorized(%q, %q) = %v, want %v", tt.user, tt.channel, got, tt.want)
+			}
+		})
+	}
+	noDM := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}}
+	if noDM.authorized("me", "") {
+		t.Error("empty channel authorized when the DM channel is unknown")
+	}
+}
+
+func TestTargetOnlyAllowsConfiguredChannelOrOwnerDM(t *testing.T) {
+	t.Parallel()
+	c := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}, dm: "dm-me"}
+	tests := []struct{ replyTo, want string }{
+		{replyTo: "", want: "ch"},
+		{replyTo: "ch", want: "ch"},
+		{replyTo: "dm-me", want: "dm-me"},
+		{replyTo: "stranger", want: "ch"},
+	}
+	for _, tt := range tests {
+		if got := c.target(tt.replyTo); got != tt.want {
+			t.Errorf("target(%q) = %q, want %q", tt.replyTo, got, tt.want)
+		}
+	}
+}
+
 func TestRenderApprovalHasButtonsAndEscalationNote(t *testing.T) {
 	n := app.Notice{Kind: app.NoticeApproval, TaskID: "T", Approval: &app.ApprovalRequest{
 		Tier: policy.TierHighImpact, Escalated: true, Preview: "slack.post {...}",

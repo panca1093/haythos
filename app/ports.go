@@ -62,6 +62,7 @@ type Notice struct {
 	State    task.State
 	Reason   string
 	Approval *ApprovalRequest
+	ReplyTo  string
 }
 
 type Notifier interface {
@@ -86,6 +87,8 @@ type Job struct {
 
 type Input struct {
 	Text string
+	// ReplyTo is the channel adapter's address for this input's notices; empty means its default.
+	ReplyTo string
 }
 
 type ModelChoice struct {

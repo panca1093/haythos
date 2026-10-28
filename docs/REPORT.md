@@ -110,9 +110,11 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 7. **Only chat jobs can be disabled or deleted**; `jobs/*.yaml` jobs are changed in the file.
 8. **`/settings` and `/jobs` are read-only.** Job changes go through chat so they keep approval. Setting history and reset exist in `app` but are not exposed in Discord yet.
 9. Unit tests for the job validation and the `jobs.*` tools were written alongside the code, not seen red first; the contract tests and the Discord text tests were red first.
+10. **Channel and DM (after M2, asked by the user).** A task stores where its input came from (`reply_to` on `task.created`); its notices go back there. Discord only sends to `discord.channel_id` or the owner's DM and falls back to the channel for anything else. Tasks with no origin (scheduled jobs, startup reconcile alerts) go to the channel; I picked this default when the user did not choose. If the owner DM cannot be resolved at start, Alfred runs channel-only with a warning.
 
 ## Needs you live
 
 1. Ask Alfred in Discord to create a job, approve it, and receive its first scheduled report.
 2. `/model` switch, restart `serve`, and check `/settings` still shows the change and `config/haythos.yaml` is untouched.
 3. `/jobs` and `/settings` render in Discord (slash commands re-register on `serve` start; Discord can take a minute to show new ones).
+4. Alfred answers a DM in the DM (including approval buttons, `/jobs`, `/model`), and a channel message in the channel.

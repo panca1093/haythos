@@ -47,7 +47,7 @@ go run ./cmd/haythosd run-job vm-health   # one-shot manual trigger, prints the 
 
 Only one `haythosd` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
 
-Discord: only `discord.owner_id` in `discord.channel_id` is obeyed. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
+Discord: only `discord.owner_id` is obeyed, in `discord.channel_id` or in a DM with the bot. Alfred replies (and asks for approval) where you wrote; scheduled job reports and system alerts go to `discord.channel_id`. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
 
 ### Switching the model
 
