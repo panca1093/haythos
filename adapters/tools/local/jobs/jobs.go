@@ -26,13 +26,14 @@ const defineSchema = `{"type":"object","properties":{
 "goal":{"type":"string","description":"what the job must check or report"},
 "tools":{"type":"array","items":{"type":"string"}},
 "model":{"type":"string"},
-"budget":{"type":"object","properties":{"tokens":{"type":"integer"},"steps":{"type":"integer"}}}
+"budget":{"type":"object","properties":{"tokens":{"type":"integer"},"steps":{"type":"integer"}}},
+"deliver_to":{"type":"array","items":{"type":"string"},"description":"Discord channel or thread IDs, or dm, that receive the job's reports; omit to deliver where this conversation is happening"}
 },"required":["name","cron","goal","tools"]}`
 
 // Register adds the jobs.* tools; they change only the kernel's own schedule.
 func Register(r *local.Registry, k Kernel) {
 	r.Register(task.ToolSpec{
-		Name: "jobs.list", Description: "List scheduled jobs with source, cron, tools, enabled state and next run.",
+		Name: "jobs.list", Description: "List scheduled jobs with source, cron, tools, delivery targets, enabled state and next run.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 	}, func(ctx context.Context, _ []byte) (task.ToolResult, error) {
 		js, err := k.ListJobs(ctx)

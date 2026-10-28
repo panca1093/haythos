@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/panca/haythos/adapters/tools/local"
@@ -95,5 +96,28 @@ func TestExistsMatchesTheIntendedEffect(t *testing.T) {
 	}
 	if _, err := r.Exists(context.Background(), "vmhealth.read", "", "k"); !errors.Is(err, app.ErrCannotVerify) {
 		t.Errorf("tool without a check: err = %v, want ErrCannotVerify", err)
+	}
+}
+
+func TestDefineAdvertisesAndPassesDeliverTo(t *testing.T) {
+	k := &fakeKernel{}
+	r := local.New()
+	jobs.Register(r, k)
+	spec := r.List([]string{"jobs.define"})[0]
+	var schema struct {
+		Properties map[string]struct {
+			Type string `json:"type"`
+		} `json:"properties"`
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(spec.InputSchema, &schema); err != nil {
+		t.Fatal(err)
+	}
+	if schema.Properties["deliver_to"].Type != "array" || slices.Contains(schema.Required, "deliver_to") {
+		t.Errorf("deliver_to must be an optional array, schema = %s", spec.InputSchema)
+	}
+	res, err := r.Call(context.Background(), task.ToolCall{Name: "jobs.define", Args: json.RawMessage(`{"name":"disk","cron":"0 9 * * 1","goal":"check","tools":[],"deliver_to":["123","dm"]}`)})
+	if err != nil || res.IsError || len(k.defined) != 1 || !slices.Equal(k.defined[0].DeliverTo, []string{"123", "dm"}) {
+		t.Errorf("result = %+v, err = %v, defined = %+v", res, err, k.defined)
 	}
 }

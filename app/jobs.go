@@ -44,15 +44,18 @@ type JobDef struct {
 	Tools  []string    `json:"tools"`
 	Model  string      `json:"model,omitempty"`
 	Budget task.Budget `json:"budget,omitempty"`
+
+	DeliverTo []string `json:"deliver_to,omitempty"`
 }
 
 type JobStatus struct {
-	Name    string
-	Source  string
-	Cron    string
-	Tools   []string
-	Enabled bool
-	Next    time.Time
+	Name      string
+	Source    string
+	Cron      string
+	Tools     []string
+	DeliverTo []string
+	Enabled   bool
+	Next      time.Time
 }
 
 type jobName struct {
@@ -65,6 +68,12 @@ type chatJob struct {
 }
 
 func (a *App) DefineJob(ctx context.Context, def JobDef) error {
+	def.DeliverTo = cleanTargets(def.DeliverTo)
+	if len(def.DeliverTo) == 0 {
+		if origin := originFrom(ctx); origin != "" {
+			def.DeliverTo = []string{origin}
+		}
+	}
 	def, err := a.validJob(def)
 	if err != nil {
 		return err
@@ -114,10 +123,10 @@ func (a *App) ListJobs(ctx context.Context) ([]JobStatus, error) {
 	now := a.d.Clock()
 	var out []JobStatus
 	for _, j := range a.d.Jobs {
-		out = append(out, JobStatus{Name: j.Name, Source: "config", Cron: j.Trigger.Cron, Tools: j.Tools, Enabled: true, Next: nextRun(j.Trigger.Cron, now)})
+		out = append(out, JobStatus{Name: j.Name, Source: "config", Cron: j.Trigger.Cron, Tools: j.Tools, DeliverTo: j.DeliverTo, Enabled: true, Next: nextRun(j.Trigger.Cron, now)})
 	}
 	for _, c := range chat {
-		st := JobStatus{Name: c.def.Name, Source: "chat", Cron: c.def.Cron, Tools: c.def.Tools, Enabled: c.enabled}
+		st := JobStatus{Name: c.def.Name, Source: "chat", Cron: c.def.Cron, Tools: c.def.Tools, DeliverTo: c.def.DeliverTo, Enabled: c.enabled}
 		if c.enabled {
 			st.Next = nextRun(c.def.Cron, now)
 		}
@@ -145,8 +154,18 @@ func (a *App) jobFrom(def JobDef) Job {
 	return Job{
 		Name: def.Name, Model: def.Model, Tools: def.Tools, Budget: def.Budget,
 		Goal:    a.d.DefaultJob.Goal + "\n\nScheduled job goal: " + def.Goal,
-		Trigger: Trigger{Cron: def.Cron},
+		Trigger: Trigger{Cron: def.Cron}, DeliverTo: def.DeliverTo,
 	}
+}
+
+func cleanTargets(in []string) []string {
+	var out []string
+	for _, t := range in {
+		if t = strings.TrimSpace(t); t != "" && !slices.Contains(out, t) {
+			out = append(out, t)
+		}
+	}
+	return out
 }
 
 func (a *App) validJob(def JobDef) (JobDef, error) {

@@ -113,6 +113,7 @@ type Created struct {
 	Collect   string   `json:"collect,omitempty"`
 	NormalMsg string   `json:"normal_msg,omitempty"`
 	ReplyTo   string   `json:"reply_to,omitempty"`
+	Targets   []string `json:"targets,omitempty"`
 }
 
 type StateChange struct {

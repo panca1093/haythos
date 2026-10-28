@@ -173,3 +173,12 @@ func TestSaveModelChoiceAddsMissingDefaultModelKey(t *testing.T) {
 		t.Errorf("cfg=%+v err=%v", m, err)
 	}
 }
+
+func TestJobDeliverTo(t *testing.T) {
+	dir := t.TempDir()
+	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\ndeliver_to: ['123', dm]\n")
+	jobs, err := LoadJobs(dir)
+	if err != nil || len(jobs) != 1 || !reflect.DeepEqual(jobs[0].DeliverTo, []string{"123", "dm"}) {
+		t.Fatalf("jobs = %+v, err = %v", jobs, err)
+	}
+}

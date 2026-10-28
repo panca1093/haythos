@@ -71,7 +71,19 @@ type approvalDecided struct {
 }
 
 type noticeSent struct {
-	Key string `json:"key"`
+	Key    string `json:"key"`
+	Target string `json:"target,omitempty"`
+}
+
+type originKey struct{}
+
+func withOrigin(ctx context.Context, replyTo string) context.Context {
+	return context.WithValue(ctx, originKey{}, replyTo)
+}
+
+func originFrom(ctx context.Context) string {
+	origin, _ := ctx.Value(originKey{}).(string)
+	return origin
 }
 
 func New(d Deps) *App {
@@ -218,7 +230,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -331,7 +343,7 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
-	out, err := a.gw.Execute(ctx, gateway.Request{
+	out, err := a.gw.Execute(withOrigin(ctx, s.Created.ReplyTo), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
 	})
@@ -450,30 +462,48 @@ func (a *App) appendResult(ctx context.Context, id string, r task.ToolResult) er
 	return a.hook("app.after_tool_result")
 }
 
-// notify publishes at most once per key. A crash between Publish and the record can repeat one notice.
+// notify publishes at most once per key and target. A crash between Publish and the record can repeat one notice.
 // TODO: uncertain — at-least-once window between Publish and notice.sent append, verify before prod
 func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 	events, err := a.d.Events.Load(ctx, id)
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
+	var created task.Created
+	sent := map[string]bool{}
 	for _, e := range events {
-		var sent noticeSent
-		if e.Type == task.EvNoticeSent && json.Unmarshal(e.Payload, &sent) == nil && sent.Key == key {
-			return nil
+		switch e.Type {
+		case task.EvNoticeSent:
+			var s noticeSent
+			if json.Unmarshal(e.Payload, &s) == nil && s.Key == key {
+				sent[s.Target] = true
+			}
+		case task.EvCreated:
+			_ = json.Unmarshal(e.Payload, &created)
 		}
-		var c task.Created
-		if e.Type == task.EvCreated && json.Unmarshal(e.Payload, &c) == nil {
-			n.ReplyTo = c.ReplyTo
+	}
+	// Tasks without targets record Target "" so notices sent before targets existed still dedupe.
+	type dest struct{ record, replyTo string }
+	dests := []dest{{"", created.ReplyTo}}
+	if len(created.Targets) > 0 {
+		dests = nil
+		for _, t := range created.Targets {
+			dests = append(dests, dest{t, t})
 		}
 	}
 	n.Key, n.TaskID = key, id
-	if err := a.d.Notifier.Publish(ctx, n); err != nil {
-		slog.Warn("publish notice failed", "task", id, "key", key, "err", err)
-		return nil
-	}
-	if _, err := a.d.Events.Append(ctx, id, task.EvNoticeSent, noticeSent{Key: key}); err != nil {
-		return fmt.Errorf("record notice %s: %w", key, err)
+	for _, d := range dests {
+		if sent[d.record] {
+			continue
+		}
+		n.ReplyTo = d.replyTo
+		if err := a.d.Notifier.Publish(ctx, n); err != nil {
+			slog.Warn("publish notice failed", "task", id, "key", key, "err", err)
+			continue
+		}
+		if _, err := a.d.Events.Append(ctx, id, task.EvNoticeSent, noticeSent{Key: key, Target: d.record}); err != nil {
+			return fmt.Errorf("record notice %s: %w", key, err)
+		}
 	}
 	return nil
 }

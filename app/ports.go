@@ -83,6 +83,8 @@ type Job struct {
 	Trigger   Trigger
 	Collect   string
 	NormalMsg string
+	// DeliverTo are channel-adapter addresses for this job's notices; empty means the adapter's default.
+	DeliverTo []string
 }
 
 type Input struct {

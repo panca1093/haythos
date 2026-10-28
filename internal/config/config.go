@@ -103,6 +103,7 @@ type jobFile struct {
 	Collect   string      `yaml:"collect"`
 	NormalMsg string      `yaml:"normal_msg"`
 	Contract  string      `yaml:"contract"`
+	DeliverTo []string    `yaml:"deliver_to"`
 }
 
 // LoadJobs reads every *.yaml in dir.
@@ -131,7 +132,7 @@ func LoadJobs(dir string) ([]app.Job, error) {
 		}
 		jobs = append(jobs, app.Job{
 			Name: f.Name, Goal: strings.TrimSpace(f.Goal), Model: f.Model, Tools: f.Tools,
-			Budget: f.Budget, Trigger: f.Trigger, Collect: f.Collect, NormalMsg: f.NormalMsg,
+			Budget: f.Budget, Trigger: f.Trigger, Collect: f.Collect, NormalMsg: f.NormalMsg, DeliverTo: f.DeliverTo,
 		})
 	}
 	return jobs, nil
