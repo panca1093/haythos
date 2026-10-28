@@ -3,6 +3,7 @@ package discord
 import (
 	"fmt"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -77,6 +78,31 @@ func TestTargetOnlyAllowsConfiguredChannelOrOwnerDM(t *testing.T) {
 		if got := c.target(tt.replyTo); got != tt.want {
 			t.Errorf("target(%q) = %q, want %q", tt.replyTo, got, tt.want)
 		}
+	}
+}
+
+func TestKeepTypingRepeatsUntilStopped(t *testing.T) {
+	t.Parallel()
+	var mu sync.Mutex
+	sent := 0
+	stop := keepTyping(5*time.Millisecond, func() {
+		mu.Lock()
+		sent++
+		mu.Unlock()
+	})
+	time.Sleep(30 * time.Millisecond)
+	stop()
+	mu.Lock()
+	atStop := sent
+	mu.Unlock()
+	if atStop < 2 {
+		t.Fatalf("sent %d typing signals, want it repeated", atStop)
+	}
+	time.Sleep(20 * time.Millisecond)
+	mu.Lock()
+	defer mu.Unlock()
+	if sent != atStop {
+		t.Errorf("typing continued after stop: %d -> %d", atStop, sent)
 	}
 }
 

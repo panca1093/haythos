@@ -117,4 +117,4 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 1. Ask Alfred in Discord to create a job, approve it, and receive its first scheduled report.
 2. `/model` switch, restart `serve`, and check `/settings` still shows the change and `config/haythos.yaml` is untouched.
 3. `/jobs` and `/settings` render in Discord (slash commands re-register on `serve` start; Discord can take a minute to show new ones).
-4. Alfred answers a DM in the DM (including approval buttons, `/jobs`, `/model`), and a channel message in the channel.
+4. Alfred answers a DM in the DM (including approval buttons, `/jobs`, `/model`), and a channel message in the channel. Verified by the user on 2026-10-28 (DM replies).

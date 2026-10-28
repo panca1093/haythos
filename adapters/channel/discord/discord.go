@@ -21,6 +21,9 @@ const (
 	modelTO       = 30 * time.Second
 	maxMenuItems  = 25
 	maxFieldLen   = 100
+
+	// Discord shows a typing signal for about 10 seconds.
+	typingEvery = 8 * time.Second
 )
 
 type componentKind int
@@ -142,6 +145,37 @@ func render(n app.Notice) []*discordgo.MessageSend {
 	}
 }
 
+// keepTyping sends now and every interval; the returned stop waits so nothing is sent after it.
+func keepTyping(every time.Duration, send func()) (stop func()) {
+	done := make(chan struct{})
+	exited := make(chan struct{})
+	go func() {
+		defer close(exited)
+		t := time.NewTicker(every)
+		defer t.Stop()
+		for {
+			send()
+			select {
+			case <-done:
+				return
+			case <-t.C:
+			}
+		}
+	}()
+	return func() {
+		close(done)
+		<-exited
+	}
+}
+
+func (c *Channel) typing(channelID string) (stop func()) {
+	return keepTyping(typingEvery, func() {
+		if err := c.s.ChannelTyping(channelID); err != nil {
+			slog.Debug("typing signal failed", "err", err)
+		}
+	})
+}
+
 func chunks(s string) []*discordgo.MessageSend {
 	var out []*discordgo.MessageSend
 	for len(s) > maxMessage {
@@ -229,6 +263,8 @@ func (c *Channel) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), handleTO)
 		defer cancel()
+		stop := c.typing(m.ChannelID)
+		defer stop()
 		if _, err := c.h.HandleInput(ctx, app.Input{Text: m.Content, ReplyTo: m.ChannelID}); err != nil {
 			slog.Error("handle input failed", "err", err)
 			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "I could not process that message: " + err.Error(), ReplyTo: m.ChannelID})
@@ -270,6 +306,8 @@ func (c *Channel) onApproval(s *discordgo.Session, i *discordgo.InteractionCreat
 	go func() {
 		ctx, cancel := context.WithTimeout(context.Background(), handleTO)
 		defer cancel()
+		stop := c.typing(i.ChannelID)
+		defer stop()
 		if err := c.h.HandleApproval(ctx, taskID, approvalID, approve); err != nil {
 			slog.Error("handle approval failed", "err", err)
 			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error(), ReplyTo: i.ChannelID})
