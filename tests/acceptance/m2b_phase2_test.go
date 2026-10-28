@@ -96,13 +96,18 @@ func newP2Rig(t *testing.T, items []app.BrainItem, extra app.Tools, turns ...tas
 
 	reg := local.New()
 	reg.Register(task.ToolSpec{Name: "vm.read", InputSchema: json.RawMessage(`{"type":"object"}`)},
-		func(context.Context, []byte) (task.ToolResult, error) { return task.ToolResult{Content: "disk 40%"}, nil })
+		func(context.Context, []byte) (task.ToolResult, error) {
+			return task.ToolResult{Content: "disk 40%"}, nil
+		})
 	reg.Register(task.ToolSpec{Name: "web.read", InputSchema: json.RawMessage(`{"type":"object"}`), Untrusted: true},
 		func(context.Context, []byte) (task.ToolResult, error) {
 			return task.ToolResult{Content: "page" + p2Iso + "text" + p2Mark + p2BOM + "end"}, nil
 		})
 	reg.Register(task.ToolSpec{Name: "chat.post", InputSchema: json.RawMessage(`{"type":"object"}`), Write: true, TargetArg: "channel"},
-		func(context.Context, []byte) (task.ToolResult, error) { r.posted++; return task.ToolResult{Content: "posted"}, nil })
+		func(context.Context, []byte) (task.ToolResult, error) {
+			r.posted++
+			return task.ToolResult{Content: "posted"}, nil
+		})
 	localbrain.Register(reg, r.brain)
 
 	var tools app.Tools = reg
