@@ -284,6 +284,9 @@ func render(n app.Notice) []*discordgo.MessageSend {
 	return msgs
 }
 
+// Render is the Discord form of a notice, exported so acceptance tests can inspect the message flags.
+func Render(n app.Notice) []*discordgo.MessageSend { return render(n) }
+
 func renderNotice(n app.Notice) []*discordgo.MessageSend {
 	switch n.Kind {
 	case app.NoticeApproval:
