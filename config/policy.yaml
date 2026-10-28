@@ -3,6 +3,7 @@ tiers:
   vmhealth.read: 0
   jobs.list: 0
   discord.channels: 0
+  discord.post: 2
   jobs.define: 1
   jobs.disable: 1
   jobs.enable: 1

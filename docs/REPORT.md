@@ -124,6 +124,11 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 21. **No mentions fire from Alfred's messages** (`AllowedMentions` empty on every send), because reports can now land in shared channels and contain model-written or tool text such as `@everyone`.
 22. **The Discord channel adapter exposes the tool as `ChannelsTool()`** and `cmd` registers it only when Discord is configured; this keeps adapters from importing each other. It lists at most 200 guilds and only active threads.
 23. Pure rules, `app` methods and the `jobs.define` schema were red first. The Discord API calls themselves (`MessageThreadStartComplex`, `Channel`, `UserGuilds`, `GuildChannels`, `GuildThreadsActive`) are not covered by tests.
+24. **`discord.post` is tier 2, chat only, added to the chat job only when Discord is configured** (`discordChatTools` in `cmd/haythosd`). Background jobs already reject it in `validJob` (tier above 1); a test pins that. Every post asks for approval because the allowlist is empty; taint escalation to tier 3 is the gateway's.
+25. **Allowed targets**: `dm` (or the owner DM ID) or a guild text, news or thread channel the API returns with a guild. Anything else, including other people's DMs and unknown IDs, returns a tool error and sends nothing. Unlike delivery there is no fallback to the DM, because a post that silently lands elsewhere is wrong.
+26. **No idempotency nonce.** The installed discordgo (v0.29.0) has no `Nonce` or `EnforceNonce` on `MessageSend`, and the gateway's idempotency key never reaches a tool handler. I did not add a dependency or call the REST API by hand. `discord.post` has no existence check, so a crash between dispatch and success ends as `outcome_unknown` (`ErrCannotVerify`), is reported to you and is never retried. Scanning recent bot messages by content was rejected: it cannot tell a retry from an identical legitimate repost. For multi-chunk posts this means nothing is verified; if a later chunk fails, earlier chunks stay posted and the call is reported as failed, so a retry by the model would repeat them (it needs a new approval).
+27. **Chunking is the existing byte split at 1900** (`chunks`), which can cut a multi-byte character at a boundary. Not changed here.
+28. Argument validation, target validation, chunking, empty mentions and the chat-job rejection were red first (the rejection test passes without new code, since the guard already existed). The real `ChannelMessageSendComplex` call is not covered by a test.
 
 ## Needs you live
 
@@ -136,3 +141,6 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 7. `/mention-only` in the thread: reply is private; a message without a mention is then ignored, with a mention is answered. Restart `serve` and check the thread keeps both behaviours.
 8. Ask in a thread for a job "report in #infra" (and one with no place named, then one in a DM): approve, check `/jobs` shows the targets, and the first report goes to each. Try a deleted or private channel ID and check the DM fallback note.
 9. Ask Alfred to list channels (`discord.channels`) and check guilds with many channels or private threads look right (private channels the bot can see are listed).
+10. Ask Alfred to post a short message in a server channel and in your DM: the approval shows the channel and text, the message appears once after Approve, and Reject sends nothing.
+11. Ask him to post `@everyone hello` in a channel: it must appear without pinging anyone. Ask for an unknown channel ID and for a voice channel: refused with a readable error.
+12. Post a text over 1900 characters and check it arrives as several ordered messages.

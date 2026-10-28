@@ -115,3 +115,19 @@ func TestOnlyChatJobsCanBeChanged(t *testing.T) {
 		t.Errorf("delete unknown err = %v", err)
 	}
 }
+
+func TestChatJobCannotUseTierTwoWrites(t *testing.T) {
+	t.Parallel()
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": testfakes.NewModel()},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred."},
+		Tools:      testfakes.NewTools(task.ToolSpec{Name: "discord.post", Write: true, TargetArg: "channel"}),
+		Events:     &testfakes.Events{},
+		Policy:     policy.Policy{Tiers: map[string]policy.Tier{"discord.post": policy.TierExternalWrite}},
+		Clock:      func() time.Time { return time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC) },
+	})
+	err := a.DefineJob(context.Background(), app.JobDef{Name: "poster", Cron: "0 9 * * 1", Goal: "post", Tools: []string{"discord.post"}})
+	if !errors.Is(err, app.ErrInvalidJob) || !strings.Contains(err.Error(), "tier 2") {
+		t.Errorf("err = %v, want ErrInvalidJob mentioning tier 2", err)
+	}
+}

@@ -53,6 +53,8 @@ Discord: only `discord.owner_id` is obeyed, everywhere; everyone else is ignored
 - **Server channel**: only a message that @mentions the bot. Alfred starts a thread on it and replies there. The bot needs View Channel, Send Messages, Create Public Threads and Send Messages in Threads.
 - **Thread**: every message is handled once the thread is Alfred's (he started it, or you @mentioned him in it). `/mention-only` inside a thread toggles whether he then answers only when mentioned; it replies privately with the new state. Both the joined threads and the toggle survive restarts.
 
+Posting: ask Alfred to "post X in #infra" (or in a thread, or to your DM). He looks the channel up with `discord.channels`, then calls `discord.post`, a tier 2 write that always asks for your approval with the channel and text shown. Only server text channels, news channels and threads the bot can see, or your own DM, are accepted; anything else is refused and nothing is sent. Long text is split into several messages, and mentions in the text never ping anyone. `discord.post` is for chat only; scheduled jobs cannot use it.
+
 Alfred replies (and asks for approval) where you wrote. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
 
 ### Switching the model

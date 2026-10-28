@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,6 +44,8 @@ var defaultJob = app.Job{
 	Tools:  []string{"vmhealth.read", "jobs.list", "jobs.define", "jobs.disable", "jobs.enable", "jobs.delete", "discord.channels"},
 	Budget: task.Budget{Tokens: 50000, Steps: 10},
 }
+
+var discordChatTools = []string{"discord.post"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -137,11 +140,16 @@ func run(args []string) error {
 		}
 		spec, handler := channel.ChannelsTool()
 		tools.Register(spec, handler)
+		postSpec, postHandler := channel.PostTool()
+		tools.Register(postSpec, postHandler)
 		notifier = channel
 	}
 
 	dj := defaultJob
 	dj.Model = cfg.DefaultModel
+	if channel != nil {
+		dj.Tools = append(slices.Clone(dj.Tools), discordChatTools...)
+	}
 	a := app.New(app.Deps{
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: tools, Events: store, Ledger: store,
 		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,

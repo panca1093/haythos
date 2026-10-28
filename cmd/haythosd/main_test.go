@@ -16,6 +16,7 @@ import (
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/vault/file"
 	"github.com/panca/haythos/app"
+	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
 	"github.com/panca/haythos/internal/config"
 	"github.com/panca/haythos/internal/testfakes"
@@ -360,9 +361,22 @@ func TestChatToolsHaveAPolicyTier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range defaultJob.Tools {
+	for _, tool := range append(slices.Clone(defaultJob.Tools), discordChatTools...) {
 		if _, ok := pol.Tiers[tool]; !ok {
 			t.Errorf("chat tool %s has no tier in config/policy.yaml; the gateway would deny it", tool)
 		}
+	}
+}
+
+func TestDiscordPostIsTierTwoAndOnlyForDiscordChat(t *testing.T) {
+	pol, err := config.LoadPolicy("../../config/policy.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pol.Tiers["discord.post"]; got != policy.TierExternalWrite {
+		t.Errorf("discord.post tier = %d, want %d", got, policy.TierExternalWrite)
+	}
+	if !slices.Contains(discordChatTools, "discord.post") || slices.Contains(defaultJob.Tools, "discord.post") {
+		t.Error("discord.post must be added to the chat job only when Discord is configured")
 	}
 }
