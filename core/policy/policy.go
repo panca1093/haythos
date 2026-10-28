@@ -35,6 +35,8 @@ type Policy struct {
 	Tiers   map[string]Tier
 	// Secrets lists, per tool, the vault names its arguments may reference; any other handle is exfiltration.
 	Secrets map[string][]string
+	// AutoWhenClean lists tier-1 writes that run without approval in an untainted task started by the owner.
+	AutoWhenClean []string
 }
 
 type Input struct {
