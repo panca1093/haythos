@@ -75,6 +75,8 @@ type Message struct {
 	Text    string       `json:"text,omitempty"`
 	Calls   []ToolCall   `json:"calls,omitempty"`
 	Results []ToolResult `json:"results,omitempty"`
+	// Context marks replayed conversation memory: not a trusted instruction and not a step of this task.
+	Context bool `json:"context,omitempty"`
 }
 
 type Usage struct {
@@ -192,6 +194,9 @@ func Replay(events []Event) (Snapshot, error) {
 				return Snapshot{}, fmt.Errorf("decode message event seq %d: %w", e.Seq, err)
 			}
 			s.History = append(s.History, m)
+			if m.Context {
+				continue
+			}
 			switch m.Role {
 			case RoleSystem, RoleUser:
 				s.Trusted = append(s.Trusted, m.Text)

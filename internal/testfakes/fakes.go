@@ -16,6 +16,8 @@ type Model struct {
 	mu    sync.Mutex
 	turns []task.AssistantTurn
 	Steps int
+	// Histories holds the history passed to each Step call, in order.
+	Histories [][]task.Message
 }
 
 func NewModel(turns ...task.AssistantTurn) *Model { return &Model{turns: turns} }
@@ -23,6 +25,7 @@ func NewModel(turns ...task.AssistantTurn) *Model { return &Model{turns: turns} 
 func (m *Model) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.Histories = append(m.Histories, history)
 	if m.Steps >= len(m.turns) {
 		return task.AssistantTurn{}, errors.New("fake model: script exhausted")
 	}

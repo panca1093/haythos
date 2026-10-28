@@ -215,7 +215,7 @@ func (a *App) CreateTask(ctx context.Context, job Job, input string) (string, er
 }
 
 // createTask is idempotent per id so the scheduler can retry after a crash.
-func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo string) (string, error) {
+func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo string, prior ...task.Message) (string, error) {
 	existing, err := a.d.Events.Load(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("check task %s: %w", id, err)
@@ -233,6 +233,12 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
+	}
+	for _, m := range prior {
+		steps = append(steps, struct {
+			typ     task.EventType
+			payload any
+		}{task.EvMessage, m})
 	}
 	if input != "" {
 		steps = append(steps, struct {
@@ -264,7 +270,11 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo)
+	prior, err := a.conversation(ctx, in.ReplyTo, in.DM)
+	if err != nil {
+		return "", err
+	}
+	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo, prior...)
 	if err != nil {
 		return "", err
 	}
@@ -428,6 +438,9 @@ func (a *App) HandleApproval(ctx context.Context, taskID, approvalID string, app
 }
 
 func (a *App) finish(ctx context.Context, id, text string) error {
+	if err := a.recordTurn(ctx, id, text); err != nil {
+		return err
+	}
 	if err := a.setState(ctx, id, task.Done, ""); err != nil {
 		return err
 	}
