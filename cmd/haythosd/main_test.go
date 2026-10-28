@@ -354,3 +354,15 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
 	}
 }
+
+func TestChatToolsHaveAPolicyTier(t *testing.T) {
+	pol, err := config.LoadPolicy("../../config/policy.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, tool := range defaultJob.Tools {
+		if _, ok := pol.Tiers[tool]; !ok {
+			t.Errorf("chat tool %s has no tier in config/policy.yaml; the gateway would deny it", tool)
+		}
+	}
+}

@@ -1,5 +1,10 @@
 version: "1"
 tiers:
   vmhealth.read: 0
+  jobs.list: 0
+  jobs.define: 1
+  jobs.disable: 1
+  jobs.enable: 1
+  jobs.delete: 1
 # Vault names each tool's arguments may reference as secret://<name>. Unlisted handles are denied.
 secrets: {}

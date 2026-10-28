@@ -32,11 +32,16 @@ func (a *App) Tick(ctx context.Context) error {
 		}
 	}
 
+	jobs, err := a.scheduledJobs(sys)
+	if err != nil {
+		return err
+	}
+
 	var errs []error
 	if err := a.sweepApprovals(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	for _, j := range a.d.Jobs {
+	for _, j := range jobs {
 		if j.Trigger.Cron == "" {
 			continue
 		}
@@ -66,6 +71,9 @@ func (a *App) Tick(ctx context.Context) error {
 		}
 		if _, err := a.d.Events.Append(ctx, systemTask, evJobFired, jobMark{Job: j.Name, At: due}); err != nil {
 			return fmt.Errorf("record job %s fired: %w", j.Name, err)
+		}
+		if err := a.hook("app.after_job_fired"); err != nil {
+			return err
 		}
 		if err := a.RunTask(ctx, id); err != nil {
 			errs = append(errs, fmt.Errorf("run %s: %w", id, err))

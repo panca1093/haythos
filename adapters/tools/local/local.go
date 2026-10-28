@@ -10,13 +10,19 @@ import (
 
 type Handler func(ctx context.Context, args []byte) (task.ToolResult, error)
 
+// ExistsFunc reports whether a write on target already took effect, for crash recovery.
+type ExistsFunc func(ctx context.Context, target string) (bool, error)
+
 // Registry holds Go-native tools. It implements app.Tools.
 type Registry struct {
 	specs    []task.ToolSpec
 	handlers map[string]Handler
+	exists   map[string]ExistsFunc
 }
 
-func New() *Registry { return &Registry{handlers: map[string]Handler{}} }
+func New() *Registry {
+	return &Registry{handlers: map[string]Handler{}, exists: map[string]ExistsFunc{}}
+}
 
 func (r *Registry) Register(spec task.ToolSpec, h Handler) {
 	r.specs = append(r.specs, spec)
@@ -43,7 +49,16 @@ func (r *Registry) Call(ctx context.Context, call task.ToolCall) (task.ToolResul
 	return h(ctx, call.Args)
 }
 
-// Exists: local tools make no external writes, so there is never a destination to check.
+// RegisterWrite adds a write tool whose effect can be checked after a crash.
+func (r *Registry) RegisterWrite(spec task.ToolSpec, h Handler, exists ExistsFunc) {
+	r.Register(spec, h)
+	r.exists[spec.Name] = exists
+}
+
 func (r *Registry) Exists(ctx context.Context, tool, target, idemKey string) (bool, error) {
-	return false, app.ErrCannotVerify
+	f, ok := r.exists[tool]
+	if !ok {
+		return false, app.ErrCannotVerify
+	}
+	return f(ctx, target)
 }
