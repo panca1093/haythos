@@ -155,42 +155,17 @@ func (c Collector) memUsedPct(ctx context.Context) (float64, error) {
 	return (total - avail) / total * 100, nil
 }
 
-// TODO: uncertain — free+inactive+speculative reads ~20 points higher than memory_pressure (ignores purgeable/compressed), verify before prod
+// macMemUsedPct uses the same kernel free level that `memory_pressure` prints.
 func (c Collector) macMemUsedPct(ctx context.Context) (float64, error) {
-	memsize, err := c.Run(ctx, "sysctl", "-n", "hw.memsize")
+	out, err := c.Run(ctx, "sysctl", "-n", "kern.memorystatus_level")
 	if err != nil {
-		return 0, fmt.Errorf("unavailable (no /proc/meminfo or vm_stat)")
+		return 0, fmt.Errorf("unavailable (no /proc/meminfo or kern.memorystatus_level)")
 	}
-	stat, err := c.Run(ctx, "vm_stat")
-	if err != nil {
-		return 0, fmt.Errorf("unavailable (no /proc/meminfo or vm_stat)")
-	}
-	total, err := strconv.ParseFloat(strings.TrimSpace(string(memsize)), 64)
-	if err != nil || total == 0 {
+	free, err := strconv.ParseFloat(strings.TrimSpace(string(out)), 64)
+	if err != nil || free < 0 || free > 100 {
 		return 0, fmt.Errorf("unparseable")
 	}
-	var pageSize, availPages float64
-	for _, line := range strings.Split(string(stat), "\n") {
-		if _, rest, ok := strings.Cut(line, "page size of "); ok {
-			if f := strings.Fields(rest); len(f) > 0 {
-				pageSize, _ = strconv.ParseFloat(f[0], 64)
-			}
-			continue
-		}
-		name, val, ok := strings.Cut(line, ":")
-		if !ok {
-			continue
-		}
-		switch name {
-		case "Pages free", "Pages inactive", "Pages speculative":
-			v, _ := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(val), "."), 64)
-			availPages += v
-		}
-	}
-	if pageSize == 0 {
-		return 0, fmt.Errorf("unparseable")
-	}
-	return (total - availPages*pageSize) / total * 100, nil
+	return 100 - free, nil
 }
 
 func (c Collector) diskUsedPct(ctx context.Context) (float64, error) {

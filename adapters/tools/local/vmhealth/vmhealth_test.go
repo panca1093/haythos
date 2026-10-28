@@ -135,21 +135,18 @@ func TestUnmeasuredMetricsAreOmittedFromJSON(t *testing.T) {
 	}
 }
 
-const vmStat = "Mach Virtual Memory Statistics: (page size of 4096 bytes)\nPages free:                               100.\nPages active:                             400.\nPages inactive:                           300.\nPages speculative:                        100.\nPages wired down:                         100.\n"
-
-func TestMemoryFallsBackToVMStatOnMacOS(t *testing.T) {
+func TestMemoryOnMacOSMatchesMemoryPressure(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name    string
-		memsize string
-		vmstat  string
+		level   string
 		want    float64
 		wantGap string
 	}{
-		{name: "used is total minus free, inactive and speculative", memsize: "4096000\n", vmstat: vmStat, want: 50},
-		{name: "no vm_stat", memsize: "4096000\n", wantGap: "memory: unavailable (no /proc/meminfo or vm_stat)"},
-		{name: "no hw.memsize", vmstat: vmStat, wantGap: "memory: unavailable (no /proc/meminfo or vm_stat)"},
-		{name: "vm_stat without page size", memsize: "4096000\n", vmstat: "Pages free: 100.\n", wantGap: "memory: unparseable"},
+		{name: "used is 100 minus the free level", level: "34\n", want: 66},
+		{name: "no sysctl", wantGap: "memory: unavailable (no /proc/meminfo or kern.memorystatus_level)"},
+		{name: "not a number", level: "abc\n", wantGap: "memory: unparseable"},
+		{name: "out of range", level: "140\n", wantGap: "memory: unparseable"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -157,11 +154,8 @@ func TestMemoryFallsBackToVMStatOnMacOS(t *testing.T) {
 			c := Collector{NumCPU: 1,
 				ReadFile: func(string) ([]byte, error) { return nil, errors.New("nope") },
 				Run: func(_ context.Context, name string, args ...string) ([]byte, error) {
-					switch {
-					case name == "sysctl" && strings.Join(args, " ") == "-n hw.memsize" && tt.memsize != "":
-						return []byte(tt.memsize), nil
-					case name == "vm_stat" && tt.vmstat != "":
-						return []byte(tt.vmstat), nil
+					if name == "sysctl" && strings.Join(args, " ") == "-n kern.memorystatus_level" && tt.level != "" {
+						return []byte(tt.level), nil
 					}
 					return nil, errors.New("nope")
 				},
