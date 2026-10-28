@@ -8,5 +8,10 @@ tiers:
   jobs.disable: 1
   jobs.enable: 1
   jobs.delete: 1
+  brain.recall: 0
+  brain.remember: 1
+  brain.forget: 1
+# Tier 1 writes that run without approval in an untainted task from the owner (owner/) or a background brain job (auto/; forget only inbox/ slugs).
+auto_when_clean: [brain.remember, brain.forget]
 # Vault names each tool's arguments may reference as secret://<name>. Unlisted handles are denied.
 secrets: {}
