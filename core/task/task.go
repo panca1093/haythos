@@ -116,6 +116,8 @@ type Created struct {
 	NormalMsg string   `json:"normal_msg,omitempty"`
 	ReplyTo   string   `json:"reply_to,omitempty"`
 	Targets   []string `json:"targets,omitempty"`
+	// BrainSource is the provenance the kernel stamps on brain writes from this task; the model cannot set it.
+	BrainSource string `json:"brain_source,omitempty"`
 }
 
 type StateChange struct {

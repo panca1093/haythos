@@ -47,6 +47,8 @@ type Deps struct {
 
 	// ModelSelector is optional; nil disables /model.
 	ModelSelector ModelSelector
+	// Brain is optional; nil disables recall and brain tools.
+	Brain Brain
 }
 
 type App struct {
@@ -84,6 +86,14 @@ func withOrigin(ctx context.Context, replyTo string) context.Context {
 func originFrom(ctx context.Context) string {
 	origin, _ := ctx.Value(originKey{}).(string)
 	return origin
+}
+
+type brainSourceKey struct{}
+
+// BrainSourceFrom is the provenance of the task whose tool call is running.
+func BrainSourceFrom(ctx context.Context) string {
+	src, _ := ctx.Value(brainSourceKey{}).(string)
+	return src
 }
 
 func New(d Deps) *App {
@@ -226,11 +236,15 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 	if job.Model == "" {
 		job.Model = a.d.DefaultJob.Model
 	}
+	var brainSource string
+	if job.Name == a.d.DefaultJob.Name {
+		brainSource = "owner/" + replyTo
+	}
 	steps := []struct {
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -353,7 +367,7 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
-	out, err := a.gw.Execute(withOrigin(ctx, s.Created.ReplyTo), gateway.Request{
+	out, err := a.gw.Execute(context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
 	})

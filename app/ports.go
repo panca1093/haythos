@@ -38,6 +38,20 @@ type Vault interface {
 	Resolve(handle string) (string, error)
 }
 
+type BrainItem struct {
+	Slug       string
+	Title      string
+	Text       string
+	Source     string
+	Unverified bool
+}
+
+type Brain interface {
+	Recall(ctx context.Context, query string, limit int) ([]BrainItem, error)
+	Remember(ctx context.Context, item BrainItem) (slug string, err error)
+	Forget(ctx context.Context, slug string) error
+}
+
 type NoticeKind string
 
 const (
