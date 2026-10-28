@@ -50,10 +50,11 @@ type Deps struct {
 }
 
 type App struct {
-	d      Deps
-	gw     *gateway.Gateway
-	paused atomic.Bool
-	locks  sync.Map
+	d        Deps
+	gw       *gateway.Gateway
+	paused   atomic.Bool
+	locks    sync.Map
+	settings map[string]setting
 }
 
 type approvalRequested struct {
@@ -84,6 +85,7 @@ func New(d Deps) *App {
 		d.StepTimeout = defaultStepTimeout
 	}
 	a := &App{d: d}
+	a.registerSettings()
 	a.gw = gateway.New(gateway.Deps{
 		Tools: d.Tools, Ledger: d.Ledger, Vault: d.Vault, Policy: d.Policy,
 		Clock: d.Clock, ApprovalTTL: d.ApprovalTTL, Paused: a.paused.Load, Hook: a.hook,
@@ -125,6 +127,9 @@ func (a *App) RestorePause(ctx context.Context) error {
 // Start reconciles in-flight ledger rows and resumes unfinished tasks. Call before the scheduler runs.
 func (a *App) Start(ctx context.Context) error {
 	if err := a.RestorePause(ctx); err != nil {
+		return err
+	}
+	if err := a.RestoreSettings(ctx); err != nil {
 		return err
 	}
 

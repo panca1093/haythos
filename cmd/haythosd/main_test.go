@@ -336,13 +336,9 @@ func (nopTransport) Step(context.Context, claudesdk.StepRequest) (claudesdk.Step
 	return claudesdk.StepResponse{}, nil
 }
 
-func TestClaudeSubSelectorSavesAndSwitches(t *testing.T) {
-	cfgPath := filepath.Join(t.TempDir(), "haythos.yaml")
-	if err := os.WriteFile(cfgPath, []byte("# keep me\ndefault_model: claude-sub\nmodels:\n  claude-sub: { kind: claudesdk }\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
+func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	adapter := claudesdk.New(nopTransport{})
-	sel := claudeSubSelector{adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}, cfgPath: cfgPath, name: "claude-sub"}
+	sel := claudeSubSelector{adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}}
 
 	if got := sel.Current(); got != "default" {
 		t.Errorf("Current with no model = %q, want default", got)
@@ -356,20 +352,5 @@ func TestClaudeSubSelectorSavesAndSwitches(t *testing.T) {
 	}
 	if adapter.Model() != "sonnet" || sel.Current() != "sonnet" {
 		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
-	}
-	b, _ := os.ReadFile(cfgPath)
-	if !strings.Contains(string(b), "model: sonnet") || !strings.Contains(string(b), "# keep me") {
-		t.Errorf("config not saved with comments kept:\n%s", b)
-	}
-}
-
-func TestClaudeSubSelectorKeepsModelWhenSaveFails(t *testing.T) {
-	adapter := claudesdk.New(nopTransport{}, claudesdk.WithModel("haiku"))
-	sel := claudeSubSelector{adapter: adapter, cfgPath: filepath.Join(t.TempDir(), "missing.yaml"), name: "claude-sub"}
-	if err := sel.Select(context.Background(), "sonnet"); err == nil {
-		t.Fatal("select succeeded without a config file")
-	}
-	if adapter.Model() != "haiku" {
-		t.Errorf("adapter model = %q, want haiku unchanged", adapter.Model())
 	}
 }

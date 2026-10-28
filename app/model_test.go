@@ -56,10 +56,10 @@ func TestSelectModel(t *testing.T) {
 			}
 			if tt.wantEvents == 1 {
 				e := ev.Appended[0]
-				if e.TaskID != "_system" || e.Type != "kernel.model_selected" {
+				if e.TaskID != "_system" || e.Type != "setting.changed" {
 					t.Errorf("event = %s %s", e.TaskID, e.Type)
 				}
-				if string(e.Payload) != `{"model":"sonnet"}` {
+				if string(e.Payload) != `{"key":"model","value":"sonnet"}` {
 					t.Errorf("payload = %s", e.Payload)
 				}
 			}

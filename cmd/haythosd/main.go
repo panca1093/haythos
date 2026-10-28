@@ -109,7 +109,7 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	models, selector, closeModels, err := buildModels(ctx, cfg, *cfgPath, vault, jobs)
+	models, selector, closeModels, err := buildModels(ctx, cfg, vault, jobs)
 	if err != nil {
 		return err
 	}
@@ -149,6 +149,9 @@ func run(args []string) error {
 		if err := a.RestorePause(ctx); err != nil {
 			return err
 		}
+		if err := a.RestoreSettings(ctx); err != nil {
+			return err
+		}
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":
@@ -179,7 +182,7 @@ func run(args []string) error {
 
 // buildModels constructs only the models that the default and the jobs actually use.
 // The selector is nil unless the default model is a claudesdk model, the only kind /model can switch for now.
-func buildModels(ctx context.Context, cfg config.Main, cfgPath string, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, func(), error) {
+func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, func(), error) {
 	need := map[string]bool{cfg.DefaultModel: true}
 	for _, j := range jobs {
 		if j.Model != "" {
@@ -227,7 +230,7 @@ func buildModels(ctx context.Context, cfg config.Main, cfgPath string, vault *fi
 			adapter := claudesdk.New(sc, claudesdk.WithModel(m.Model))
 			models[name] = adapter
 			if name == cfg.DefaultModel {
-				selector = claudeSubSelector{adapter: adapter, lister: sc, cfgPath: cfgPath, name: name}
+				selector = claudeSubSelector{adapter: adapter, lister: sc}
 			}
 		}
 	}
@@ -241,8 +244,6 @@ type modelLister interface {
 type claudeSubSelector struct {
 	adapter *claudesdk.Adapter
 	lister  modelLister
-	cfgPath string
-	name    string
 }
 
 func (s claudeSubSelector) List(ctx context.Context) ([]app.ModelChoice, error) {
@@ -264,11 +265,7 @@ func (s claudeSubSelector) Current() string {
 	return "default"
 }
 
-// Select saves first so a failed write never leaves the running model out of sync with the config.
 func (s claudeSubSelector) Select(_ context.Context, value string) error {
-	if err := config.SaveModelChoice(s.cfgPath, s.name, value); err != nil {
-		return err
-	}
 	s.adapter.SetModel(value)
 	return nil
 }
