@@ -73,6 +73,15 @@ Where a job reports: `deliver_to` is a list of Discord channel or thread IDs, or
 
 Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 20k tokens / 5 steps (max 50k / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
 
+### Brain upkeep (M2B)
+
+Needs the brain wired (Phase 2); all three steps are silent unless noted.
+
+- **Stale hook.** A conversation idle for 3 h with turns not yet extracted gets one background task (`auto/<conversation>` source, unverified) that saves decisions, preferences, corrections, lessons and facts about people/projects/repos into the brain inbox (`inbox/...`). A conversation in which any task read untrusted content is never extracted; it is listed as skipped in the digest.
+- **02:00 consolidation** (`jobs/brain-consolidate.yaml`, Asia/Jakarta). Processes only the inbox items saved on the previous Jakarta day: merge into existing pages, drop noise. Sends no message. If nothing was saved, no task runs.
+- **07:00 digest** (`jobs/brain-digest.yaml`). One message listing what was saved or merged, with an Undo button per item. Ignore it and everything stays. Undo forgets that item (a second click does nothing). No new items and no skipped conversations: no message.
+- **Weekly instead of daily.** Edit `trigger.cron` in `jobs/brain-consolidate.yaml` (for example `CRON_TZ=Asia/Jakarta 0 2 * * 1`) and restart; `/jobs` then shows the next run. The job reads only the day before it fires, so weekly means only that Sunday's items are consolidated; items from other days stay in the inbox.
+
 ## Development
 
 ```bash
