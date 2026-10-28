@@ -460,7 +460,7 @@ func (c *Channel) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 		}
 		stop := c.typing(replyTo)
 		defer stop()
-		if _, err := c.h.HandleInput(ctx, app.Input{Text: text, ReplyTo: replyTo}); err != nil {
+		if _, err := c.h.HandleInput(ctx, app.Input{Text: text, ReplyTo: replyTo, DM: f.DM}); err != nil {
 			slog.Error("handle input failed", "err", err)
 			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "I could not process that message: " + err.Error(), ReplyTo: replyTo})
 		}

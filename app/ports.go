@@ -91,6 +91,8 @@ type Input struct {
 	Text string
 	// ReplyTo is the channel adapter's address for this input's notices; empty means its default.
 	ReplyTo string
+	// DM marks ReplyTo as a direct-message channel; conversation memory only looks back 24 h there.
+	DM bool
 }
 
 type ModelChoice struct {
