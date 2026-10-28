@@ -182,3 +182,36 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 1. In a thread: ask something, then a follow-up that depends on it ("and the second one?"); Alfred should answer in context.
 2. Same in a DM; a DM message a day later should not see yesterday's turns, a thread message should.
 3. Paste several long answers into one thread until it exceeds roughly 28 KB of text, ask again, and check the reply still knows the early topic (summary) and that `sqlite3 <db> "select type from events where task_id like 'conv:%'"` shows one `conv.summary`.
+
+### Phase 2 and 3 (parallel branches, merged 51d7a8d, fix 977d566)
+
+**Changed**
+- MCP stdio client (stdlib), tools `<server>.<tool>`, untrusted unless `trusted: true`; the child gets only PATH and HOME.
+- gbrain `Brain` adapter pinned at `613400c`, `brain.recall` (0), `brain.remember` (1), `brain.forget` (1), `scripts/brain-setup.sh` (not run).
+- Brain first: one `<recalled_memory>` block (≤3 hits, 3,200 bytes) before the first step of an owner chat task, recorded as `brain.recalled`.
+- `auto_when_clean: [brain.remember, brain.forget]`: no approval when the task is untainted and its source is `owner/` or `auto/`; `auto/` forget only for `inbox/` ids.
+- Zero-width/bidi characters stripped from recall and untrusted tool output.
+- Stale hook (3 h), `brain-consolidate` (02:00 WIB, silent), `brain-digest` (07:00 WIB, Undo per item), suppress-embeds on tainted notices; state on the `_brain` stream.
+
+**Decisions at merge**
+- Brain-first recall runs only for `owner/` chat tasks. Extraction and consolidation recall with the tool; injecting recall there made extraction re-save an existing item.
+- gbrain assigns its own fact ids and ignores a requested slug. The adapter returns unverified (auto) facts as `inbox/<id>` and strips the prefix on forget; the kernel tracks inbox saves from the tool result, not the request args.
+- The two fake Brains were unified into one `testfakes.Brain` that satisfies both frozen test files.
+- Deviation from CLAUDE.md: tier-1 `brain.remember`/`brain.forget` skip approval in the cases above (user decision).
+- Phase 2's agent committed a gofmt-only change to its own frozen file (`1260c1d`), no semantic change.
+
+**Uncertain**
+- Nothing ran against a live gbrain: response shapes, trailing notices, `init` re-run safety.
+- Weekly consolidation covers only the day before the run.
+- Undo of a merged item forgets only the inbox fact, not the merged page.
+- `forget` cannot remove imported wiki pages (gbrain forgets facts by id).
+- Small crash windows: lost inbox record, missing outcomes, duplicate digest.
+
+**Frozen tests failing because the test is wrong (left as is, need your call)**
+- M2B-5 `TestM2BScheduledTasksGetNoHistory`: expects 2 messages, the collect step makes it 4.
+- `TestM2BMCPToolTrust/untrusted_server_taints_the_task`: the fake MCP tool has no `readOnlyHint`, so it is treated as a write and waits for approval instead of running. Fix: add `"annotations":{"readOnlyHint":true}` to the fake. The "trusted" subtest passes vacuously for the same reason.
+
+**Needs you live**
+1. Run `scripts/brain-setup.sh`, add the `gbrain` server to `config/haythos.yaml` (README), start, check for no "mcp server skipped" warning.
+2. Ask something from the wiki; say "ingat …" in a thread (no button), then ask from another thread.
+3. Leave a thread idle 3 h; next morning check the 07:00 digest and press Undo once.
