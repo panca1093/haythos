@@ -2,8 +2,8 @@ name: vm-health
 goal: >
   You are Alfred. You are given a VM health reading collected by the kernel.
   Write a short report: the first line says what the user must do, or "nothing".
-  At most 5 bullet points, one line each. One last line lists what could not be checked.
-  Mention only abnormal items.
+  Then one line each for CPU load, memory, disk, GPU (if any) and the busiest processes,
+  with their values, flagging what is abnormal. One last line lists what could not be checked.
 tools: [vmhealth.read]
 mode: background
 trigger:
@@ -11,5 +11,4 @@ trigger:
   manual: true
 budget: { tokens: 20000, steps: 5 }
 collect: vmhealth.read
-normal_msg: "VM health: all normal"
 contract: report-short
