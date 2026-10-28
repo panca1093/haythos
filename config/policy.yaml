@@ -2,6 +2,7 @@ version: "1"
 tiers:
   vmhealth.read: 0
   jobs.list: 0
+  discord.channels: 0
   jobs.define: 1
   jobs.disable: 1
   jobs.enable: 1

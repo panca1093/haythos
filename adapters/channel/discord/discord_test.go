@@ -1,7 +1,9 @@
 package discord
 
 import (
+	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -32,51 +34,168 @@ func TestCustomIDRoundTrip(t *testing.T) {
 	}
 }
 
-func TestAuthorizedOnlyOwnerInConfiguredChannel(t *testing.T) {
-	c := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}}
-	if !c.authorized("me", "ch") || c.authorized("other", "ch") || c.authorized("me", "elsewhere") {
+func TestOnlyTheOwnerIsAuthorized(t *testing.T) {
+	t.Parallel()
+	c := &Channel{cfg: Config{OwnerID: "me"}}
+	if !c.authorized("me") || c.authorized("other") || c.authorized("") {
 		t.Error("authorization wrong")
 	}
 }
 
-func TestAuthorizedInOwnerDM(t *testing.T) {
+func TestDecide(t *testing.T) {
 	t.Parallel()
-	c := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}, dm: "dm-me"}
 	tests := []struct {
-		name, user, channel string
-		want                bool
+		name string
+		in   facts
+		want decision
 	}{
-		{name: "owner in channel", user: "me", channel: "ch", want: true},
-		{name: "owner in own DM", user: "me", channel: "dm-me", want: true},
-		{name: "owner in another channel", user: "me", channel: "elsewhere"},
-		{name: "someone else in owner DM channel", user: "other", channel: "dm-me"},
+		{name: "non-owner in DM", in: facts{DM: true}},
+		{name: "non-owner mentioning in channel", in: facts{Mentioned: true}},
+		{name: "non-owner in active thread", in: facts{Thread: true, Active: true}},
+		{name: "owner DM", in: facts{Owner: true, DM: true}, want: decision{Handle: true}},
+		{name: "owner DM with mention", in: facts{Owner: true, DM: true, Mentioned: true}, want: decision{Handle: true}},
+		{name: "channel without mention", in: facts{Owner: true}},
+		{name: "channel with mention starts a thread", in: facts{Owner: true, Mentioned: true}, want: decision{Handle: true, StartThread: true, Activate: true}},
+		{name: "active thread without mention", in: facts{Owner: true, Thread: true, Active: true}, want: decision{Handle: true}},
+		{name: "active thread with mention", in: facts{Owner: true, Thread: true, Active: true, Mentioned: true}, want: decision{Handle: true}},
+		{name: "inactive thread without mention", in: facts{Owner: true, Thread: true}},
+		{name: "inactive thread with mention joins it", in: facts{Owner: true, Thread: true, Mentioned: true}, want: decision{Handle: true, Activate: true}},
+		{name: "mention-only thread without mention", in: facts{Owner: true, Thread: true, Active: true, MentionOnly: true}},
+		{name: "mention-only thread with mention", in: facts{Owner: true, Thread: true, Active: true, MentionOnly: true, Mentioned: true}, want: decision{Handle: true}},
+		{name: "mention-only flag on an inactive thread, mentioned", in: facts{Owner: true, Thread: true, MentionOnly: true, Mentioned: true}, want: decision{Handle: true, Activate: true}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
-			if got := c.authorized(tt.user, tt.channel); got != tt.want {
-				t.Errorf("authorized(%q, %q) = %v, want %v", tt.user, tt.channel, got, tt.want)
+			if got := decide(tt.in); got != tt.want {
+				t.Errorf("decide(%+v) = %+v, want %+v", tt.in, got, tt.want)
 			}
 		})
 	}
-	noDM := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}}
-	if noDM.authorized("me", "") {
-		t.Error("empty channel authorized when the DM channel is unknown")
+}
+
+func TestStripMention(t *testing.T) {
+	t.Parallel()
+	tests := []struct{ in, want string }{
+		{"<@42> check disk", "check disk"},
+		{"check <@!42> disk", "check  disk"},
+		{"<@42>", ""},
+		{"hello <@99> and <@42>", "hello <@99> and"},
+		{"no mention", "no mention"},
+	}
+	for _, tt := range tests {
+		if got := strings.TrimSpace(stripMention(tt.in, "42")); got != tt.want {
+			t.Errorf("stripMention(%q) = %q, want %q", tt.in, got, tt.want)
+		}
 	}
 }
 
-func TestTargetOnlyAllowsConfiguredChannelOrOwnerDM(t *testing.T) {
+func TestThreadName(t *testing.T) {
 	t.Parallel()
-	c := &Channel{cfg: Config{OwnerID: "me", ChannelID: "ch"}, dm: "dm-me"}
-	tests := []struct{ replyTo, want string }{
-		{replyTo: "", want: "ch"},
-		{replyTo: "ch", want: "ch"},
-		{replyTo: "dm-me", want: "dm-me"},
-		{replyTo: "stranger", want: "ch"},
+	tests := []struct{ in, want string }{
+		{"check the disk", "check the disk"},
+		{"line one\nline two", "line one line two"},
+		{"   ", "Alfred"},
+		{strings.Repeat("é", 150), strings.Repeat("é", 99) + "…"},
 	}
 	for _, tt := range tests {
-		if got := c.target(tt.replyTo); got != tt.want {
-			t.Errorf("target(%q) = %q, want %q", tt.replyTo, got, tt.want)
+		got := threadName(tt.in)
+		if got != tt.want || utf8.RuneCountInString(got) > 100 {
+			t.Errorf("threadName(%q) = %q, want %q", tt.in, got, tt.want)
+		}
+	}
+}
+
+func TestResolveTarget(t *testing.T) {
+	t.Parallel()
+	chans := map[string]*discordgo.Channel{
+		"text":     {ID: "text", GuildID: "g", Type: discordgo.ChannelTypeGuildText},
+		"news":     {ID: "news", GuildID: "g", Type: discordgo.ChannelTypeGuildNews},
+		"thread":   {ID: "thread", GuildID: "g", Type: discordgo.ChannelTypeGuildPublicThread},
+		"private":  {ID: "private", GuildID: "g", Type: discordgo.ChannelTypeGuildPrivateThread},
+		"voice":    {ID: "voice", GuildID: "g", Type: discordgo.ChannelTypeGuildVoice},
+		"category": {ID: "category", GuildID: "g", Type: discordgo.ChannelTypeGuildCategory},
+		"otherdm":  {ID: "otherdm", Type: discordgo.ChannelTypeDM},
+	}
+	lookup := func(id string) (*discordgo.Channel, error) {
+		if ch, ok := chans[id]; ok {
+			return ch, nil
+		}
+		return nil, errors.New("unknown channel")
+	}
+	tests := []struct {
+		name, raw, dm string
+		want          string
+		wantNote      bool
+	}{
+		{name: "empty goes to DM", raw: "", dm: "dm-me", want: "dm-me"},
+		{name: "literal dm", raw: "dm", dm: "dm-me", want: "dm-me"},
+		{name: "the DM channel id", raw: "dm-me", dm: "dm-me", want: "dm-me"},
+		{name: "text channel", raw: "text", dm: "dm-me", want: "text"},
+		{name: "news channel", raw: "news", dm: "dm-me", want: "news"},
+		{name: "public thread", raw: "thread", dm: "dm-me", want: "thread"},
+		{name: "private thread", raw: "private", dm: "dm-me", want: "private"},
+		{name: "voice channel falls back", raw: "voice", dm: "dm-me", want: "dm-me", wantNote: true},
+		{name: "category falls back", raw: "category", dm: "dm-me", want: "dm-me", wantNote: true},
+		{name: "someone else's DM falls back", raw: "otherdm", dm: "dm-me", want: "dm-me", wantNote: true},
+		{name: "unknown id falls back", raw: "999", dm: "dm-me", want: "dm-me", wantNote: true},
+		{name: "unknown DM and bad target", raw: "999", dm: "", want: "", wantNote: true},
+		{name: "no DM known and dm requested", raw: "dm", dm: "", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			got, note := resolveTarget(tt.raw, tt.dm, lookup)
+			if got != tt.want || (note != "") != tt.wantNote {
+				t.Errorf("resolveTarget(%q) = %q, %q; want %q, note=%v", tt.raw, got, note, tt.want, tt.wantNote)
+			}
+		})
+	}
+	_, note := resolveTarget("bad`target", "dm-me", lookup)
+	if strings.Count(note, "`") != 2 {
+		t.Errorf("note %q must not let the raw target break out of its code span", note)
+	}
+}
+
+func TestMentionOnlyReply(t *testing.T) {
+	t.Parallel()
+	on := mentionOnlyReply(app.ThreadMode{Active: true, MentionOnly: true})
+	off := mentionOnlyReply(app.ThreadMode{Active: true})
+	notJoined := mentionOnlyReply(app.ThreadMode{})
+	if !strings.Contains(on, "only when you @mention") || !strings.Contains(off, "every message") || !strings.Contains(notJoined, "not joined") {
+		t.Errorf("replies = %q / %q / %q", on, off, notJoined)
+	}
+}
+
+func TestChannelEntries(t *testing.T) {
+	t.Parallel()
+	got := channelEntries("Home", []*discordgo.Channel{
+		{ID: "1", Name: "infra", Type: discordgo.ChannelTypeGuildText},
+		{ID: "2", Name: "voice", Type: discordgo.ChannelTypeGuildVoice},
+		{ID: "3", Name: "news", Type: discordgo.ChannelTypeGuildNews},
+	}, []*discordgo.Channel{
+		{ID: "4", Name: "disk alerts", Type: discordgo.ChannelTypeGuildPublicThread},
+	})
+	want := []channelEntry{
+		{ID: "1", Name: "infra", Guild: "Home", Kind: "channel"},
+		{ID: "3", Name: "news", Guild: "Home", Kind: "channel"},
+		{ID: "4", Name: "disk alerts", Guild: "Home", Kind: "thread"},
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("entries = %+v, want %+v", got, want)
+	}
+}
+
+func TestRenderNeverPings(t *testing.T) {
+	t.Parallel()
+	for _, n := range []app.Notice{
+		{Kind: app.NoticeMessage, Text: "@everyone"},
+		{Kind: app.NoticeApproval, Approval: &app.ApprovalRequest{Preview: "x", Approval: policy.Approval{ID: "a"}}},
+	} {
+		for _, m := range render(n) {
+			if m.AllowedMentions == nil || len(m.AllowedMentions.Parse) != 0 || len(m.AllowedMentions.Users) != 0 {
+				t.Errorf("%s message allows mentions: %+v", n.Kind, m.AllowedMentions)
+			}
 		}
 	}
 }
@@ -238,11 +357,11 @@ func TestJobsText(t *testing.T) {
 	next := time.Date(2026, 11, 2, 2, 0, 0, 0, time.UTC)
 	got := jobsText([]app.JobStatus{
 		{Name: "vm-health", Source: "config", Cron: "CRON_TZ=Asia/Jakarta 0 7,15 * * *", Tools: []string{"vmhealth.read"}, Enabled: true, Next: next},
-		{Name: "disk", Source: "chat", Cron: "CRON_TZ=Asia/Jakarta 0 9 * * 1", Enabled: false},
-	})
+		{Name: "disk", Source: "chat", Cron: "CRON_TZ=Asia/Jakarta 0 9 * * 1", Enabled: false, DeliverTo: []string{"123", "dm-me"}},
+	}, "dm-me")
 	want := "**Jobs**\n" +
-		"`vm-health` (config) `0 7,15 * * *` next Mon 02 Nov 09:00 WIB · tools: vmhealth.read\n" +
-		"`disk` (chat) `0 9 * * 1` disabled · tools: none\n" +
+		"`vm-health` (config) `0 7,15 * * *` next Mon 02 Nov 09:00 WIB · tools: vmhealth.read → DM\n" +
+		"`disk` (chat) `0 9 * * 1` disabled · tools: none → <#123>, DM\n" +
 		"Create, change, disable or delete chat jobs by asking Alfred; each change asks for approval."
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)

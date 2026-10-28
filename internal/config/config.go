@@ -32,7 +32,8 @@ type Main struct {
 		Dir     string   `yaml:"dir"`
 	} `yaml:"sidecar"`
 	Discord struct {
-		OwnerID   string `yaml:"owner_id"`
+		OwnerID string `yaml:"owner_id"`
+		// Deprecated and ignored; still decoded so configs written before it was removed keep loading.
 		ChannelID string `yaml:"channel_id"`
 	} `yaml:"discord"`
 }
