@@ -73,6 +73,30 @@ Where a job reports: `deliver_to` is a list of Discord channel or thread IDs, or
 
 Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 20k tokens / 5 steps (max 50k / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
 
+### Brain (gbrain)
+
+Long-term memory is [gbrain](https://github.com/garrytan/gbrain), run as an MCP stdio child (`gbrain serve --surface verbs`), keyless: no embedding key, nothing leaves the machine except the prompt to the model.
+
+```bash
+scripts/brain-setup.sh   # you run it: pins gbrain, `gbrain init --pglite --no-embedding`, imports the wiki folders
+```
+
+It imports only `entities/ concepts/ tickets/ learnings/` and `index.md` from `~/Documents/MyBook/wiki` (override with `WIKI_DIR`); never `personal/`. Then declare the server in `config/haythos.yaml`. A server named `gbrain` also becomes Alfred's brain:
+
+```yaml
+mcp:
+  servers:
+    - name: gbrain
+      command: gbrain
+      args: [serve, --surface, verbs]
+      trusted: true   # omit for any other server: its tool results then taint the task
+```
+
+- **Brain first**: before the first model step of a chat task the kernel recalls with your message (at most 3 hits, about 3 KB) and injects them once as a labelled data block. No hits, nothing injected.
+- **Tools**: `brain.recall` (tier 0), `brain.remember` and `brain.forget` (tier 1). Say "ingat ..." and `brain.remember` runs without a button, but only when the task is untainted and started by your own message (`auto_when_clean` in `config/policy.yaml`); a tainted task asks for approval. The stored provenance (`owner/<thread>`) is set by the kernel, never by the model.
+- **Other MCP servers** use the same `mcp.servers` list, are untrusted by default, and need their tools listed in `config/policy.yaml` and a job's `tools` before the model can call them.
+- Zero-width and bidi control characters are stripped from recalled content and untrusted tool output.
+
 ## Development
 
 ```bash

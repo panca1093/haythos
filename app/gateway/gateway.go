@@ -44,8 +44,10 @@ type Request struct {
 	Call      task.ToolCall
 	Allowlist []string
 	Tainted   bool
-	Trusted   []string
-	Approval  *policy.Approval
+	// BrainSource is the task's brain provenance, used for auto-approval.
+	BrainSource string
+	Trusted     []string
+	Approval    *policy.Approval
 }
 
 type Pending struct {
@@ -93,7 +95,8 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	dec := g.d.Policy.Evaluate(policy.Input{
 		Tool: spec.Name, Write: spec.Write, Tainted: req.Tainted,
 		TargetTrusted: target != "" && mentioned(req.Trusted, target),
-		Secrets:       secretRef.FindAllString(string(call.Args), -1),
+		Source:        req.BrainSource, Target: target,
+		Secrets: secretRef.FindAllString(string(call.Args), -1),
 	})
 	if dec.Action == policy.Deny {
 		return denied(call, "denied by policy: "+dec.Reason), nil
@@ -211,6 +214,9 @@ func (g *Gateway) invoke(ctx context.Context, call task.ToolCall, spec task.Tool
 		return res, err
 	}
 	res.Content = scrub(res.Content, values)
+	if spec.Untrusted {
+		res.Content = task.StripInvisible(res.Content)
+	}
 	return res, nil
 }
 

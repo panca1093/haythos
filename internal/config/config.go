@@ -21,6 +21,13 @@ type Model struct {
 	Secret  string `yaml:"secret"`
 }
 
+type MCPServer struct {
+	Name    string   `yaml:"name"`
+	Command string   `yaml:"command"`
+	Args    []string `yaml:"args"`
+	Trusted bool     `yaml:"trusted"`
+}
+
 type Main struct {
 	DB           string           `yaml:"db"`
 	Vault        string           `yaml:"vault"`
@@ -31,6 +38,9 @@ type Main struct {
 		Args    []string `yaml:"args"`
 		Dir     string   `yaml:"dir"`
 	} `yaml:"sidecar"`
+	MCP struct {
+		Servers []MCPServer `yaml:"servers"`
+	} `yaml:"mcp"`
 	Discord struct {
 		OwnerID string `yaml:"owner_id"`
 		// Deprecated and ignored; still decoded so configs written before it was removed keep loading.
@@ -66,6 +76,16 @@ func LoadMain(path string) (Main, error) {
 			return m, fmt.Errorf("%s: model %s has unknown kind %q", path, name, md.Kind)
 		}
 	}
+	seen := map[string]bool{}
+	for _, sv := range m.MCP.Servers {
+		if sv.Name == "" || sv.Command == "" || strings.Contains(sv.Name, ".") {
+			return m, fmt.Errorf("%s: mcp server needs a name without dots and a command, got name %q", path, sv.Name)
+		}
+		if seen[sv.Name] {
+			return m, fmt.Errorf("%s: mcp server %q is listed twice", path, sv.Name)
+		}
+		seen[sv.Name] = true
+	}
 	return m, nil
 }
 
@@ -74,6 +94,8 @@ func LoadPolicy(path string) (policy.Policy, error) {
 		Version string              `yaml:"version"`
 		Tiers   map[string]int      `yaml:"tiers"`
 		Secrets map[string][]string `yaml:"secrets"`
+		// AutoWhenClean names tier-1 writes that skip approval in an untainted owner task.
+		AutoWhenClean []string `yaml:"auto_when_clean"`
 	}
 	if err := decode(path, &f); err != nil {
 		return policy.Policy{}, err
@@ -85,6 +107,12 @@ func LoadPolicy(path string) (policy.Policy, error) {
 		}
 		p.Tiers[tool] = policy.Tier(t)
 	}
+	for _, tool := range f.AutoWhenClean {
+		if p.Tiers[tool] != policy.TierInternalWrite {
+			return p, fmt.Errorf("%s: auto_when_clean tool %s must be listed at tier 1", path, tool)
+		}
+	}
+	p.AutoWhenClean = f.AutoWhenClean
 	for tool := range f.Secrets {
 		if _, ok := p.Tiers[tool]; !ok {
 			return p, fmt.Errorf("%s: secrets bound to %s, which has no tier", path, tool)

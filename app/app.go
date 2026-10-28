@@ -333,6 +333,12 @@ func (a *App) run(ctx context.Context, id string) error {
 			return a.fail(ctx, id, "budget")
 		}
 
+		if recorded, err := a.brainFirst(ctx, id, s); err != nil {
+			return err
+		} else if recorded {
+			continue
+		}
+
 		model, ok := a.d.Models[s.Created.Model]
 		if !ok {
 			return a.fail(ctx, id, fmt.Sprintf("model %q is not configured", s.Created.Model))
@@ -369,7 +375,7 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	}
 	out, err := a.gw.Execute(context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
-		Tainted: s.Tainted, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
+		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
 	})
 	switch {
 	case errors.Is(err, policy.ErrApprovalVoid):

@@ -21,14 +21,18 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/panca/haythos/adapters/brain/gbrain"
 	"github.com/panca/haythos/adapters/channel/discord"
 	"github.com/panca/haythos/adapters/model/anthropic"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/model/openai"
 	"github.com/panca/haythos/adapters/store/sqlite"
+	muxtools "github.com/panca/haythos/adapters/tools"
 	"github.com/panca/haythos/adapters/tools/local"
+	braintools "github.com/panca/haythos/adapters/tools/local/brain"
 	jobtools "github.com/panca/haythos/adapters/tools/local/jobs"
 	"github.com/panca/haythos/adapters/tools/local/vmhealth"
+	"github.com/panca/haythos/adapters/tools/mcp"
 	"github.com/panca/haythos/adapters/vault/file"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
@@ -46,6 +50,8 @@ var defaultJob = app.Job{
 }
 
 var discordChatTools = []string{"discord.post"}
+
+var brainChatTools = []string{"brain.recall", "brain.remember", "brain.forget"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
@@ -122,6 +128,22 @@ func run(args []string) error {
 	tools := local.New()
 	vmhealth.Register(tools, vmhealth.New())
 
+	allTools := muxtools.Mux{tools}
+	var brain app.Brain
+	for _, sv := range cfg.MCP.Servers {
+		c, err := mcp.Start(ctx, mcp.Config{Name: sv.Name, Command: sv.Command, Args: sv.Args, Trusted: sv.Trusted})
+		if err != nil {
+			slog.Warn("mcp server skipped", "server", sv.Name, "err", err)
+			continue
+		}
+		defer func() { _ = c.Close() }()
+		allTools = append(allTools, c)
+		if sv.Name == gbrain.ServerName {
+			brain = gbrain.New(c)
+			braintools.Register(tools, brain)
+		}
+	}
+
 	var notifier app.Notifier = stdoutNotifier{}
 	var channel *discord.Channel
 	if cmd == "serve" {
@@ -150,8 +172,11 @@ func run(args []string) error {
 	if channel != nil {
 		dj.Tools = append(slices.Clone(dj.Tools), discordChatTools...)
 	}
+	if brain != nil {
+		dj.Tools = append(slices.Clone(dj.Tools), brainChatTools...)
+	}
 	a := app.New(app.Deps{
-		Models: models, DefaultJob: dj, Jobs: jobs, Tools: tools, Events: store, Ledger: store,
+		Models: models, DefaultJob: dj, Jobs: jobs, Tools: allTools, Events: store, Ledger: store, Brain: brain,
 		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,
 	})
 	jobtools.Register(tools, a)

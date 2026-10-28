@@ -35,6 +35,8 @@ type Policy struct {
 	Tiers   map[string]Tier
 	// Secrets lists, per tool, the vault names its arguments may reference; any other handle is exfiltration.
 	Secrets map[string][]string
+	// AutoWhenClean lists tier-1 writes that run without approval in an untainted owner or background-brain task.
+	AutoWhenClean []string
 }
 
 type Input struct {
@@ -42,7 +44,11 @@ type Input struct {
 	Write         bool
 	Tainted       bool
 	TargetTrusted bool
-	Secrets       []string
+	// Source is the task's brain provenance ("owner/...", "auto/..."); empty for tasks that cannot write to memory.
+	Source string
+	// Target is the write target the tool call names, if any.
+	Target  string
+	Secrets []string
 }
 
 type Decision struct {
@@ -59,6 +65,17 @@ type Approval struct {
 	ArgsHash      string    `json:"args_hash"`
 	Expiry        time.Time `json:"expiry"`
 	PolicyVersion string    `json:"policy_version"`
+}
+
+// autoSource: owner tasks always qualify; background (auto/) tasks may forget only inbox items.
+func autoSource(in Input) bool {
+	switch {
+	case strings.HasPrefix(in.Source, "owner/"):
+		return true
+	case strings.HasPrefix(in.Source, "auto/"):
+		return in.Tool != "brain.forget" || strings.HasPrefix(in.Target, "inbox/")
+	}
+	return false
 }
 
 var ErrApprovalVoid = errors.New("approval void")
@@ -82,10 +99,12 @@ func (p Policy) Evaluate(in Input) Decision {
 		d.Tier, d.Escalated = TierHighImpact, true
 		d.Reason = "target did not come from a trusted instruction"
 	}
-	switch d.Tier {
-	case TierRead:
+	switch {
+	case d.Tier == TierRead:
 		d.Action = Allow
-	case TierForbidden:
+	case d.Tier == TierInternalWrite && !in.Tainted && slices.Contains(p.AutoWhenClean, in.Tool) && autoSource(in):
+		d.Action = Allow
+	case d.Tier == TierForbidden:
 		d.Action = Deny
 		d.Reason = "forbidden tier"
 	default:
