@@ -151,3 +151,32 @@ func TestModelMenu(t *testing.T) {
 		})
 	}
 }
+
+func TestSettingsText(t *testing.T) {
+	got := settingsText([]app.SettingValue{
+		{Key: "model", Value: "sonnet", Default: "default", Overridden: true},
+		{Key: "quiet", Value: "off", Default: "off"},
+	})
+	want := "**Settings**\n`model` = `sonnet` (changed; default `default`)\n`quiet` = `off` (default)"
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+	if got := settingsText(nil); got != "No runtime settings." {
+		t.Errorf("empty = %q", got)
+	}
+}
+
+func TestJobsText(t *testing.T) {
+	next := time.Date(2026, 11, 2, 2, 0, 0, 0, time.UTC)
+	got := jobsText([]app.JobStatus{
+		{Name: "vm-health", Source: "config", Cron: "CRON_TZ=Asia/Jakarta 0 7,15 * * *", Tools: []string{"vmhealth.read"}, Enabled: true, Next: next},
+		{Name: "disk", Source: "chat", Cron: "CRON_TZ=Asia/Jakarta 0 9 * * 1", Enabled: false},
+	})
+	want := "**Jobs**\n" +
+		"`vm-health` (config) `0 7,15 * * *` next Mon 02 Nov 09:00 WIB · tools: vmhealth.read\n" +
+		"`disk` (chat) `0 9 * * 1` disabled · tools: none\n" +
+		"Create, change, disable or delete chat jobs by asking Alfred; each change asks for approval."
+	if got != want {
+		t.Errorf("got:\n%s\nwant:\n%s", got, want)
+	}
+}

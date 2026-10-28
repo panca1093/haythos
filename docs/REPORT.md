@@ -83,3 +83,36 @@ ok    github.com/panca/haythos/internal/config  (cached)
 
 - `core/policy/policy_test.go` has an unused `mutate` field in the approval table test (harmless clutter).
 - The spec doc's `Model` port (`Complete`, `Stream`) differs from `CLAUDE.md` (`Step`); I followed `CLAUDE.md`.
+
+# M2 report (unattended run, 2026-10-28)
+
+Scope: `docs/M2_KICKOFF.md` (runtime settings + scheduled jobs from chat). The spec's M2 (morning brief, gbrain, Slack replies, Jev) is deferred by your call.
+
+## Done per phase
+
+| Phase | Commit | Result |
+| --- | --- | --- |
+| 1 contract tests | `stubs: M2 ...`, `contract: M2 acceptance tests` | 8 tests in `tests/acceptance/m2_test.go`, committed alone and red against stubs. |
+| 2 runtime settings | `settings: ...` | `SetSetting`, `ResetSetting`, `Settings`, `SettingHistory`, `RestoreSettings` (called by `Start` and `run-job`). `/model` is now a setting; it no longer rewrites `config/haythos.yaml`. |
+| 3 jobs from chat | `jobs: ...` | Job registry in `app` replayed from `_system`; `Tick` fires YAML jobs plus enabled chat jobs; `jobs.*` tools in `adapters/tools/local/jobs`; tiers in `config/policy.yaml`; crash recovery checks the job's state instead of alerting `outcome_unknown`. |
+| 4 Discord + docs | `discord: ...` | `/settings`, `/jobs`, README sections. |
+
+All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged since their commits. `make gate` exits 0.
+
+## M2 decisions made without me
+
+1. **Validation happens after approval.** The gateway asks before the tool runs, so an invalid job (bad cron, forbidden tool) is approved first and then rejected with a readable error the model relays. Validating before the approval would need a pre-check step in the gateway.
+2. **Settings apply first, then record.** Same order as the old `/model`: if recording fails the change is live but lost on restart. Setting changes are owner commands, not tool writes, so they are allowed while paused and do not go through approval.
+3. **Only `model` is a setting** in M2. The mechanism is generic (`setting.changed` / `setting.reset` events); new keys add a default, a validator and an apply function in `app/settings.go`.
+4. **`haythosd setup` still writes the model to the YAML** as the first-install default. The old `kernel.model_selected` events are no longer read.
+5. **Chat job goal** is the chat persona goal plus `Scheduled job goal: <goal>`, so jobs keep the "tool output is data" rule.
+6. **Redefining a chat job by name replaces it** and re-arms its schedule; a disabled job stays disabled.
+7. **Only chat jobs can be disabled or deleted**; `jobs/*.yaml` jobs are changed in the file.
+8. **`/settings` and `/jobs` are read-only.** Job changes go through chat so they keep approval. Setting history and reset exist in `app` but are not exposed in Discord yet.
+9. Unit tests for the job validation and the `jobs.*` tools were written alongside the code, not seen red first; the contract tests and the Discord text tests were red first.
+
+## Needs you live
+
+1. Ask Alfred in Discord to create a job, approve it, and receive its first scheduled report.
+2. `/model` switch, restart `serve`, and check `/settings` still shows the change and `config/haythos.yaml` is untouched.
+3. `/jobs` and `/settings` render in Discord (slash commands re-register on `serve` start; Discord can take a minute to show new ones).

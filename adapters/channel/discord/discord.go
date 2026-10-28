@@ -39,6 +39,8 @@ type Handler interface {
 	ListModels(ctx context.Context) ([]app.ModelChoice, error)
 	CurrentModel() string
 	SelectModel(ctx context.Context, value string) error
+	Settings(ctx context.Context) ([]app.SettingValue, error)
+	ListJobs(ctx context.Context) ([]app.JobStatus, error)
 }
 
 type Config struct {
@@ -76,6 +78,8 @@ func (c *Channel) Open() error {
 		{Name: "pause", Description: "Stop all writes immediately"},
 		{Name: "resume", Description: "Allow writes again"},
 		{Name: "model", Description: "Show or switch the model"},
+		{Name: "settings", Description: "Show runtime settings and what changed them"},
+		{Name: "jobs", Description: "List scheduled jobs and their next run"},
 	}
 	if _, err := c.s.ApplicationCommandBulkOverwrite(c.s.State.User.ID, "", cmds); err != nil {
 		return fmt.Errorf("register slash commands: %w", err)
@@ -330,10 +334,59 @@ func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		} else {
 			msg = "Resumed. Writes still need approval."
 		}
+	case "settings":
+		if vals, err := c.h.Settings(ctx); err != nil {
+			msg = "Could not read settings: " + err.Error()
+		} else {
+			msg = settingsText(vals)
+		}
+	case "jobs":
+		if js, err := c.h.ListJobs(ctx); err != nil {
+			msg = "Could not list jobs: " + err.Error()
+		} else {
+			msg = jobsText(js)
+		}
 	default:
 		return
 	}
-	c.respond(s, i, discordgo.InteractionResponseChannelMessageWithSource, msg, nil)
+	c.respond(s, i, discordgo.InteractionResponseChannelMessageWithSource, clip(msg, maxMessage), nil)
+}
+
+func settingsText(vals []app.SettingValue) string {
+	if len(vals) == 0 {
+		return "No runtime settings."
+	}
+	lines := []string{"**Settings**"}
+	for _, v := range vals {
+		src := "(default)"
+		if v.Overridden {
+			src = "(changed; default `" + v.Default + "`)"
+		}
+		lines = append(lines, fmt.Sprintf("`%s` = `%s` %s", v.Key, v.Value, src))
+	}
+	return strings.Join(lines, "\n")
+}
+
+var wib = time.FixedZone("WIB", 7*3600)
+
+func jobsText(js []app.JobStatus) string {
+	lines := []string{"**Jobs**"}
+	for _, j := range js {
+		when := "disabled"
+		switch {
+		case j.Enabled && j.Next.IsZero():
+			when = "manual only"
+		case j.Enabled:
+			when = "next " + j.Next.In(wib).Format("Mon 02 Jan 15:04") + " WIB"
+		}
+		tools := "none"
+		if len(j.Tools) > 0 {
+			tools = strings.Join(j.Tools, ", ")
+		}
+		lines = append(lines, fmt.Sprintf("`%s` (%s) `%s` %s · tools: %s", j.Name, j.Source, strings.TrimPrefix(j.Cron, "CRON_TZ=Asia/Jakarta "), when, tools))
+	}
+	lines = append(lines, "Create, change, disable or delete chat jobs by asking Alfred; each change asks for approval.")
+	return strings.Join(lines, "\n")
 }
 
 func (c *Channel) respond(s *discordgo.Session, i *discordgo.InteractionCreate, typ discordgo.InteractionResponseType, content string, comps []discordgo.MessageComponent) {

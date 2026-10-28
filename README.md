@@ -51,7 +51,17 @@ Discord: only `discord.owner_id` in `discord.channel_id` is obeyed. `/pause` sto
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default. `haythosd setup` sets it for you from the live SDK list. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart; the choice is saved to `config/haythos.yaml`. This works only when `default_model` is a `claudesdk` model.
+Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default. `haythosd setup` sets it for you from the live SDK list. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
+
+### Runtime settings
+
+`config/haythos.yaml` holds the defaults. Changes made while running (today: `/model`) are stored as events in the database, so they survive restarts, keep a history, and never rewrite the config file. `/settings` in Discord shows each value and whether it is the default or was changed.
+
+### Scheduled jobs from chat
+
+Ask Alfred in Discord, for example "every Monday 09:00 check the disk and report". Alfred proposes a job (name, cron, goal, tools) and you approve it with a button; nothing is scheduled before that. Disable, enable, change or delete it the same way. `/jobs` lists every job with its source (`config` for `jobs/*.yaml`, `chat` for these) and its next run.
+
+Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 20k tokens / 5 steps (max 50k / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
 
 ## Development
 
