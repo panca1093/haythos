@@ -207,7 +207,7 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 - `forget` cannot remove imported wiki pages (gbrain forgets facts by id).
 - Small crash windows: lost inbox record, missing outcomes, duplicate digest.
 
-**Frozen tests failing because the test is wrong (left as is, need your call)**
+**Frozen tests that were wrong: fixed with your approval on 2026-10-29 (`e38abda`, alone); `make gate` EXIT=0 after**
 - M2B-5 `TestM2BScheduledTasksGetNoHistory`: expects 2 messages, the collect step makes it 4.
 - `TestM2BMCPToolTrust/untrusted_server_taints_the_task`: the fake MCP tool has no `readOnlyHint`, so it is treated as a write and waits for approval instead of running. Fix: add `"annotations":{"readOnlyHint":true}` to the fake. The "trusted" subtest passes vacuously for the same reason.
 
