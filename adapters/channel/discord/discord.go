@@ -20,6 +20,8 @@ import (
 const (
 	maxMessage = 1900
 	idPrefix   = "ap"
+	undoPrefix = "un"
+	undoLabel  = 70
 	handleTO   = 30 * time.Minute
 
 	modelSelectID = "mdl"
@@ -42,11 +44,13 @@ const (
 	kindUnknown componentKind = iota
 	kindApproval
 	kindModel
+	kindUndo
 )
 
 type Handler interface {
 	HandleInput(ctx context.Context, in app.Input) (string, error)
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
+	UndoBrain(ctx context.Context, itemID string) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
 	ListModels(ctx context.Context) ([]app.ModelChoice, error)
@@ -280,9 +284,15 @@ func render(n app.Notice) []*discordgo.MessageSend {
 	msgs := renderNotice(n)
 	for _, m := range msgs {
 		m.AllowedMentions = &discordgo.MessageAllowedMentions{}
+		if n.Tainted {
+			m.Flags |= discordgo.MessageFlagsSuppressEmbeds
+		}
 	}
 	return msgs
 }
+
+// Render is the Discord form of a notice, exported so acceptance tests can inspect the message flags.
+func Render(n app.Notice) []*discordgo.MessageSend { return render(n) }
 
 func renderNotice(n app.Notice) []*discordgo.MessageSend {
 	switch n.Kind {
@@ -300,6 +310,10 @@ func renderNotice(n app.Notice) []*discordgo.MessageSend {
 				discordgo.Button{Label: "Reject", Style: discordgo.DangerButton, CustomID: customID(n.TaskID, a.Approval.ID, false)},
 			}}},
 		}}
+	case app.NoticeDigest:
+		msgs := chunks(n.Text)
+		msgs[len(msgs)-1].Components = undoRows(n.Undo)
+		return msgs
 	case app.NoticeAlert:
 		return chunks("🚨 " + n.Text)
 	case app.NoticeState:
@@ -372,9 +386,68 @@ func parseCustomID(id string) (taskID, approvalID string, approve, ok bool) {
 	return p[1], p[2], p[3] == "y", true
 }
 
+func undoID(itemID string) string { return undoPrefix + "|" + itemID }
+
+func parseUndoID(id string) (itemID string, ok bool) {
+	itemID, ok = strings.CutPrefix(id, undoPrefix+"|")
+	if !ok || itemID == "" {
+		return "", false
+	}
+	return itemID, true
+}
+
+func undoRows(actions []app.UndoAction) []discordgo.MessageComponent {
+	var rows []discordgo.MessageComponent
+	for i := 0; i < len(actions); i += 5 {
+		var buttons []discordgo.MessageComponent
+		for _, a := range actions[i:min(i+5, len(actions))] {
+			buttons = append(buttons, discordgo.Button{Label: "Undo " + truncate(a.Label, undoLabel), Style: discordgo.SecondaryButton, CustomID: undoID(a.ID)})
+		}
+		rows = append(rows, discordgo.ActionsRow{Components: buttons})
+	}
+	return rows
+}
+
+// withoutButton drops the button with customID from the rows of a received message, and rows left empty.
+func withoutButton(comps []discordgo.MessageComponent, customID string) []discordgo.MessageComponent {
+	rows := []discordgo.MessageComponent{}
+	for _, c := range comps {
+		var inner []discordgo.MessageComponent
+		switch r := c.(type) {
+		case *discordgo.ActionsRow:
+			inner = r.Components
+		case discordgo.ActionsRow:
+			inner = r.Components
+		default:
+			continue
+		}
+		var kept []discordgo.MessageComponent
+		for _, b := range inner {
+			switch btn := b.(type) {
+			case *discordgo.Button:
+				if btn.CustomID == customID {
+					continue
+				}
+			case discordgo.Button:
+				if btn.CustomID == customID {
+					continue
+				}
+			}
+			kept = append(kept, b)
+		}
+		if len(kept) > 0 {
+			rows = append(rows, discordgo.ActionsRow{Components: kept})
+		}
+	}
+	return rows
+}
+
 func classify(id string) componentKind {
 	if id == modelSelectID {
 		return kindModel
+	}
+	if _, ok := parseUndoID(id); ok {
+		return kindUndo
 	}
 	if _, _, _, ok := parseCustomID(id); ok {
 		return kindApproval
@@ -487,6 +560,8 @@ func (c *Channel) onInteraction(s *discordgo.Session, i *discordgo.InteractionCr
 			c.onApproval(s, i)
 		case kindModel:
 			c.onModelSelect(s, i)
+		case kindUndo:
+			c.onUndo(s, i)
 		}
 	}
 }
@@ -507,6 +582,27 @@ func (c *Channel) onApproval(s *discordgo.Session, i *discordgo.InteractionCreat
 			slog.Error("handle approval failed", "err", err)
 			_ = c.Publish(ctx, app.Notice{Kind: app.NoticeAlert, Text: "Approval failed: " + err.Error(), ReplyTo: i.ChannelID})
 		}
+	}()
+}
+
+func (c *Channel) onUndo(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	customID := i.MessageComponentData().CustomID
+	itemID, _ := parseUndoID(customID)
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredMessageUpdate}); err != nil {
+		slog.Error("interaction respond failed", "err", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), modelTO)
+		defer cancel()
+		content, comps := i.Message.Content, i.Message.Components
+		if err := c.h.UndoBrain(ctx, itemID); err != nil {
+			slog.Error("undo brain item failed", "err", err)
+			content += "\nUndo failed: " + err.Error()
+		} else {
+			comps = withoutButton(comps, customID)
+		}
+		c.edit(s, i, clip(content, maxMessage), comps)
 	}()
 }
 

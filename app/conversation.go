@@ -65,6 +65,10 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 		}
 	}
 	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock()}
+	marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
+	if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
+		return fmt.Errorf("record brain turn marker: %w", err)
+	}
 	if _, err := a.d.Events.Append(ctx, convStream(s.Created.ReplyTo), evConvTurn, turn); err != nil {
 		return fmt.Errorf("record conversation turn: %w", err)
 	}

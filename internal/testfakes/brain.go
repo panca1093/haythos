@@ -31,11 +31,17 @@ func (b *Brain) Recall(_ context.Context, query string, limit int) ([]app.BrainI
 	return append([]app.BrainItem(nil), b.Items[:n]...), nil
 }
 
+func NewBrain() *Brain { return &Brain{} }
+
 func (b *Brain) Remember(_ context.Context, item app.BrainItem) (string, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.Remembered = append(b.Remembered, item)
-	return fmt.Sprintf("fake-%d", len(b.Remembered)), nil
+	if item.Slug == "" {
+		item.Slug = fmt.Sprintf("fake-%d", len(b.Remembered))
+	}
+	b.Items = append(b.removed(item.Slug), item)
+	return item.Slug, nil
 }
 
 func (b *Brain) Forget(_ context.Context, slug string) error {
@@ -45,5 +51,33 @@ func (b *Brain) Forget(_ context.Context, slug string) error {
 		return errors.New("fake brain: empty slug")
 	}
 	b.Forgotten = append(b.Forgotten, slug)
+	b.Items = b.removed(slug)
 	return nil
+}
+
+func (b *Brain) Item(slug string) (app.BrainItem, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	for _, it := range b.Items {
+		if it.Slug == slug {
+			return it, true
+		}
+	}
+	return app.BrainItem{}, false
+}
+
+func (b *Brain) ForgetCalls() int {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return len(b.Forgotten)
+}
+
+func (b *Brain) removed(slug string) []app.BrainItem {
+	out := b.Items[:0:0]
+	for _, it := range b.Items {
+		if it.Slug != slug {
+			out = append(out, it)
+		}
+	}
+	return out
 }

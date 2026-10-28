@@ -118,6 +118,8 @@ type Created struct {
 	Targets   []string `json:"targets,omitempty"`
 	// BrainSource is the provenance the kernel stamps on brain writes from this task; the model cannot set it.
 	BrainSource string `json:"brain_source,omitempty"`
+	// Silent suppresses the final and failure notices of this task.
+	Silent bool `json:"silent,omitempty"`
 }
 
 type StateChange struct {

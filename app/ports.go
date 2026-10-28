@@ -59,6 +59,7 @@ const (
 	NoticeApproval NoticeKind = "approval.request"
 	NoticeState    NoticeKind = "task.state"
 	NoticeAlert    NoticeKind = "alert"
+	NoticeDigest   NoticeKind = "brain.digest"
 )
 
 type ApprovalRequest struct {
@@ -66,6 +67,11 @@ type ApprovalRequest struct {
 	Tier      policy.Tier
 	Escalated bool
 	Preview   string
+}
+
+type UndoAction struct {
+	ID    string
+	Label string
 }
 
 type Notice struct {
@@ -77,6 +83,10 @@ type Notice struct {
 	Reason   string
 	Approval *ApprovalRequest
 	ReplyTo  string
+	// Tainted marks a notice from a task that read untrusted content; channels must not unfurl links in it.
+	Tainted bool
+	// Undo are the per-item Undo buttons of a digest; the channel passes the chosen ID to App.UndoBrain.
+	Undo []UndoAction
 }
 
 type Notifier interface {
@@ -99,6 +109,10 @@ type Job struct {
 	NormalMsg string
 	// DeliverTo are channel-adapter addresses for this job's notices; empty means the adapter's default.
 	DeliverTo []string
+	// Silent suppresses the task's final and failure notices.
+	Silent bool
+	// BrainSource is the provenance stamped on brain writes from this job's tasks.
+	BrainSource string
 }
 
 type Input struct {

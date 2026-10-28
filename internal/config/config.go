@@ -133,6 +133,9 @@ type jobFile struct {
 	NormalMsg string      `yaml:"normal_msg"`
 	Contract  string      `yaml:"contract"`
 	DeliverTo []string    `yaml:"deliver_to"`
+	Silent    bool        `yaml:"silent"`
+	// BrainSource is the provenance the kernel stamps on brain writes from this job.
+	BrainSource string `yaml:"brain_source"`
 }
 
 // LoadJobs reads every *.yaml in dir.
@@ -162,6 +165,7 @@ func LoadJobs(dir string) ([]app.Job, error) {
 		jobs = append(jobs, app.Job{
 			Name: f.Name, Goal: strings.TrimSpace(f.Goal), Model: f.Model, Tools: f.Tools,
 			Budget: f.Budget, Trigger: f.Trigger, Collect: f.Collect, NormalMsg: f.NormalMsg, DeliverTo: f.DeliverTo,
+			Silent: f.Silent, BrainSource: f.BrainSource,
 		})
 	}
 	return jobs, nil
