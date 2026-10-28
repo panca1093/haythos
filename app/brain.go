@@ -26,9 +26,9 @@ type brainRecalled struct {
 	Error bool `json:"error,omitempty"`
 }
 
-// brainFirst recalls once per task, before its first model step. It reports whether it recorded the attempt.
+// brainFirst recalls once per owner chat task, before its first model step; background brain tasks recall with the tool.
 func (a *App) brainFirst(ctx context.Context, id string, s task.Snapshot) (bool, error) {
-	if a.d.Brain == nil || s.Steps > 0 || s.Created.BrainSource == "" {
+	if a.d.Brain == nil || s.Steps > 0 || !strings.HasPrefix(s.Created.BrainSource, "owner/") {
 		return false, nil
 	}
 	events, err := a.d.Events.Load(ctx, id)

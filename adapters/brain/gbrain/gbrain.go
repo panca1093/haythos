@@ -56,6 +56,9 @@ func truncate(s string, n int) string {
 	return s[:n]
 }
 
+// gbrain ids are opaque; unverified (auto-extracted) facts are exposed as inbox/<id> so the kernel's inbox rules apply.
+const inboxPrefix = "inbox/"
+
 func (b *Brain) Recall(ctx context.Context, query string, limit int) ([]app.BrainItem, error) {
 	// `query` searches pages, `question` ranks facts by relevance; limit is per arm, so the merge is cut to limit below.
 	out, err := b.call(ctx, "recall", map[string]any{"query": query, "question": truncate(query, 2000), "limit": limit})
@@ -81,7 +84,11 @@ func (b *Brain) Recall(ctx context.Context, query string, limit int) ([]app.Brai
 	var items []app.BrainItem
 	for _, f := range resp.Facts {
 		src, unv := decodeProvenance(f.Provenance)
-		items = append(items, app.BrainItem{Slug: idString(f.FactID), Text: f.Fact, Source: src, Unverified: unv})
+		slug := idString(f.FactID)
+		if unv {
+			slug = inboxPrefix + slug
+		}
+		items = append(items, app.BrainItem{Slug: slug, Text: f.Fact, Source: src, Unverified: unv})
 	}
 	for _, r := range resp.Results {
 		// TODO: uncertain — search hits only report their origin page slug, so every page is labelled import/mybook (the only content scripts/brain-setup.sh imports)
@@ -118,12 +125,15 @@ func (b *Brain) Remember(ctx context.Context, item app.BrainItem) (string, error
 	if id == "" {
 		return "", errors.New("remember response has no id")
 	}
+	if item.Unverified {
+		return inboxPrefix + id, nil
+	}
 	return id, nil
 }
 
 // Forget expires a fact by the id Remember or Recall returned; gbrain cannot forget an imported page this way.
 func (b *Brain) Forget(ctx context.Context, slug string) error {
-	_, err := b.call(ctx, "forget", map[string]any{"id": slug})
+	_, err := b.call(ctx, "forget", map[string]any{"id": strings.TrimPrefix(slug, inboxPrefix)})
 	return err
 }
 

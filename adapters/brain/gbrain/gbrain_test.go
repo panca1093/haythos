@@ -44,7 +44,7 @@ func TestRecallMergesFactsThenPagesAndRestoresProvenance(t *testing.T) {
 	}
 	want := []app.BrainItem{
 		{Slug: "41", Text: "rapat jam 3", Source: "owner/thread-42"},
-		{Slug: "42", Text: "prefers tabs", Source: "auto/thread-7", Unverified: true},
+		{Slug: "inbox/42", Text: "prefers tabs", Source: "auto/thread-7", Unverified: true},
 		{Slug: "entities/lsm", Title: "LSM", Text: "loan state machine", Source: "import/mybook"},
 	}
 	if len(got) != len(want) {
@@ -78,16 +78,17 @@ func TestRememberStoresKernelProvenance(t *testing.T) {
 		provenance string
 		origin     string
 		fact       string
+		id         string
 	}{
-		{"owner", app.BrainItem{Text: "rapat jam 3", Source: "owner/thread-42"}, "owner/thread-42", "user_said", "rapat jam 3"},
-		{"auto is unverified", app.BrainItem{Title: "Pref", Text: "tabs", Source: "auto/thread-7", Unverified: true}, "auto/thread-7 unverified", "inferred", "Pref: tabs"},
-		{"spaces in source cannot forge the marker", app.BrainItem{Text: "x", Source: "owner/a unverified"}, "owner/a_unverified", "user_said", "x"},
+		{"owner", app.BrainItem{Text: "rapat jam 3", Source: "owner/thread-42"}, "owner/thread-42", "user_said", "rapat jam 3", "77"},
+		{"auto is unverified", app.BrainItem{Title: "Pref", Text: "tabs", Source: "auto/thread-7", Unverified: true}, "auto/thread-7 unverified", "inferred", "Pref: tabs", "inbox/77"},
+		{"spaces in source cannot forge the marker", app.BrainItem{Text: "x", Source: "owner/a unverified"}, "owner/a_unverified", "user_said", "x", "77"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeCaller{res: task.ToolResult{Content: `{"id":"77","status":"inserted","protocol_version":1}`}}
 			id, err := New(f).Remember(context.Background(), tc.item)
-			if err != nil || id != "77" {
-				t.Fatalf("id = %q err %v, want 77", id, err)
+			if err != nil || id != tc.id {
+				t.Fatalf("id = %q err %v, want %s", id, err, tc.id)
 			}
 			a := f.args(t)
 			if a["provenance"] != tc.provenance || a["content_origin"] != tc.origin || a["fact"] != tc.fact {
@@ -109,12 +110,14 @@ func TestRememberAcceptsNumericID(t *testing.T) {
 }
 
 func TestForgetPassesID(t *testing.T) {
-	f := &fakeCaller{res: task.ToolResult{Content: `{"id":"77","expired":true}`}}
-	if err := New(f).Forget(context.Background(), "77"); err != nil {
-		t.Fatalf("forget: %v", err)
-	}
-	if f.calls[0].Name != "gbrain.forget" || f.args(t)["id"] != "77" {
-		t.Errorf("call = %+v", f.calls[0])
+	for _, slug := range []string{"77", "inbox/77"} {
+		f := &fakeCaller{res: task.ToolResult{Content: `{"id":"77","expired":true}`}}
+		if err := New(f).Forget(context.Background(), slug); err != nil {
+			t.Fatalf("forget %s: %v", slug, err)
+		}
+		if f.calls[0].Name != "gbrain.forget" || f.args(t)["id"] != "77" {
+			t.Errorf("forget %s: call = %+v", slug, f.calls[0])
+		}
 	}
 }
 
