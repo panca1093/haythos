@@ -45,7 +45,7 @@ func fakeMCPServer() {
 		case "initialize":
 			result = map[string]any{"protocolVersion": "2024-11-05", "capabilities": map[string]any{"tools": map[string]any{}}, "serverInfo": map[string]any{"name": "fake", "version": "0"}}
 		case "tools/list":
-			result = map[string]any{"tools": []any{map[string]any{"name": "lookup", "description": "look something up", "inputSchema": map[string]any{"type": "object"}}}}
+			result = map[string]any{"tools": []any{map[string]any{"name": "lookup", "description": "look something up", "inputSchema": map[string]any{"type": "object"}, "annotations": map[string]any{"readOnlyHint": true}}}}
 		case "tools/call":
 			result = map[string]any{"content": []any{map[string]any{"type": "text", "text": "lookup result"}}}
 		default:

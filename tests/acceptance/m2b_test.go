@@ -217,8 +217,8 @@ func TestM2BScheduledTasksGetNoHistory(t *testing.T) {
 	}
 	h := r.model.last()
 	m2bLacks(t, h, "first question", "answer to")
-	if len(h) != 2 || h[0].Role != task.RoleSystem || h[1].Role != task.RoleUser {
-		t.Fatalf("scheduled history = %+v, want only system goal and the run instruction", h)
+	if len(h) < 2 || h[0].Role != task.RoleSystem || h[1].Role != task.RoleUser || h[1].Context {
+		t.Fatalf("scheduled history = %+v, want the system goal and the run instruction first, no conversation context", h)
 	}
 	m2bLacks(t, r.send("", false, "no origin"), "first question", "answer to")
 }
