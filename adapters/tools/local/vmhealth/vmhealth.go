@@ -77,7 +77,7 @@ func (c Collector) Collect(ctx context.Context) Report {
 			r.Anomalies = append(r.Anomalies, fmt.Sprintf("load per core %.2f > %.1f", perCore, maxLoadPerCore))
 		}
 	}
-	if pct, err := c.memUsedPct(); err != nil {
+	if pct, err := c.memUsedPct(ctx); err != nil {
 		r.Gaps = append(r.Gaps, "memory: "+err.Error())
 	} else {
 		mem := round(pct)
@@ -130,10 +130,10 @@ func (c Collector) load1(ctx context.Context) (float64, error) {
 	return strconv.ParseFloat(f[0], 64)
 }
 
-func (c Collector) memUsedPct() (float64, error) {
+func (c Collector) memUsedPct(ctx context.Context) (float64, error) {
 	b, err := c.ReadFile("/proc/meminfo")
 	if err != nil {
-		return 0, fmt.Errorf("unavailable (no /proc/meminfo)")
+		return c.macMemUsedPct(ctx)
 	}
 	var total, avail float64
 	for _, line := range strings.Split(string(b), "\n") {
@@ -153,6 +153,44 @@ func (c Collector) memUsedPct() (float64, error) {
 		return 0, fmt.Errorf("unparseable")
 	}
 	return (total - avail) / total * 100, nil
+}
+
+// TODO: uncertain — free+inactive+speculative reads ~20 points higher than memory_pressure (ignores purgeable/compressed), verify before prod
+func (c Collector) macMemUsedPct(ctx context.Context) (float64, error) {
+	memsize, err := c.Run(ctx, "sysctl", "-n", "hw.memsize")
+	if err != nil {
+		return 0, fmt.Errorf("unavailable (no /proc/meminfo or vm_stat)")
+	}
+	stat, err := c.Run(ctx, "vm_stat")
+	if err != nil {
+		return 0, fmt.Errorf("unavailable (no /proc/meminfo or vm_stat)")
+	}
+	total, err := strconv.ParseFloat(strings.TrimSpace(string(memsize)), 64)
+	if err != nil || total == 0 {
+		return 0, fmt.Errorf("unparseable")
+	}
+	var pageSize, availPages float64
+	for _, line := range strings.Split(string(stat), "\n") {
+		if _, rest, ok := strings.Cut(line, "page size of "); ok {
+			if f := strings.Fields(rest); len(f) > 0 {
+				pageSize, _ = strconv.ParseFloat(f[0], 64)
+			}
+			continue
+		}
+		name, val, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch name {
+		case "Pages free", "Pages inactive", "Pages speculative":
+			v, _ := strconv.ParseFloat(strings.TrimSuffix(strings.TrimSpace(val), "."), 64)
+			availPages += v
+		}
+	}
+	if pageSize == 0 {
+		return 0, fmt.Errorf("unparseable")
+	}
+	return (total - availPages*pageSize) / total * 100, nil
 }
 
 func (c Collector) diskUsedPct(ctx context.Context) (float64, error) {
