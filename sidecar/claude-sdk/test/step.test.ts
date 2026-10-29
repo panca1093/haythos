@@ -22,7 +22,7 @@ test("calls the SDK with no built-in tools and a single turn", async () => {
     fakeQuery(seen, { type: "result", subtype: "success", result: "raw", structured_output: { text: "hi" }, usage: { input_tokens: 3, output_tokens: 2 } }),
   );
   assert.deepEqual(seen.opts?.tools, []);
-  assert.equal(seen.opts?.maxTurns, 1);
+  assert.equal(seen.opts?.maxTurns, 2);
   assert.deepEqual(seen.opts?.settingSources, []);
   assert.equal(out.text, '{"text":"hi"}');
   assert.deepEqual(out.usage, { input_tokens: 3, output_tokens: 2 });

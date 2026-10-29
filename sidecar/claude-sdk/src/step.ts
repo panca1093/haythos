@@ -26,7 +26,8 @@ export async function step(p: StepParams, q: QueryFn = query): Promise<StepResul
     options: {
       systemPrompt: p.system,
       tools: [],
-      maxTurns: 1,
+      // A second turn is only the SDK's structured-output retry; tools is empty so nothing else can run.
+      maxTurns: 2,
       outputFormat: { type: "json_schema", schema: p.schema },
       settingSources: [],
       persistSession: false,
