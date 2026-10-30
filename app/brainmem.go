@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"slices"
 	"sort"
 	"strconv"
@@ -19,24 +20,27 @@ import (
 const (
 	brainStream = "_brain"
 
-	evBrainTurn      = task.EventType("brain.turn")
-	evBrainSaved     = task.EventType("brain.saved")
-	evBrainBatch     = task.EventType("brain.batch")
-	evBrainOutcome   = task.EventType("brain.outcome")
-	evBrainExtracted = task.EventType("brain.extracted")
-	evBrainSkipped   = task.EventType("brain.skipped")
-	evBrainDigested  = task.EventType("brain.digested")
-	evBrainUndone    = task.EventType("brain.undone")
-	evConvExtracted  = task.EventType("conv.extracted")
+	evBrainTurn          = task.EventType("brain.turn")
+	evBrainSaved         = task.EventType("brain.saved")
+	evBrainBatch         = task.EventType("brain.batch")
+	evBrainOutcome       = task.EventType("brain.outcome")
+	evBrainExtracted     = task.EventType("brain.extracted")
+	evBrainSkipped       = task.EventType("brain.skipped")
+	evBrainExtractFailed = task.EventType("brain.extract_failed")
+	evBrainDigested      = task.EventType("brain.digested")
+	evBrainUndone        = task.EventType("brain.undone")
+	evConvExtracted      = task.EventType("conv.extracted")
 
 	extractJob     = "brain-extract"
 	consolidateJob = "brain-consolidate"
 	digestJob      = "brain-digest"
 	inboxPrefix    = "inbox/"
 
-	convStaleAfter   = 3 * time.Hour
-	maxDigestButtons = 25
-	maxUndoLabel     = 60
+	convStaleAfter    = 3 * time.Hour
+	extractRetryAfter = 30 * time.Minute
+	extractAttempts   = 3
+	maxDigestButtons  = 25
+	maxUndoLabel      = 60
 
 	outcomeSaved   = "saved"
 	outcomeMerged  = "merged"
@@ -109,6 +113,10 @@ type convState struct {
 	tainted  bool
 	handled  string
 	skipped  bool
+	// failures counts failed extractions of the turns up to failedUpto; new turns start a fresh count.
+	failures   int
+	failedUpto string
+	failedAt   time.Time
 }
 
 type savedItem struct {
@@ -205,6 +213,17 @@ func (l *brainLog) apply(e task.Event) error {
 		c := l.conv(x.ReplyTo)
 		c.handled = x.Upto
 		c.skipped = c.skipped || e.Type == evBrainSkipped
+	case evBrainExtractFailed:
+		var x brainExtracted
+		if err := decode(&x); err != nil {
+			return err
+		}
+		c := l.conv(x.ReplyTo)
+		if c.failedUpto != x.Upto {
+			c.failures, c.failedUpto = 0, x.Upto
+		}
+		c.failures++
+		c.failedAt = x.At
 	case evBrainDigested:
 		var d brainDigested
 		if err := decode(&d); err != nil {
@@ -293,14 +312,22 @@ func (a *App) extractStale(ctx context.Context) error {
 			}
 			continue
 		}
-		if err := a.extract(ctx, replyTo, c); err != nil {
+		attempt := 0
+		if c.failedUpto == c.lastTask {
+			attempt = c.failures
+		}
+		if attempt >= extractAttempts || (attempt > 0 && now.Sub(c.failedAt) < extractRetryAfter) {
+			continue
+		}
+		if err := a.extract(ctx, replyTo, c, attempt); err != nil {
 			errs = append(errs, err)
 		}
 	}
 	return errors.Join(errs...)
 }
 
-func (a *App) extract(ctx context.Context, replyTo string, c *convState) error {
+// extract marks the turns handled only once its task is done, so an extraction that failed (e.g. offline) is retried.
+func (a *App) extract(ctx context.Context, replyTo string, c *convState, attempt int) error {
 	turns, err := a.turnsAfter(ctx, replyTo, c.handled)
 	if err != nil {
 		return err
@@ -309,6 +336,9 @@ func (a *App) extract(ctx context.Context, replyTo string, c *convState) error {
 		return nil
 	}
 	id := extractJob + "-" + shortHash(replyTo+"|"+c.lastTask)
+	if attempt > 0 {
+		id += fmt.Sprintf("-%d", attempt)
+	}
 	job := Job{
 		Name: extractJob, Goal: extractGoal, Tools: []string{"brain.recall", "brain.remember"},
 		Budget: task.Budget{Tokens: 20000, Steps: 6}, Silent: true, BrainSource: "auto/" + replyTo,
@@ -316,11 +346,22 @@ func (a *App) extract(ctx context.Context, replyTo string, c *convState) error {
 	if _, err := a.createTask(ctx, id, job, transcript(turns), ""); err != nil {
 		return err
 	}
-	if err := a.recordExtraction(ctx, evBrainExtracted, brainExtracted{ReplyTo: replyTo, Upto: c.lastTask, Task: id, At: a.d.Clock()}); err != nil {
-		return err
-	}
 	if err := a.RunTask(ctx, id); err != nil {
 		return fmt.Errorf("run %s: %w", id, err)
+	}
+	s, err := a.Snapshot(ctx, id)
+	if err != nil {
+		return err
+	}
+	x := brainExtracted{ReplyTo: replyTo, Upto: c.lastTask, Task: id, At: a.d.Clock()}
+	switch s.State {
+	case task.Done:
+		return a.recordExtraction(ctx, evBrainExtracted, x)
+	case task.Failed:
+		slog.Warn("brain extraction failed; will retry", "task", id, "attempt", attempt+1, "reason", s.Reason)
+		if _, err := a.d.Events.Append(ctx, brainStream, evBrainExtractFailed, x); err != nil {
+			return fmt.Errorf("record extraction failure: %w", err)
+		}
 	}
 	return nil
 }
