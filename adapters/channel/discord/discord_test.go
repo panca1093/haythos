@@ -90,6 +90,31 @@ func TestStripMention(t *testing.T) {
 	}
 }
 
+func TestTextCommand(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		in   string
+		want string
+		ok   bool
+	}{
+		{"/mention-only", mentionOnlyCmd, true},
+		{"/pause", "pause", true},
+		{"/resume", "resume", true},
+		{"/settings", "settings", true},
+		{"/jobs", "jobs", true},
+		{"/model", "", false},
+		{"/mention-only please", "", false},
+		{"/Jobs", "", false},
+		{"mention-only", "", false},
+		{"what does /pause do?", "", false},
+	}
+	for _, tt := range tests {
+		if got, ok := textCommand(tt.in); got != tt.want || ok != tt.ok {
+			t.Errorf("textCommand(%q) = %q, %v, want %q, %v", tt.in, got, ok, tt.want, tt.ok)
+		}
+	}
+}
+
 func TestThreadName(t *testing.T) {
 	t.Parallel()
 	tests := []struct{ in, want string }{

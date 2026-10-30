@@ -108,6 +108,19 @@ func stripMention(text, botID string) string {
 	return strings.NewReplacer("<@"+botID+">", "", "<@!"+botID+">", "").Replace(text)
 }
 
+// textCommand recognises a slash command that Discord delivered as plain text (sent before its command menu was picked).
+func textCommand(text string) (string, bool) {
+	name, ok := strings.CutPrefix(text, "/")
+	if !ok {
+		return "", false
+	}
+	switch name {
+	case mentionOnlyCmd, "pause", "resume", "settings", "jobs":
+		return name, true
+	}
+	return "", false
+}
+
 func threadName(text string) string {
 	name := strings.Join(strings.Fields(text), " ")
 	if name == "" {
@@ -502,6 +515,17 @@ func (c *Channel) onMessage(s *discordgo.Session, m *discordgo.MessageCreate) {
 	if text == "" {
 		return
 	}
+	if name, ok := textCommand(text); ok {
+		go func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			defer cancel()
+			msg := c.commandText(ctx, name, m.ChannelID)
+			if err := c.Publish(ctx, app.Notice{Kind: app.NoticeMessage, Text: msg, ReplyTo: m.ChannelID}); err != nil {
+				slog.Error("text command reply failed", "err", err)
+			}
+		}()
+		return
+	}
 	f := facts{Owner: true, DM: m.GuildID == "", Mentioned: slices.ContainsFunc(m.Mentions, func(u *discordgo.User) bool { return u.ID == botID })}
 	if !f.DM {
 		if ch, err := c.channel(m.ChannelID); err != nil {
@@ -667,8 +691,15 @@ func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
+	c.respond(s, i, discordgo.InteractionResponseChannelMessageWithSource, c.commandText(ctx, i.ApplicationCommandData().Name, i.ChannelID), nil)
+}
+
+// commandText runs a command that answers with plain text; the slash command and its text fallback share it.
+func (c *Channel) commandText(ctx context.Context, name, channelID string) string {
 	var msg string
-	switch i.ApplicationCommandData().Name {
+	switch name {
+	case mentionOnlyCmd:
+		msg = c.mentionOnlyText(ctx, channelID)
 	case "pause":
 		if err := c.h.Pause(ctx); err != nil {
 			msg = "Pause failed: " + err.Error()
@@ -694,25 +725,29 @@ func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 			msg = jobsText(js, c.dm)
 		}
 	default:
-		return
+		msg = "Unknown command."
 	}
-	c.respond(s, i, discordgo.InteractionResponseChannelMessageWithSource, clip(msg, maxMessage), nil)
+	return clip(msg, maxMessage)
+}
+
+func (c *Channel) mentionOnlyText(ctx context.Context, channelID string) string {
+	ch, err := c.channel(channelID)
+	if err != nil || !ch.IsThread() {
+		return "This only works inside a thread."
+	}
+	m, err := c.toggleMentionOnly(ctx, channelID)
+	if err != nil {
+		return "Could not change mention-only: " + err.Error()
+	}
+	return mentionOnlyReply(m)
 }
 
 func (c *Channel) onMentionOnly(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	msg := "This only works inside a thread."
-	if ch, err := c.channel(i.ChannelID); err == nil && ch.IsThread() {
-		if m, err := c.toggleMentionOnly(ctx, i.ChannelID); err != nil {
-			msg = "Could not change mention-only: " + err.Error()
-		} else {
-			msg = mentionOnlyReply(m)
-		}
-	}
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseChannelMessageWithSource,
-		Data: &discordgo.InteractionResponseData{Content: msg, Flags: discordgo.MessageFlagsEphemeral},
+		Data: &discordgo.InteractionResponseData{Content: c.mentionOnlyText(ctx, i.ChannelID), Flags: discordgo.MessageFlagsEphemeral},
 	})
 	if err != nil {
 		slog.Error("interaction respond failed", "err", err)
