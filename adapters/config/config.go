@@ -33,7 +33,11 @@ type Main struct {
 	Vault        string           `yaml:"vault"`
 	DefaultModel string           `yaml:"default_model"`
 	Models       map[string]Model `yaml:"models"`
-	Sidecar      struct {
+	ClaudeCLI    struct {
+		Command string `yaml:"command"`
+	} `yaml:"claude_cli"`
+	// Deprecated and ignored since the Node sidecar was removed; still decoded so older configs keep loading.
+	Sidecar struct {
 		Command string   `yaml:"command"`
 		Args    []string `yaml:"args"`
 		Dir     string   `yaml:"dir"`
@@ -65,6 +69,9 @@ func LoadMain(path string) (Main, error) {
 	var m Main
 	if err := decode(path, &m); err != nil {
 		return m, err
+	}
+	if m.ClaudeCLI.Command == "" {
+		m.ClaudeCLI.Command = "claude"
 	}
 	if m.DefaultModel == "" || m.Models[m.DefaultModel].Kind == "" {
 		return m, fmt.Errorf("%s: default_model %q is not defined in models", path, m.DefaultModel)

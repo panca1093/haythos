@@ -77,6 +77,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Sidecar.Command != "" {
+		slog.Warn("the sidecar block is ignored since claude-sub runs the claude CLI directly; delete it from the config")
+	}
 	key, err := file.KeyFromEnv(os.Getenv)
 	if err != nil {
 		return err
@@ -93,7 +96,7 @@ func run(args []string) error {
 		defer stop()
 		return runSetup(ctx, setupDeps{
 			vault: vault, in: os.Stdin, out: os.Stdout, cfgPath: *cfgPath,
-			runCLI: runClaudeSetupToken, listModels: sidecarModels(cfg),
+			runCLI: runClaudeSetupToken, listModels: cliModels(cfg),
 		})
 	}
 
@@ -119,11 +122,10 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	models, selector, closeModels, err := buildModels(ctx, cfg, vault, jobs)
+	models, selector, err := buildModels(cfg, vault, jobs)
 	if err != nil {
 		return err
 	}
-	defer closeModels()
 
 	tools := local.New()
 	vmhealth.Register(tools, vmhealth.New())
@@ -222,7 +224,7 @@ func run(args []string) error {
 
 // buildModels constructs only the models that the default and the jobs actually use.
 // The selector is nil unless the default model is a claudesdk model, the only kind /model can switch for now.
-func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, func(), error) {
+func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, error) {
 	need := map[string]bool{cfg.DefaultModel: true}
 	for _, j := range jobs {
 		if j.Model != "" {
@@ -231,17 +233,10 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 	}
 	models := map[string]app.Model{}
 	var selector app.ModelSelector
-	var closers []func()
-	closeAll := func() {
-		for _, c := range closers {
-			c()
-		}
-	}
 	for name := range need {
 		m, ok := cfg.Models[name]
 		if !ok {
-			closeAll()
-			return nil, nil, nil, fmt.Errorf("model %q is not defined in the config", name)
+			return nil, nil, fmt.Errorf("model %q is not defined in the config", name)
 		}
 		switch m.Kind {
 		case "anthropic", "openai":
@@ -261,20 +256,15 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 				slog.Warn("model skipped: credential missing, run `haythosd auth claude`", "model", name)
 				continue
 			}
-			sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
-			if err != nil {
-				closeAll()
-				return nil, nil, nil, fmt.Errorf("model %s: %w", name, err)
-			}
-			closers = append(closers, func() { _ = sc.Close() })
-			adapter := claudesdk.New(sc, claudesdk.WithModel(m.Model))
+			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token))
+			adapter := claudesdk.New(cli, claudesdk.WithModel(m.Model))
 			models[name] = adapter
 			if name == cfg.DefaultModel {
-				selector = claudeSubSelector{adapter: adapter, lister: sc}
+				selector = claudeSubSelector{adapter: adapter, lister: cli}
 			}
 		}
 	}
-	return models, selector, closeAll, nil
+	return models, selector, nil
 }
 
 type modelLister interface {
@@ -310,10 +300,10 @@ func (s claudeSubSelector) Select(_ context.Context, value string) error {
 	return nil
 }
 
-func sidecarConfig(cfg config.Main, token string) claudesdk.SidecarConfig {
-	return claudesdk.SidecarConfig{
-		Command: cfg.Sidecar.Command, Args: cfg.Sidecar.Args, Dir: cfg.Sidecar.Dir,
-		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
+func claudeCLIConfig(cfg config.Main, token string) claudesdk.CLIConfig {
+	return claudesdk.CLIConfig{
+		Command: cfg.ClaudeCLI.Command,
+		Env:     []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
 	}
 }
 
@@ -553,15 +543,10 @@ func runClaudeSetupToken(ctx context.Context, stdout io.Writer) error {
 	return cmd.Run()
 }
 
-func sidecarModels(cfg config.Main) func(context.Context, string) ([]claudesdk.ModelInfo, error) {
+func cliModels(cfg config.Main) func(context.Context, string) ([]claudesdk.ModelInfo, error) {
 	return func(ctx context.Context, token string) ([]claudesdk.ModelInfo, error) {
 		ctx, cancel := context.WithTimeout(ctx, modelListWait)
 		defer cancel()
-		sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = sc.Close() }()
-		return sc.Models(ctx)
+		return claudesdk.NewCLI(claudeCLIConfig(cfg, token)).Models(ctx)
 	}
 }

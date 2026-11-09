@@ -264,9 +264,11 @@ func TestSetupRepromptsOnInvalidChoice(t *testing.T) {
 
 func TestSetupKeepsStoredTokenWhenModelListFails(t *testing.T) {
 	f := newSetupFixture(t, "1\n", happyChunks(), nil)
-	f.deps.listModels = func(context.Context, string) ([]claudesdk.ModelInfo, error) { return nil, errors.New("sidecar down") }
+	f.deps.listModels = func(context.Context, string) ([]claudesdk.ModelInfo, error) {
+		return nil, errors.New("claude cli down")
+	}
 	err := runSetup(context.Background(), f.deps)
-	if err == nil || !strings.Contains(err.Error(), "sidecar down") {
+	if err == nil || !strings.Contains(err.Error(), "claude cli down") {
 		t.Fatalf("err = %v", err)
 	}
 	if f.secrets.set["claude"] != fakeToken {

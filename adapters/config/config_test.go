@@ -185,3 +185,21 @@ func TestJobDeliverTo(t *testing.T) {
 		t.Fatalf("jobs = %+v, err = %v", jobs, err)
 	}
 }
+
+func TestClaudeCLIConfig(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"explicit command", "claude_cli: { command: /opt/claude }\n", "/opt/claude"},
+		{"default command", "", "claude"},
+		{"deprecated sidecar block still loads", "sidecar: { command: node, args: [src/index.ts], dir: sidecar/claude-sdk }\n", "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", "default_model: sub\nmodels: { sub: { kind: claudesdk } }\n"+tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.ClaudeCLI.Command != tc.want {
+				t.Errorf("command = %q, want %q", m.ClaudeCLI.Command, tc.want)
+			}
+		})
+	}
+}

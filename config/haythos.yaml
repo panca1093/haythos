@@ -7,11 +7,9 @@ models:
   claude-sub: { kind: claudesdk }
   openai: { kind: openai, base_url: https://api.openai.com/v1, model: gpt-5, secret: openai }
 
-# claudesdk starts this child process; the token comes from the vault entry "claude" and is injected as CLAUDE_CODE_OAUTH_TOKEN.
-sidecar:
-  command: node
-  args: [src/index.ts]
-  dir: sidecar/claude-sdk
+# claudesdk runs this CLI once per step; the token comes from the vault entry "claude" and is injected as CLAUDE_CODE_OAUTH_TOKEN.
+claude_cli:
+  command: claude
 
 discord:
   owner_id: ""
