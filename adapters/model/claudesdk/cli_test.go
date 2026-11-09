@@ -151,15 +151,15 @@ func TestCLIStepFallsBackToResult(t *testing.T) {
 }
 
 func TestCLIStepErrors(t *testing.T) {
-	for _, tc := range []struct{ mode, want string }{
+	for _, tc := range []struct{ mode, leaked string }{
 		{"error", "Invalid API key"},
 		{"crash", "boom: native binary missing"},
 	} {
 		t.Run(tc.mode, func(t *testing.T) {
 			c, _ := fakeCLI(t, tc.mode)
 			_, err := c.Step(context.Background(), StepRequest{Tools: []string{}})
-			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Errorf("err = %v, want it to contain %q", err, tc.want)
+			if err == nil || strings.Contains(err.Error(), tc.leaked) {
+				t.Errorf("err = %v, want an error without %q", err, tc.leaked)
 			}
 		})
 	}

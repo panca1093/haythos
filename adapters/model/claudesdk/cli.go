@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"slices"
@@ -41,6 +42,7 @@ var isolationArgs = []string{"--tools", "", "--setting-sources", "", "--no-sessi
 
 type cliResult struct {
 	IsError          bool            `json:"is_error"`
+	Subtype          string          `json:"subtype"`
 	Result           string          `json:"result"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
 	Usage            struct {
@@ -81,12 +83,19 @@ func (c *CLI) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 	var res cliResult
 	if err := json.Unmarshal(bytes.TrimSpace(out), &res); err != nil {
 		if runErr != nil {
-			return StepResponse{}, fmt.Errorf("run %s: %w: %s", c.cfg.Command, runErr, tail(stderr.String()))
+			slog.DebugContext(ctx, "claude cli stderr", "tail", tail(stderr.String()))
+			return StepResponse{}, fmt.Errorf("run %s: %w", c.cfg.Command, runErr)
 		}
 		return StepResponse{}, fmt.Errorf("decode claude cli output: %w", err)
 	}
 	if res.IsError || runErr != nil {
-		return StepResponse{}, fmt.Errorf("claude cli step failed: %s", tail(res.Result))
+		slog.DebugContext(ctx, "claude cli failure", "tail", tail(res.Result))
+		exit := 0
+		var ee *exec.ExitError
+		if errors.As(runErr, &ee) {
+			exit = ee.ExitCode()
+		}
+		return StepResponse{}, fmt.Errorf("claude cli step failed: is_error=%t subtype=%q exit=%d", res.IsError, res.Subtype, exit)
 	}
 	text := res.Result
 	if len(res.StructuredOutput) > 0 && string(res.StructuredOutput) != "null" {
