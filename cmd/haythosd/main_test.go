@@ -12,14 +12,14 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/vault/file"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/config"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 func TestInstanceLockIsExclusive(t *testing.T) {

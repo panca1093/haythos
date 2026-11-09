@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 func TestThreadModesPersistAcrossRestart(t *testing.T) {

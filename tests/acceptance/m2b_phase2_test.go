@@ -10,13 +10,13 @@ import (
 	"time"
 
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/tools/local"
 	localbrain "github.com/panca/haythos/adapters/tools/local/brain"
 	"github.com/panca/haythos/adapters/tools/mcp"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 func TestMain(m *testing.M) {

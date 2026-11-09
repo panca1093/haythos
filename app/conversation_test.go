@@ -8,10 +8,10 @@ import (
 	"time"
 
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 type convRig struct {

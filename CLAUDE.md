@@ -37,6 +37,8 @@ haythos/
     brain/gbrain       # M2
     decide/jev         # M2, behind eval gate
     vault/file
+    config             # YAML config loader
+    testfakes          # in-memory fakes of the ports, tests only
     sandbox/docker     # M3
     builder/acp        # M3, client to claude-agent-acp
   sidecar/claude-sdk/  # TypeScript, one Step per call, stdio JSON-RPC
@@ -125,7 +127,7 @@ Exception (M3, not now): coding tasks via `Builder` may auto-write inside the sa
 ### Tests (TDD)
 - Red → green → refactor. For each behavior: write the failing test first, commit it, then the implementation.
 - Table-driven tests with `t.Run(name, ...)`; `t.Parallel()` where there is no shared state.
-- Fakes over mocks: hand-written fakes implementing the ports, kept in `internal/testfakes` (or next to the port's tests). No mocking framework.
+- Fakes over mocks: hand-written fakes implementing the ports, kept in `adapters/testfakes` (or next to the port's tests). No mocking framework.
 - Use the standard `testing` package; `github.com/google/go-cmp/cmp` is allowed for diffs. No assertion libraries.
 - SQLite tests use a real temp file (`t.TempDir()`), never a shared database.
 - Crash/restart tests run the kernel in-process: stop it at a named point (via an injected hook) and start a new instance on the same database.

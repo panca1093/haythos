@@ -11,12 +11,12 @@ import (
 	"github.com/google/go-cmp/cmp"
 
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/tools/local"
 	"github.com/panca/haythos/adapters/tools/local/jobs"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 var m2Policy = policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{

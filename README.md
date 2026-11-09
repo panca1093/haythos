@@ -123,8 +123,8 @@ make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + 
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
 | `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
-| `internal/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
-| `internal/testfakes/` | In-memory fakes of the interfaces, for tests only |
+| `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
+| `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
 | `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |
 | `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |

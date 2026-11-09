@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 func jobsApp(t *testing.T) (*app.App, *testfakes.Events) {

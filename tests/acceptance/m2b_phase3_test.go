@@ -14,12 +14,12 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/panca/haythos/adapters/channel/discord"
+	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/config"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 var (
