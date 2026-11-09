@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/panca/haythos/adapters/channel/discord"
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/anthropic"
+	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/model/openai"
 	"github.com/panca/haythos/adapters/store/sqlite"
@@ -87,6 +89,11 @@ func run(args []string) error {
 	vault, err := file.Open(cfg.Vault, key)
 	if err != nil {
 		return err
+	}
+	if cmd == "auth" && len(rest) == 1 && rest[0] == "chatgpt" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runChatGPTAuth(ctx, chatgpt.NewSession(vault, chatgpt.AuthConfig{}), os.Stdout)
 	}
 	if cmd == "auth" {
 		return runAuth(rest, vault, os.Stdout, stdinSecret)
@@ -233,6 +240,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 	}
 	models := map[string]app.Model{}
 	var selector app.ModelSelector
+	var gptSession *chatgpt.Session
 	for name := range need {
 		m, ok := cfg.Models[name]
 		if !ok {
@@ -262,6 +270,16 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 			if name == cfg.DefaultModel {
 				selector = claudeSubSelector{adapter: adapter, lister: cli}
 			}
+		case "chatgpt":
+			if !vault.Has("chatgpt") {
+				slog.Warn("model skipped: not signed in, run `haythosd auth chatgpt`", "model", name)
+				continue
+			}
+			// One session for all chatgpt models, so refreshes of the rotating token stay serialized.
+			if gptSession == nil {
+				gptSession = chatgpt.NewSession(vault, chatgpt.AuthConfig{})
+			}
+			models[name] = chatgpt.New(chatgpt.Config{Model: m.Model, Session: gptSession})
 		}
 	}
 	return models, selector, nil
@@ -329,7 +347,7 @@ var authTargets = map[string]authTarget{
 // runAuth stores one secret in the vault. The kernel never does OAuth; it only stores what the user pastes.
 func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (string, error)) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: haythosd auth <claude|anthropic|openai|discord>")
+		return fmt.Errorf("usage: haythosd auth <claude|chatgpt|anthropic|openai|discord>")
 	}
 	t, ok := authTargets[args[0]]
 	if !ok {
@@ -350,6 +368,26 @@ func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (str
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "Stored as secret://%s\n", t.secret)
+	return nil
+}
+
+// runChatGPTAuth signs in with ChatGPT in the browser; tokens go straight into the vault and are never printed.
+func runChatGPTAuth(ctx context.Context, s *chatgpt.Session, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	email, err := s.Login(ctx, func(u string) error {
+		_, _ = fmt.Fprintf(out, "Sign in with ChatGPT in your browser. If it does not open, visit:\n  %s\n", u)
+		opener := "xdg-open"
+		if runtime.GOOS == "darwin" {
+			opener = "open"
+		}
+		go func() { _ = exec.CommandContext(ctx, opener, u).Run() }() //nolint:gosec // G204: u is our own loopback login URL
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("chatgpt sign-in: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Signed in as %s. Stored as secret://chatgpt.\n", email)
 	return nil
 }
 

@@ -27,7 +27,7 @@ If the token cannot be found in the CLI output, use the manual route below. If o
 
 ### `haythosd auth` (manual fallback)
 
-Secrets go into an encrypted file vault (`data/vault.enc`, AES-256-GCM, key from `HAYTHOS_VAULT_KEY`). The kernel never does OAuth; you paste what each provider gives you. Input is hidden.
+Secrets go into an encrypted file vault (`data/vault.enc`, AES-256-GCM, key from `HAYTHOS_VAULT_KEY`). Apart from `auth chatgpt` (below), the kernel never does OAuth; you paste what each provider gives you. Input is hidden.
 
 ```bash
 go run ./cmd/haythosd auth claude      # paste the token printed by `claude setup-token` (same secret `setup` fills)
@@ -37,6 +37,22 @@ go run ./cmd/haythosd auth discord     # Discord bot token
 ```
 
 Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`. (`discord.channel_id` is gone; if your file still has it, Alfred ignores it with a warning, so delete it.)
+
+### `haythosd auth chatgpt` (ChatGPT plan)
+
+Runs Alfred on your ChatGPT plan through OpenAI's official [Sign in with ChatGPT token sharing](https://developers.openai.com/siwc/token-sharing-open-source) for open-source apps. HaythOS registers as its own app ("HaythOS"); it does not reuse Codex credentials.
+
+```bash
+go run ./cmd/haythosd auth chatgpt
+```
+
+1. Prints a `http://127.0.0.1:<port>/login/...` link and tries to open your browser. Sign in and allow ChatGPT plan usage.
+2. The access, refresh and ID tokens, the issued client id and this host's id are stored in the vault as `secret://chatgpt`; nothing is printed.
+3. Add a model in `config/haythos.yaml`, for example `chatgpt-sub: { kind: chatgpt, model: gpt-5 }` (`model` is optional; empty uses the first model your account lists), and point `default_model` or a job's `model:` at it.
+
+Alfred refreshes the token itself (1 h access token; the 30-day refresh token rotates on every refresh and is written to the vault before use). When the plan's usage limit is hit the task fails with a link to https://chatgpt.com/settings/usage; it never falls back to API-key billing. Run `auth chatgpt` again if the refresh token expires or is revoked.
+
+Headless server (VPS): the login callback goes to `127.0.0.1` on the machine with the browser, so there is no device flow. Sign in on your laptop, then copy the vault file (`data/vault.enc`) and keep the same `HAYTHOS_VAULT_KEY` on the server, over a secure channel. The server then owns later refreshes; stop using the copy on the laptop, or the two will fight over the rotating refresh token.
 
 ### Start
 
@@ -123,6 +139,7 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
 | `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
+| `adapters/model/chatgpt/` | ChatGPT plan model: Sign in with ChatGPT (browser login, token refresh) and one step on the Responses API |
 | `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
 | `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
 | `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |

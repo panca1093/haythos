@@ -358,6 +358,22 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	}
 }
 
+func TestBuildModelsChatGPTNeedsSignIn(t *testing.T) {
+	v, _ := file.Open(t.TempDir()+"/v.enc", bytes.Repeat([]byte{7}, 32))
+	cfg := config.Main{DefaultModel: "gpt-sub", Models: map[string]config.Model{"gpt-sub": {Kind: "chatgpt"}}}
+	models, _, err := buildModels(cfg, v, nil)
+	if err != nil || models["gpt-sub"] != nil {
+		t.Fatalf("not signed in: models=%v err=%v, want skipped", models, err)
+	}
+	if err := v.Set("chatgpt", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	models, _, err = buildModels(cfg, v, nil)
+	if err != nil || models["gpt-sub"] == nil {
+		t.Fatalf("signed in: models=%v err=%v", models, err)
+	}
+}
+
 func TestChatToolsHaveAPolicyTier(t *testing.T) {
 	pol, err := config.LoadPolicy("../../config/policy.yaml")
 	if err != nil {

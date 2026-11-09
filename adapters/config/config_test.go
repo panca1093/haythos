@@ -177,6 +177,14 @@ func TestSaveModelChoiceAddsMissingDefaultModelKey(t *testing.T) {
 	}
 }
 
+func TestChatGPTKindLoads(t *testing.T) {
+	path := write(t, t.TempDir(), "haythos.yaml", "default_model: gpt-sub\nmodels:\n  gpt-sub: { kind: chatgpt, model: gpt-x }\n")
+	m, err := LoadMain(path)
+	if err != nil || m.Models["gpt-sub"].Kind != "chatgpt" || m.Models["gpt-sub"].Model != "gpt-x" {
+		t.Errorf("cfg=%+v err=%v", m, err)
+	}
+}
+
 func TestJobDeliverTo(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\ndeliver_to: ['123', dm]\n")
