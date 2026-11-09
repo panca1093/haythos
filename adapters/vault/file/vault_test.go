@@ -59,3 +59,22 @@ func TestKeyFromEnv(t *testing.T) {
 		t.Errorf("k=%v err=%v", k, err)
 	}
 }
+
+func TestSetFromTwoInstancesKeepsBoth(t *testing.T) {
+	path := t.TempDir() + "/vault.enc"
+	a, _ := Open(path, key(1))
+	b, _ := Open(path, key(1))
+	if err := a.Set("one", "1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := b.Set("two", "2"); err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []*Vault{a, b} {
+		for name, want := range map[string]string{"one": "1", "two": "2"} {
+			if got, err := v.Resolve("secret://" + name); err != nil || got != want {
+				t.Errorf("%s = %q err=%v, want %q", name, got, err, want)
+			}
+		}
+	}
+}

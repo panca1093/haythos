@@ -1,11 +1,8 @@
 package claudesdk
 
 import (
-	"bufio"
 	"context"
 	"encoding/json"
-	"fmt"
-	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -51,76 +48,6 @@ func TestParseOutputAcceptsFencedJSONAndAssignsStableIDs(t *testing.T) {
 	}
 }
 
-// TestHelperProcess is a fake sidecar. It crashes on its first "step" when HELPER_CRASH_MARKER does not exist yet.
-func TestHelperProcess(t *testing.T) {
-	if os.Getenv("HELPER_SIDECAR") != "1" {
-		return
-	}
-	sc := bufio.NewScanner(os.Stdin)
-	for sc.Scan() {
-		var req rpcRequest
-		_ = json.Unmarshal(sc.Bytes(), &req)
-		switch req.Method {
-		case "ping":
-			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":\"pong\"}\n", req.ID)
-		case "models":
-			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":[{\"value\":\"opus\",\"displayName\":\"Opus\",\"description\":\"Best\"},{\"value\":\"haiku\",\"displayName\":\"Haiku\",\"description\":\"Fast\"}]}\n", req.ID)
-		case "step":
-			if m := os.Getenv("HELPER_CRASH_MARKER"); m != "" {
-				if _, err := os.Stat(m); err != nil {
-					_ = os.WriteFile(m, nil, 0o600)
-					os.Exit(3)
-				}
-			}
-			fmt.Printf("{\"jsonrpc\":\"2.0\",\"id\":%d,\"result\":{\"text\":\"{}\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n", req.ID)
-		}
-	}
-	os.Exit(0)
-}
-
-func helperConfig(t *testing.T, marker string) SidecarConfig {
-	t.Helper()
-	return SidecarConfig{
-		Command: os.Args[0],
-		Args:    []string{"-test.run=TestHelperProcess"},
-		Env:     []string{"HELPER_SIDECAR=1", "HELPER_CRASH_MARKER=" + marker},
-	}
-}
-
-func TestSidecarStepAndHealthCheck(t *testing.T) {
-	sc, err := StartSidecar(context.Background(), helperConfig(t, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sc.Close() }()
-	resp, err := sc.Step(context.Background(), StepRequest{Tools: []string{}})
-	if err != nil || resp.Text != "{}" || resp.Usage.InputTokens != 1 {
-		t.Errorf("resp=%+v err=%v", resp, err)
-	}
-}
-
-func TestSidecarRestartsAfterCrash(t *testing.T) {
-	marker := t.TempDir() + "/crashed"
-	sc, err := StartSidecar(context.Background(), helperConfig(t, marker))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sc.Close() }()
-	resp, err := sc.Step(context.Background(), StepRequest{Tools: []string{}})
-	if err != nil || resp.Text != "{}" {
-		t.Errorf("resp=%+v err=%v", resp, err)
-	}
-	if _, err := os.Stat(marker); err != nil {
-		t.Error("helper never crashed; test did not exercise restart")
-	}
-}
-
-func TestSidecarStartFailsWhenBinaryMissing(t *testing.T) {
-	if _, err := StartSidecar(context.Background(), SidecarConfig{Command: "/nonexistent/sidecar"}); err == nil {
-		t.Error("want error")
-	}
-}
-
 type captureTransport struct{ reqs []StepRequest }
 
 func (c *captureTransport) Step(_ context.Context, req StepRequest) (StepResponse, error) {
@@ -151,22 +78,6 @@ func TestStepRequestCarriesConfiguredModel(t *testing.T) {
 				t.Errorf("model key present = %v, want %v: %s", has, tc.json, raw)
 			}
 		})
-	}
-}
-
-func TestSidecarModels(t *testing.T) {
-	sc, err := StartSidecar(context.Background(), helperConfig(t, ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = sc.Close() }()
-	got, err := sc.Models(context.Background())
-	if err != nil {
-		t.Fatal(err)
-	}
-	want := []ModelInfo{{Value: "opus", DisplayName: "Opus", Description: "Best"}, {Value: "haiku", DisplayName: "Haiku", Description: "Fast"}}
-	if len(got) != 2 || got[0] != want[0] || got[1] != want[1] {
-		t.Errorf("models = %+v, want %+v", got, want)
 	}
 }
 

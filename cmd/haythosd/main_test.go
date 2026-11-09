@@ -264,9 +264,11 @@ func TestSetupRepromptsOnInvalidChoice(t *testing.T) {
 
 func TestSetupKeepsStoredTokenWhenModelListFails(t *testing.T) {
 	f := newSetupFixture(t, "1\n", happyChunks(), nil)
-	f.deps.listModels = func(context.Context, string) ([]claudesdk.ModelInfo, error) { return nil, errors.New("sidecar down") }
+	f.deps.listModels = func(context.Context, string) ([]claudesdk.ModelInfo, error) {
+		return nil, errors.New("claude cli down")
+	}
 	err := runSetup(context.Background(), f.deps)
-	if err == nil || !strings.Contains(err.Error(), "sidecar down") {
+	if err == nil || !strings.Contains(err.Error(), "claude cli down") {
 		t.Fatalf("err = %v", err)
 	}
 	if f.secrets.set["claude"] != fakeToken {
@@ -353,6 +355,22 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	}
 	if adapter.Model() != "sonnet" || sel.Current() != "sonnet" {
 		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
+	}
+}
+
+func TestBuildModelsChatGPTNeedsSignIn(t *testing.T) {
+	v, _ := file.Open(t.TempDir()+"/v.enc", bytes.Repeat([]byte{7}, 32))
+	cfg := config.Main{DefaultModel: "gpt-sub", Models: map[string]config.Model{"gpt-sub": {Kind: "chatgpt"}}}
+	models, _, err := buildModels(cfg, v, nil)
+	if err != nil || models["gpt-sub"] != nil {
+		t.Fatalf("not signed in: models=%v err=%v, want skipped", models, err)
+	}
+	if err := v.Set("chatgpt", "{}"); err != nil {
+		t.Fatal(err)
+	}
+	models, _, err = buildModels(cfg, v, nil)
+	if err != nil || models["gpt-sub"] == nil {
+		t.Fatalf("signed in: models=%v err=%v", models, err)
 	}
 }
 

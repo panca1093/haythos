@@ -13,6 +13,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -25,6 +26,7 @@ import (
 	"github.com/panca/haythos/adapters/channel/discord"
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/anthropic"
+	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/model/openai"
 	"github.com/panca/haythos/adapters/store/sqlite"
@@ -77,6 +79,9 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Sidecar.Command != "" {
+		slog.Warn("the sidecar block is ignored since claude-sub runs the claude CLI directly; delete it from the config")
+	}
 	key, err := file.KeyFromEnv(os.Getenv)
 	if err != nil {
 		return err
@@ -84,6 +89,11 @@ func run(args []string) error {
 	vault, err := file.Open(cfg.Vault, key)
 	if err != nil {
 		return err
+	}
+	if cmd == "auth" && len(rest) == 1 && rest[0] == "chatgpt" {
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		return runChatGPTAuth(ctx, chatgpt.NewSession(vault, chatgpt.AuthConfig{}), os.Stdout)
 	}
 	if cmd == "auth" {
 		return runAuth(rest, vault, os.Stdout, stdinSecret)
@@ -93,7 +103,7 @@ func run(args []string) error {
 		defer stop()
 		return runSetup(ctx, setupDeps{
 			vault: vault, in: os.Stdin, out: os.Stdout, cfgPath: *cfgPath,
-			runCLI: runClaudeSetupToken, listModels: sidecarModels(cfg),
+			runCLI: runClaudeSetupToken, listModels: cliModels(cfg),
 		})
 	}
 
@@ -119,11 +129,10 @@ func run(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	models, selector, closeModels, err := buildModels(ctx, cfg, vault, jobs)
+	models, selector, err := buildModels(cfg, vault, jobs)
 	if err != nil {
 		return err
 	}
-	defer closeModels()
 
 	tools := local.New()
 	vmhealth.Register(tools, vmhealth.New())
@@ -222,7 +231,7 @@ func run(args []string) error {
 
 // buildModels constructs only the models that the default and the jobs actually use.
 // The selector is nil unless the default model is a claudesdk model, the only kind /model can switch for now.
-func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, func(), error) {
+func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, error) {
 	need := map[string]bool{cfg.DefaultModel: true}
 	for _, j := range jobs {
 		if j.Model != "" {
@@ -231,17 +240,11 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 	}
 	models := map[string]app.Model{}
 	var selector app.ModelSelector
-	var closers []func()
-	closeAll := func() {
-		for _, c := range closers {
-			c()
-		}
-	}
+	var gptSession *chatgpt.Session
 	for name := range need {
 		m, ok := cfg.Models[name]
 		if !ok {
-			closeAll()
-			return nil, nil, nil, fmt.Errorf("model %q is not defined in the config", name)
+			return nil, nil, fmt.Errorf("model %q is not defined in the config", name)
 		}
 		switch m.Kind {
 		case "anthropic", "openai":
@@ -261,20 +264,25 @@ func buildModels(ctx context.Context, cfg config.Main, vault *file.Vault, jobs [
 				slog.Warn("model skipped: credential missing, run `haythosd auth claude`", "model", name)
 				continue
 			}
-			sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
-			if err != nil {
-				closeAll()
-				return nil, nil, nil, fmt.Errorf("model %s: %w", name, err)
-			}
-			closers = append(closers, func() { _ = sc.Close() })
-			adapter := claudesdk.New(sc, claudesdk.WithModel(m.Model))
+			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token))
+			adapter := claudesdk.New(cli, claudesdk.WithModel(m.Model))
 			models[name] = adapter
 			if name == cfg.DefaultModel {
-				selector = claudeSubSelector{adapter: adapter, lister: sc}
+				selector = claudeSubSelector{adapter: adapter, lister: cli}
 			}
+		case "chatgpt":
+			if !vault.Has("chatgpt") {
+				slog.Warn("model skipped: not signed in, run `haythosd auth chatgpt`", "model", name)
+				continue
+			}
+			// One session for all chatgpt models, so refreshes of the rotating token stay serialized.
+			if gptSession == nil {
+				gptSession = chatgpt.NewSession(vault, chatgpt.AuthConfig{})
+			}
+			models[name] = chatgpt.New(chatgpt.Config{Model: m.Model, Session: gptSession})
 		}
 	}
-	return models, selector, closeAll, nil
+	return models, selector, nil
 }
 
 type modelLister interface {
@@ -310,10 +318,10 @@ func (s claudeSubSelector) Select(_ context.Context, value string) error {
 	return nil
 }
 
-func sidecarConfig(cfg config.Main, token string) claudesdk.SidecarConfig {
-	return claudesdk.SidecarConfig{
-		Command: cfg.Sidecar.Command, Args: cfg.Sidecar.Args, Dir: cfg.Sidecar.Dir,
-		Env: []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
+func claudeCLIConfig(cfg config.Main, token string) claudesdk.CLIConfig {
+	return claudesdk.CLIConfig{
+		Command: cfg.ClaudeCLI.Command,
+		Env:     []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
 	}
 }
 
@@ -339,7 +347,7 @@ var authTargets = map[string]authTarget{
 // runAuth stores one secret in the vault. The kernel never does OAuth; it only stores what the user pastes.
 func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (string, error)) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: haythosd auth <claude|anthropic|openai|discord>")
+		return fmt.Errorf("usage: haythosd auth <claude|chatgpt|anthropic|openai|discord>")
 	}
 	t, ok := authTargets[args[0]]
 	if !ok {
@@ -360,6 +368,26 @@ func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (str
 		return err
 	}
 	_, _ = fmt.Fprintf(out, "Stored as secret://%s\n", t.secret)
+	return nil
+}
+
+// runChatGPTAuth signs in with ChatGPT in the browser; tokens go straight into the vault and are never printed.
+func runChatGPTAuth(ctx context.Context, s *chatgpt.Session, out io.Writer) error {
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
+	defer cancel()
+	email, err := s.Login(ctx, func(u string) error {
+		_, _ = fmt.Fprintf(out, "Sign in with ChatGPT in your browser. If it does not open, visit:\n  %s\n", u)
+		opener := "xdg-open"
+		if runtime.GOOS == "darwin" {
+			opener = "open"
+		}
+		go func() { _ = exec.CommandContext(ctx, opener, u).Run() }() //nolint:gosec // G204: u is our own loopback login URL
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("chatgpt sign-in: %w", err)
+	}
+	_, _ = fmt.Fprintf(out, "Signed in as %s. Stored as secret://chatgpt.\n", email)
 	return nil
 }
 
@@ -553,15 +581,10 @@ func runClaudeSetupToken(ctx context.Context, stdout io.Writer) error {
 	return cmd.Run()
 }
 
-func sidecarModels(cfg config.Main) func(context.Context, string) ([]claudesdk.ModelInfo, error) {
+func cliModels(cfg config.Main) func(context.Context, string) ([]claudesdk.ModelInfo, error) {
 	return func(ctx context.Context, token string) ([]claudesdk.ModelInfo, error) {
 		ctx, cancel := context.WithTimeout(ctx, modelListWait)
 		defer cancel()
-		sc, err := claudesdk.StartSidecar(ctx, sidecarConfig(cfg, token))
-		if err != nil {
-			return nil, err
-		}
-		defer func() { _ = sc.Close() }()
-		return sc.Models(ctx)
+		return claudesdk.NewCLI(claudeCLIConfig(cfg, token)).Models(ctx)
 	}
 }

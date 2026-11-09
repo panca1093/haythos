@@ -177,11 +177,37 @@ func TestSaveModelChoiceAddsMissingDefaultModelKey(t *testing.T) {
 	}
 }
 
+func TestChatGPTKindLoads(t *testing.T) {
+	path := write(t, t.TempDir(), "haythos.yaml", "default_model: gpt-sub\nmodels:\n  gpt-sub: { kind: chatgpt, model: gpt-x }\n")
+	m, err := LoadMain(path)
+	if err != nil || m.Models["gpt-sub"].Kind != "chatgpt" || m.Models["gpt-sub"].Model != "gpt-x" {
+		t.Errorf("cfg=%+v err=%v", m, err)
+	}
+}
+
 func TestJobDeliverTo(t *testing.T) {
 	dir := t.TempDir()
 	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\ndeliver_to: ['123', dm]\n")
 	jobs, err := LoadJobs(dir)
 	if err != nil || len(jobs) != 1 || !reflect.DeepEqual(jobs[0].DeliverTo, []string{"123", "dm"}) {
 		t.Fatalf("jobs = %+v, err = %v", jobs, err)
+	}
+}
+
+func TestClaudeCLIConfig(t *testing.T) {
+	for _, tc := range []struct{ name, body, want string }{
+		{"explicit command", "claude_cli: { command: /opt/claude }\n", "/opt/claude"},
+		{"default command", "", "claude"},
+		{"deprecated sidecar block still loads", "sidecar: { command: node, args: [src/index.ts], dir: sidecar/claude-sdk }\n", "claude"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			m, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", "default_model: sub\nmodels: { sub: { kind: claudesdk } }\n"+tc.body))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if m.ClaudeCLI.Command != tc.want {
+				t.Errorf("command = %q, want %q", m.ClaudeCLI.Command, tc.want)
+			}
+		})
 	}
 }

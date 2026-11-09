@@ -1,10 +1,10 @@
 # HaythOS
 
-Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Spec, milestone plans and run reports: `docs/`.
+Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Milestone plans and run reports: `docs/` (the full design spec is kept outside this public repo).
 
 ## Run locally (M1)
 
-Requirements: Go (version in `go.mod`), Node 22+ for the Claude subscription sidecar, `golangci-lint` v2.
+Requirements: Go (version in `go.mod`), the official `claude` CLI for the Claude subscription model, `golangci-lint` v2.
 
 ```bash
 export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it the vault cannot be read
@@ -12,14 +12,14 @@ export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it th
 
 ### `haythosd setup` (Claude subscription, recommended)
 
-One command onboards `claude-sub` (kind `claudesdk`). Needs the official `claude` CLI on `PATH`, the sidecar installed (`cd sidecar/claude-sdk && npm install`) and `HAYTHOS_VAULT_KEY` set.
+One command onboards `claude-sub` (kind `claudesdk`). Needs the official `claude` CLI on `PATH` (or `claude_cli.command` in the config) and `HAYTHOS_VAULT_KEY` set.
 
 ```bash
 go run ./cmd/haythosd setup
 ```
 
 1. Runs `claude setup-token` (browser login). The long-lived token it prints is stored in the vault as `secret://claude`; the console shows `[stored in vault]` instead of the token.
-2. Starts the sidecar with that token and fetches the live model list from the Agent SDK (no model turn is sent).
+2. Runs the `claude` CLI with that token and fetches its live model list through the `initialize` handshake (no model turn is sent).
 3. Asks you to pick a model by number.
 4. Writes `default_model: claude-sub` and `models.claude-sub.model: <your pick>` into `config/haythos.yaml`, keeping comments. Blank lines and flow-style spacing in that file may be normalised.
 
@@ -27,7 +27,7 @@ If the token cannot be found in the CLI output, use the manual route below. If o
 
 ### `haythosd auth` (manual fallback)
 
-Secrets go into an encrypted file vault (`data/vault.enc`, AES-256-GCM, key from `HAYTHOS_VAULT_KEY`). The kernel never does OAuth; you paste what each provider gives you. Input is hidden.
+Secrets go into an encrypted file vault (`data/vault.enc`, AES-256-GCM, key from `HAYTHOS_VAULT_KEY`). Apart from `auth chatgpt` (below), the kernel never does OAuth; you paste what each provider gives you. Input is hidden.
 
 ```bash
 go run ./cmd/haythosd auth claude      # paste the token printed by `claude setup-token` (same secret `setup` fills)
@@ -36,7 +36,23 @@ go run ./cmd/haythosd auth openai      # key for an OpenAI-compatible endpoint
 go run ./cmd/haythosd auth discord     # Discord bot token
 ```
 
-Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`. (`discord.channel_id` is gone; if your file still has it, Alfred ignores it with a warning, so delete it.) Install the sidecar once: `cd sidecar/claude-sdk && npm install`.
+Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`. (`discord.channel_id` is gone; if your file still has it, Alfred ignores it with a warning, so delete it.)
+
+### `haythosd auth chatgpt` (ChatGPT plan)
+
+Runs Alfred on your ChatGPT plan through OpenAI's official [Sign in with ChatGPT token sharing](https://developers.openai.com/siwc/token-sharing-open-source) for open-source apps. HaythOS registers as its own app ("HaythOS"); it does not reuse Codex credentials.
+
+```bash
+go run ./cmd/haythosd auth chatgpt
+```
+
+1. Prints a `http://127.0.0.1:<port>/login/...` link and tries to open your browser. Sign in and allow ChatGPT plan usage.
+2. The access, refresh and ID tokens, the issued client id and this host's id are stored in the vault as `secret://chatgpt`; nothing is printed.
+3. Add a model in `config/haythos.yaml`, for example `chatgpt-sub: { kind: chatgpt, model: gpt-5 }` (`model` is optional; empty uses the first model your account lists), and point `default_model` or a job's `model:` at it.
+
+Alfred refreshes the token itself (1 h access token; the 30-day refresh token rotates on every refresh and is written to the vault before use). When the plan's usage limit is hit the task fails with a link to https://chatgpt.com/settings/usage; it never falls back to API-key billing. Run `auth chatgpt` again if the refresh token expires or is revoked.
+
+Headless server (VPS): the login callback goes to `127.0.0.1` on the machine with the browser, so there is no device flow. Sign in on your laptop, then copy the vault file (`data/vault.enc`) and keep the same `HAYTHOS_VAULT_KEY` on the server, over a secure channel. The server then owns later refreshes; stop using the copy on the laptop, or the two will fight over the rotating refresh token.
 
 ### Start
 
@@ -59,7 +75,7 @@ Alfred replies (and asks for approval) where you wrote. `/pause` stops every wri
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (sidecar) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the SDK default. `haythosd setup` sets it for you from the live SDK list. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
+Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythosd setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
 
 ### Runtime settings
 
@@ -109,7 +125,7 @@ Needs the brain wired (Phase 2); all three steps are silent unless noted.
 ## Development
 
 ```bash
-make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + tests
+make gate    # gofmt, go vet, golangci-lint, go test -race
 ```
 
 `tests/acceptance/` holds the acceptance tests (including the frozen milestone contract tests), grouped by use case (approval, ledger, taint, task lifecycle, settings, jobs, conversation, brain). Existing assertions are never edited to make a test pass; new tests go in the file for their use case.
@@ -123,12 +139,12 @@ make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + 
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
 | `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
+| `adapters/model/chatgpt/` | ChatGPT plan model: Sign in with ChatGPT (browser login, token refresh) and one step on the Responses API |
 | `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
 | `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
 | `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |
 | `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |
-| `sidecar/claude-sdk/` | TypeScript helper that calls the Claude Agent SDK: one step per call, plus the live model list |
 | `tests/acceptance/` | Whole-kernel tests with fakes, one file per use case plus `harness_test.go`; the gate for every milestone. Never delete |
 | `docs/` | Notes for humans: spec, milestone kickoffs, run reports |
 | `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `docs/REPORT.md` are done |
