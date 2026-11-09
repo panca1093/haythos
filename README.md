@@ -146,5 +146,4 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 | `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |
 | `tests/acceptance/` | Whole-kernel tests with fakes, one file per use case plus `harness_test.go`; the gate for every milestone. Never delete |
-| `docs/` | Notes for humans: spec, milestone kickoffs, run reports |
-| `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `docs/REPORT.md` are done |
+| `docs/` | Notes for humans: milestone kickoffs, plans, run reports, spike findings (`FINDINGS.md`) |
