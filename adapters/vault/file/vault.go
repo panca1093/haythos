@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"syscall"
 )
 
 const KeyEnv = "HAYTHOS_VAULT_KEY"
@@ -21,7 +22,6 @@ type Vault struct {
 	path string
 	gcm  cipher.AEAD
 	mu   sync.Mutex
-	data map[string]string
 }
 
 // KeyFromEnv reads a base64 32-byte key from KeyEnv.
@@ -47,32 +47,45 @@ func Open(path string, key []byte) (*Vault, error) {
 	if err != nil {
 		return nil, fmt.Errorf("vault cipher: %w", err)
 	}
-	v := &Vault{path: path, gcm: gcm, data: map[string]string{}}
-	raw, err := os.ReadFile(path)
+	v := &Vault{path: path, gcm: gcm}
+	if _, err := v.read(); err != nil {
+		return nil, err
+	}
+	return v, nil
+}
+
+// read decrypts the file on every call so several processes sharing it see each other's writes; Set replaces the file atomically.
+func (v *Vault) read() (map[string]string, error) {
+	data := map[string]string{}
+	raw, err := os.ReadFile(v.path)
 	switch {
 	case errors.Is(err, os.ErrNotExist):
-		return v, nil
+		return data, nil
 	case err != nil:
 		return nil, fmt.Errorf("read vault: %w", err)
 	}
-	if len(raw) < gcm.NonceSize() {
+	if len(raw) < v.gcm.NonceSize() {
 		return nil, errors.New("vault file is truncated")
 	}
-	plain, err := gcm.Open(nil, raw[:gcm.NonceSize()], raw[gcm.NonceSize():], nil)
+	plain, err := v.gcm.Open(nil, raw[:v.gcm.NonceSize()], raw[v.gcm.NonceSize():], nil)
 	if err != nil {
 		return nil, errors.New("vault file cannot be decrypted (wrong key or corrupt file)")
 	}
-	if err := json.Unmarshal(plain, &v.data); err != nil {
+	if err := json.Unmarshal(plain, &data); err != nil {
 		return nil, fmt.Errorf("decode vault: %w", err)
 	}
-	return v, nil
+	return data, nil
 }
 
 // Resolve accepts a handle such as secret://github.
 func (v *Vault) Resolve(handle string) (string, error) {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	val, ok := v.data[strings.TrimPrefix(handle, "secret://")]
+	data, err := v.read()
+	if err != nil {
+		return "", err
+	}
+	val, ok := data[strings.TrimPrefix(handle, "secret://")]
 	if !ok {
 		return "", fmt.Errorf("%s: %w", handle, ErrNotFound)
 	}
@@ -82,15 +95,31 @@ func (v *Vault) Resolve(handle string) (string, error) {
 func (v *Vault) Has(name string) bool {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	_, ok := v.data[name]
+	data, err := v.read()
+	if err != nil {
+		return false
+	}
+	_, ok := data[name]
 	return ok
 }
 
 func (v *Vault) Set(name, value string) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	v.data[name] = value
-	plain, err := json.Marshal(v.data)
+	lock, err := os.OpenFile(v.path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return fmt.Errorf("open vault lock: %w", err)
+	}
+	defer func() { _ = lock.Close() }()
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+		return fmt.Errorf("lock vault: %w", err)
+	}
+	data, err := v.read()
+	if err != nil {
+		return err
+	}
+	data[name] = value
+	plain, err := json.Marshal(data)
 	if err != nil {
 		return fmt.Errorf("encode vault: %w", err)
 	}
