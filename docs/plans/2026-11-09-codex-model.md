@@ -10,7 +10,7 @@
 
 **Tech Stack:** Go stdlib. No new dependency.
 
-**Spec:** `experiments/FINDINGS.md` §6 (protocol, flags, isolation), spike `experiments/codexappserver/spike.py`; `CLAUDE.md` rules 1, 2, 3, 5.
+**Spec:** `docs/FINDINGS.md` §6 (protocol, flags, isolation); the spike script was throwaway and is not kept; `CLAUDE.md` rules 1, 2, 3, 5.
 
 ## Global Constraints
 

@@ -6,7 +6,7 @@ Run date: 2026-10-27 (Asia/Jakarta). I treated "get things done tonight, I'll ch
 
 | Phase | Commit(s) | Result |
 | --- | --- | --- |
-| 0 scaffold + spikes | `scaffold: ...` | Module, layout, `.golangci.yml`, Makefile, `experiments/FINDINGS.md`. Spikes 1 and 4 confirmed, 2 and 3 partly (static evidence only, see TODOs). |
+| 0 scaffold + spikes | `scaffold: ...` | Module, layout, `.golangci.yml`, Makefile, `docs/FINDINGS.md`. Spikes 1 and 4 confirmed, 2 and 3 partly (static evidence only, see TODOs). |
 | 1 contract tests | `stubs: ...`, `contract: M1 acceptance tests` | 7 contract tests committed alone, failing against stubs. `tests/acceptance/m1_test.go` has 0 diff lines since that commit. |
 | 2 core + app | `core,app: ...` | `core/task`, `core/policy`, `app/gateway`, agent loop, SQLite store (needed so the contract tests could run). |
 | 3 adapters | `adapters: ...` and later commits | sqlite, anthropic, openai, claudesdk + TS sidecar, vault/file, discord, local tools + vmhealth. |
@@ -54,15 +54,15 @@ ok    github.com/panca/haythos/internal/config  (cached)
 12. **Vault key** comes only from `HAYTHOS_VAULT_KEY`. OS keyring is not done.
 13. **Node sidecar** runs TypeScript with Node's built-in type stripping (`node src/index.ts`, Node 22.18+; this machine has v26). `tsc` is used for type checking only.
 14. **Dependencies added** (all justified by the kickoff or the lack of a stdlib option): `modernc.org/sqlite` (pure Go, no cgo), `bwmarrin/discordgo` (named in the kickoff), `robfig/cron/v3` (cron parsing, used in `app/schedule.go`; this is the one external import in `app`), `gopkg.in/yaml.v3`, `golang.org/x/term` (hidden input for `auth`), `google/go-cmp` (allowed). **Flag**: discordgo pulls an old `golang.org/x/crypto` (2021 pseudo-version); check it before running on a VPS.
-15. The MCP Go SDK is only spiked (`experiments/mcp`, its own module), not a dependency of the main module.
+15. The MCP Go SDK is only spiked (throwaway spike module, not kept in the repo), not a dependency of the main module.
 
 ## Live checks (2026-10-28, with the user)
 
 - `run-job vm-health` on `claude-sub` (subscription token from `haythosd auth claude`) worked end to end on macOS: sidecar → Agent SDK 0.3.310 → report on stdout. A tool-less single turn with `outputFormat: json_schema` and `maxTurns: 1` works live.
 - The report quoted a fake "0% memory" because unmeasured metrics were sent as 0. Fixed: unmeasured metrics are left out of the report and only their gap is sent.
 - `claude-sub` can now pick a model (`model:` on a `kind: claudesdk` entry, passed as SDK `options.model`); empty means the SDK default.
-- Spike 3 (`experiments/agentsdk/token-precedence.mjs`): with an invalid `CLAUDE_CODE_OAUTH_TOKEN` the SDK fails with `401 OAuth access token is invalid`, with the real or an empty `HOME`. Without a token it fails with `Not logged in`. So the env token is what authenticates and the sidecar does not fall back to the Mac's Claude Code login.
-- Spike 2 overhead (`experiments/agentsdk/probe.mjs`, same options as `step.ts`, 3 calls, Agent SDK 0.3.310, model = SDK default): 4.3 s, 4.7 s, 6.0 s per call for a one-word reply. Each call spawns a Claude Code subprocess and shows 2 assistant messages, yet still fits `maxTurns: 1`. Budget about 5 s per `Step` on `claude-sub`; a multi-step task pays this on every step. This run authenticated with the machine's existing Claude login, not the vault token (Spike 3 covers that path).
+- Spike 3 (throwaway Agent SDK script): with an invalid `CLAUDE_CODE_OAUTH_TOKEN` the SDK fails with `401 OAuth access token is invalid`, with the real or an empty `HOME`. Without a token it fails with `Not logged in`. So the env token is what authenticates and the sidecar does not fall back to the Mac's Claude Code login.
+- Spike 2 overhead (throwaway Agent SDK probe, same options as `step.ts`, 3 calls, Agent SDK 0.3.310, model = SDK default): 4.3 s, 4.7 s, 6.0 s per call for a one-word reply. Each call spawns a Claude Code subprocess and shows 2 assistant messages, yet still fits `maxTurns: 1`. Budget about 5 s per `Step` on `claude-sub`; a multi-step task pays this on every step. This run authenticated with the machine's existing Claude login, not the vault token (Spike 3 covers that path).
 - 2026-11-10: `claude-sub` now runs the `claude` CLI directly (Node sidecar removed). `run-job vm-health` with the vault token and scrubbed env returned a full report; 8.3 s wall clock including `go run` compile. CLI 2.1.319.
 - Discord live (2026-10-28 01:45 WIB): bot invited, owner chat answered by Alfred on `claude-sub`, and an ad-hoc VM-health check ran through the gateway and was summarized in the channel. Memory was a gap on macOS at the time; vmhealth now reads `kern.memorystatus_level`, the same value `memory_pressure` prints. Not yet checked live: `/pause`, `/resume`, and approval buttons (M1 has no write tool, so nothing asks for approval).
 - Added after the live run: `haythosd setup` (runs `claude setup-token`, captures the token into the vault, picks a model from the live SDK list, saves it to the config) and `/model` in Discord (live list, switch without restart, saved to the config, audited as `kernel.model_selected`). Not yet tried live: the token capture against the real CLI, and `/model` against the real Discord gateway. Saving rewrites `config/haythos.yaml` through yaml.v3, which keeps comments but drops blank lines and normalizes flow-style spacing. Model choice in the config is a stopgap; runtime settings need a proper design in M2.

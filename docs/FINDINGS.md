@@ -1,5 +1,7 @@
 # Phase 0 spike findings
 
+The `experiments/...` programs named below were throwaway spikes; they are no longer tracked (last present in commit `888ccfd`).
+
 Run unattended: no real credentials were used, so live-call items are marked TODO(user).
 
 ## 1. modelcontextprotocol/go-sdk — confirmed

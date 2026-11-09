@@ -8,7 +8,7 @@
 
 **Tech Stack:** Go stdlib (`os/exec`, `encoding/json`, `bufio`). No new dependency.
 
-**Spec:** `experiments/FINDINGS.md` §5 (CLI flags, latency, model list handshake); `CLAUDE.md` rules 1, 3, 5.
+**Spec:** `docs/FINDINGS.md` §5 (CLI flags, latency, model list handshake); `CLAUDE.md` rules 1, 3, 5.
 
 ## Global Constraints
 
@@ -62,7 +62,7 @@
 - [ ] **Step 1: Failing test** `TestCLIModels`: fake (stream-json mode) reads one stdin line, asserts it is `{"type":"control_request","request_id":"models","request":{"subtype":"initialize"}}`, prints a `control_response` line whose `response.response.models` has two entries plus one unrelated `system` line → two `ModelInfo{Value, DisplayName, Description}`; assert argv contains `--input-format stream-json --output-format stream-json --verbose` and no model turn flags beyond Task 1's isolation flags.
   - `TestCLIModelsNoResponse`: fake prints nothing and waits → returns ctx deadline error, child killed.
 - [ ] **Step 2:** run → FAIL.
-- [ ] **Step 3: Implement**: write the request, scan stdout lines (buffer up to 16 MB) for `type=="control_response"` with `request_id=="models"`, then close stdin and kill the child. Never send a user message. Response path: verify against the real CLI once (`experiments/FINDINGS.md` §5 shows `"models":[...]` inside the initialize response) and pin the struct to it.
+- [ ] **Step 3: Implement**: write the request, scan stdout lines (buffer up to 16 MB) for `type=="control_response"` with `request_id=="models"`, then close stdin and kill the child. Never send a user message. Response path: verify against the real CLI once (`docs/FINDINGS.md` §5 shows `"models":[...]` inside the initialize response) and pin the struct to it.
 - [ ] **Step 4:** PASS.
 - [ ] **Step 5: Commit** `claudesdk: list models through the CLI initialize handshake`
 
