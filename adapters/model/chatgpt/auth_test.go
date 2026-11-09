@@ -197,6 +197,32 @@ func TestAccessTokenRefreshPersistFails(t *testing.T) {
 	}
 }
 
+func TestAccessTokenRefreshRejectedKeepsRotatedToken(t *testing.T) {
+	t.Parallel()
+	cases := map[string]func(f *fakeAuth){
+		"missing plan scope": func(f *fakeAuth) { f.scope = "openid profile email offline_access" },
+		"sub mismatch":       func(f *fakeAuth) { f.sub = "user-2" },
+	}
+	for name, setup := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeAuth(t)
+			setup(f)
+			path := t.TempDir() + "/v.enc"
+			v := openVault(t, path)
+			seed(t, v, 0)
+			tok, err := newTestSession(f, v).AccessToken(context.Background())
+			if err == nil || tok != "" {
+				t.Fatalf("tok=%q err=%v, want error and no token", tok, err)
+			}
+			r := loadRecord(t, openVault(t, path))
+			if r.RefreshToken != "rt-1" || r.AccessToken == "at-1" || r.Subject != "user-1" {
+				t.Errorf("persisted = %+v, want rt-1 saved and at-1 not saved", r)
+			}
+		})
+	}
+}
+
 func TestAccessTokenConcurrentRefreshOnce(t *testing.T) {
 	t.Parallel()
 	f := newFakeAuth(t)

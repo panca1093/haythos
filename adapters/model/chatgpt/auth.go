@@ -130,10 +130,19 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("refresh chatgpt token: %w", err)
 	}
+	// The old refresh token is spent; persist the rotated one before validating so a rejected response cannot lose it.
+	// The access token stays expired until the response validates.
+	if t.Refresh != "" {
+		rotated := r
+		rotated.RefreshToken, rotated.ExpiresAt = t.Refresh, time.Time{}
+		if err := s.save(rotated); err != nil {
+			return "", err
+		}
+		r = rotated
+	}
 	if r, err = s.apply(ctx, r, t, ""); err != nil {
 		return "", err
 	}
-	// The old refresh token is spent; the rotated one must be on disk before anything uses the new access token.
 	if err := s.save(r); err != nil {
 		return "", err
 	}
