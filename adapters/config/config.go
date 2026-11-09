@@ -71,7 +71,7 @@ func LoadMain(path string) (Main, error) {
 	}
 	for name, md := range m.Models {
 		switch md.Kind {
-		case "anthropic", "openai", "claudesdk":
+		case "anthropic", "openai", "claudesdk", "chatgpt":
 		default:
 			return m, fmt.Errorf("%s: model %s has unknown kind %q", path, name, md.Kind)
 		}
