@@ -275,3 +275,154 @@ func TestVerifyIDToken(t *testing.T) {
 		})
 	}
 }
+
+// onAuthorize makes the fake authorize endpoint redirect to redirect_uri with params; "STATE" is replaced by the real state.
+func (f *fakeAuth) onAuthorize(params url.Values, seen *url.Values) {
+	f.authorize = func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		*seen = q
+		f.mu.Lock()
+		f.nonce = q.Get("nonce")
+		f.mu.Unlock()
+		out := url.Values{}
+		for k, vs := range params {
+			for _, v := range vs {
+				out.Add(k, strings.ReplaceAll(v, "STATE", q.Get("state")))
+			}
+		}
+		http.Redirect(w, r, q.Get("redirect_uri")+"?"+out.Encode(), http.StatusFound)
+	}
+}
+
+func browser(t *testing.T) func(string) error {
+	return func(u string) error {
+		if !strings.HasPrefix(u, "http://127.0.0.1:") {
+			t.Errorf("login url = %q, want loopback", u)
+		}
+		resp, err := http.Get(u) //nolint:noctx // test browser
+		if err != nil {
+			return err
+		}
+		return resp.Body.Close()
+	}
+}
+
+func okCallback() url.Values {
+	return url.Values{"code": {"c1"}, "state": {"STATE"}, "client_id": {"oaiapp_test"}, "scope": {scope}}
+}
+
+func TestLoginNewRegistration(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	var q url.Values
+	f.onAuthorize(okCallback(), &q)
+	path := t.TempDir() + "/v.enc"
+	email, err := newTestSession(f, openVault(t, path)).Login(context.Background(), browser(t))
+	if err != nil || email != "me@example.test" {
+		t.Fatalf("email=%q err=%v", email, err)
+	}
+	if q.Get("client_id") != "dynamic_agent_client" || q.Get("agent_name_hint") != "HaythOS" || q.Get("scope") != scope ||
+		q.Get("resource") != resource || q.Get("response_type") != "code" || q.Get("code_challenge_method") != "S256" ||
+		!strings.HasPrefix(q.Get("ext_agent_host_id"), "urn:uuid:") || q.Has("id_token_hint") {
+		t.Errorf("authorize query = %v", q)
+	}
+	redirect, _ := url.Parse(q.Get("redirect_uri"))
+	if redirect.Scheme != "http" || redirect.Hostname() != "127.0.0.1" || redirect.Path != "/auth/callback" {
+		t.Errorf("redirect_uri = %q", q.Get("redirect_uri"))
+	}
+	form := f.forms[0]
+	sum := sha256.Sum256([]byte(form.Get("code_verifier")))
+	if form.Get("grant_type") != "authorization_code" || form.Get("client_id") != "oaiapp_test" || form.Get("code") != "c1" ||
+		form.Get("redirect_uri") != q.Get("redirect_uri") || form.Get("resource") != resource ||
+		base64.RawURLEncoding.EncodeToString(sum[:]) != q.Get("code_challenge") {
+		t.Errorf("token form = %v", form)
+	}
+	r := loadRecord(t, openVault(t, path))
+	if r.ClientID != "oaiapp_test" || r.HostID != q.Get("ext_agent_host_id") || r.Subject != "user-1" || r.AccessToken != "at-1" || r.RefreshToken != "rt-1" || r.IDToken == "" {
+		t.Errorf("record = %+v", r)
+	}
+}
+
+func TestLoginReauth(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	v := openVault(t, t.TempDir()+"/v.enc")
+	seed(t, v, 0)
+	old := loadRecord(t, v)
+	old.IDToken, old.Email = "old-id", "me@example.test"
+	b, _ := json.Marshal(old)
+	_ = v.Set(vaultName, string(b))
+
+	var q url.Values
+	cb := okCallback()
+	cb.Del("client_id")
+	f.onAuthorize(cb, &q)
+	if _, err := newTestSession(f, v).Login(context.Background(), browser(t)); err != nil {
+		t.Fatal(err)
+	}
+	if q.Get("client_id") != "oaiapp_test" || q.Get("id_token_hint") != "old-id" || q.Get("login_hint") != "me@example.test" ||
+		q.Has("agent_name_hint") || q.Get("ext_agent_host_id") != old.HostID {
+		t.Errorf("authorize query = %v", q)
+	}
+
+	f.mu.Lock()
+	f.sub = "someone-else"
+	f.mu.Unlock()
+	before := loadRecord(t, v)
+	if _, err := newTestSession(f, v).Login(context.Background(), browser(t)); err == nil {
+		t.Fatal("login as a different account succeeded")
+	}
+	if after := loadRecord(t, v); after.AccessToken != before.AccessToken {
+		t.Errorf("record changed after rejected reauth")
+	}
+}
+
+func TestLoginRejects(t *testing.T) {
+	t.Parallel()
+	cases := map[string]struct {
+		cb    url.Values
+		scope string
+	}{
+		"state mismatch":  {cb: url.Values{"code": {"c1"}, "state": {"nope"}, "client_id": {"oaiapp_test"}}},
+		"access denied":   {cb: url.Values{"error": {"access_denied"}, "state": {"STATE"}}},
+		"no client id":    {cb: url.Values{"code": {"c1"}, "state": {"STATE"}}},
+		"dynamic as id":   {cb: url.Values{"code": {"c1"}, "state": {"STATE"}, "client_id": {"dynamic_agent_client"}}},
+		"two client ids":  {cb: url.Values{"code": {"c1"}, "state": {"STATE"}, "client_id": {"oaiapp_test", "oaiapp_x"}}},
+		"no plan scope":   {cb: okCallback(), scope: "openid profile email offline_access"},
+		"bad client char": {cb: url.Values{"code": {"c1"}, "state": {"STATE"}, "client_id": {"oaiapp/../x"}}},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFakeAuth(t)
+			if c.scope != "" {
+				f.scope = c.scope
+			}
+			var q url.Values
+			f.onAuthorize(c.cb, &q)
+			v := openVault(t, t.TempDir()+"/v.enc")
+			if _, err := newTestSession(f, v).Login(context.Background(), browser(t)); err == nil {
+				t.Fatal("login succeeded")
+			}
+			if r := loadRecord(t, v); r.ClientID != "" || r.AccessToken != "" || r.HostID == "" {
+				t.Errorf("record = %+v, want only the host id", r)
+			}
+		})
+	}
+}
+
+func TestLoginHostIDStable(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	var q1, q2 url.Values
+	v := openVault(t, t.TempDir()+"/v.enc")
+	f.onAuthorize(url.Values{"error": {"access_denied"}, "state": {"STATE"}}, &q1)
+	_, _ = newTestSession(f, v).Login(context.Background(), browser(t))
+	f.onAuthorize(okCallback(), &q2)
+	if _, err := newTestSession(f, v).Login(context.Background(), browser(t)); err != nil {
+		t.Fatal(err)
+	}
+	if q1.Get("ext_agent_host_id") == "" || q1.Get("ext_agent_host_id") != q2.Get("ext_agent_host_id") {
+		t.Errorf("host ids %q vs %q", q1.Get("ext_agent_host_id"), q2.Get("ext_agent_host_id"))
+	}
+}

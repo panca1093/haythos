@@ -5,14 +5,17 @@ import (
 	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"math/big"
+	"net"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -137,7 +140,152 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 	return r.AccessToken, nil
 }
 
-var codeRE = regexp.MustCompile(`^[a-z0-9_.]{1,64}$`)
+var (
+	codeRE     = regexp.MustCompile(`^[a-z0-9_.]{1,64}$`)
+	clientIDRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,200}$`)
+)
+
+type callback struct {
+	code, clientID string
+	err            error
+}
+
+// Login runs the browser sign-in: dynamic registration on first use, reauthorization of the stored client after that.
+// open receives a loopback URL that redirects to OpenAI, so the authorize URL (which may carry id_token_hint) is never printed.
+func (s *Session) Login(ctx context.Context, open func(url string) error) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	r, _ := s.load()
+	if r.HostID == "" {
+		id, err := random(16)
+		if err != nil {
+			return "", err
+		}
+		id[6], id[8] = (id[6]&0x0f)|0x40, (id[8]&0x3f)|0x80
+		r = record{HostID: fmt.Sprintf("urn:uuid:%x-%x-%x-%x-%x", id[:4], id[4:6], id[6:8], id[8:10], id[10:])}
+		if err := s.save(r); err != nil {
+			return "", err
+		}
+	}
+	var secrets [4]string
+	for i := range secrets {
+		b, err := random(32)
+		if err != nil {
+			return "", err
+		}
+		secrets[i] = base64.RawURLEncoding.EncodeToString(b)
+	}
+	state, nonce, verifier, entry := secrets[0], secrets[1], secrets[2], secrets[3]
+
+	ln, err := (&net.ListenConfig{}).Listen(ctx, "tcp4", "127.0.0.1:0")
+	if err != nil {
+		return "", fmt.Errorf("start loopback callback: %w", err)
+	}
+	addr := ln.Addr().String()
+	redirect := "http://" + addr + "/auth/callback"
+	reauth := r.ClientID != ""
+	challenge := sha256.Sum256([]byte(verifier))
+	q := url.Values{
+		"client_id": {r.ClientID}, "ext_agent_host_id": {r.HostID}, "response_type": {"code"}, "redirect_uri": {redirect},
+		"scope": {scope}, "resource": {resource}, "state": {state}, "nonce": {nonce},
+		"code_challenge_method": {"S256"}, "code_challenge": {base64.RawURLEncoding.EncodeToString(challenge[:])},
+	}
+	if reauth {
+		if r.IDToken != "" {
+			q.Set("id_token_hint", r.IDToken)
+		}
+		if r.Email != "" {
+			q.Set("login_hint", r.Email)
+		}
+	} else {
+		q.Set("client_id", "dynamic_agent_client")
+		q.Set("agent_name_hint", "HaythOS")
+	}
+
+	done := make(chan callback, 1)
+	var once sync.Once
+	mux := http.NewServeMux()
+	mux.HandleFunc("GET /login/{entry}", func(w http.ResponseWriter, req *http.Request) {
+		if req.Host != addr || subtle.ConstantTimeCompare([]byte(req.PathValue("entry")), []byte(entry)) != 1 {
+			http.NotFound(w, req)
+			return
+		}
+		http.Redirect(w, req, s.issuer+"/api/accounts/authorize?"+q.Encode(), http.StatusFound)
+	})
+	mux.HandleFunc("GET /auth/callback", func(w http.ResponseWriter, req *http.Request) {
+		w.Header().Set("Cache-Control", "no-store")
+		if req.Host != addr {
+			http.NotFound(w, req)
+			return
+		}
+		sent := false
+		once.Do(func() { sent = true; done <- parseCallback(req.URL.Query(), state, r.ClientID) })
+		if !sent {
+			http.Error(w, "sign-in attempt already used", http.StatusConflict)
+			return
+		}
+		_, _ = io.WriteString(w, "HaythOS: you can close this tab and return to the terminal.")
+	})
+	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	go func() { _ = srv.Serve(ln) }()
+	defer func() { _ = srv.Close() }()
+
+	if err := open("http://" + addr + "/login/" + entry); err != nil {
+		return "", fmt.Errorf("open sign-in page: %w", err)
+	}
+	var cb callback
+	select {
+	case <-ctx.Done():
+		return "", ctx.Err()
+	case cb = <-done:
+	}
+	if cb.err != nil {
+		return "", cb.err
+	}
+	next := r
+	next.ClientID = cb.clientID
+	t, err := s.token(ctx, url.Values{
+		"grant_type": {"authorization_code"}, "client_id": {cb.clientID}, "code": {cb.code},
+		"code_verifier": {verifier}, "redirect_uri": {redirect}, "resource": {resource},
+	})
+	if err != nil {
+		return "", fmt.Errorf("exchange sign-in code: %w", err)
+	}
+	if next, err = s.apply(ctx, next, t, nonce); err != nil {
+		return "", err
+	}
+	if err := s.save(next); err != nil {
+		return "", err
+	}
+	return next.Email, nil
+}
+
+// parseCallback validates the loopback callback; stored is the issued client id on reauthorization, "" on first registration.
+func parseCallback(p url.Values, state, stored string) callback {
+	if len(p["state"]) != 1 || subtle.ConstantTimeCompare([]byte(p.Get("state")), []byte(state)) != 1 {
+		return callback{err: errors.New("sign-in callback state did not match; run the login again")}
+	}
+	if p.Has("error") {
+		return callback{err: errors.New("sign-in or ChatGPT plan access was declined")}
+	}
+	id := p.Get("client_id")
+	if stored != "" && id == "" {
+		id = stored
+	}
+	if len(p["client_id"]) > 1 || !clientIDRE.MatchString(id) || id == "dynamic_agent_client" || (stored != "" && id != stored) ||
+		len(p["code"]) != 1 || p.Get("code") == "" {
+		return callback{err: errors.New("sign-in callback registration is missing or mismatched")}
+	}
+	return callback{code: p.Get("code"), clientID: id}
+}
+
+func random(n int) ([]byte, error) {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return nil, fmt.Errorf("random: %w", err)
+	}
+	return b, nil
+}
 
 var terminalRefresh = []string{"invalid_grant", "invalid_refresh_token", "token_expired", "refresh_token_expired", "refresh_token_invalidated", "refresh_token_reused"}
 
