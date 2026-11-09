@@ -239,3 +239,40 @@ func TestStepDefaultModel(t *testing.T) {
 		t.Errorf("model = %q", got.Model)
 	}
 }
+
+func TestToolNameMapping(t *testing.T) {
+	t.Parallel()
+	spec := func(n string) task.ToolSpec { return task.ToolSpec{Name: n} }
+	t.Run("name with double underscore round-trips", func(t *testing.T) {
+		t.Parallel()
+		api := newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+			sse(w, `{"type":"response.output_item.done","item":{"type":"function_call","call_id":"c","namespace":"alfred","name":"srv__foo__bar","arguments":"{}"}}`, completed)
+		})
+		turn, err := newAdapter(t, api, "gpt-x").Step(context.Background(), history, []task.ToolSpec{spec("srv.foo__bar")})
+		if err != nil || len(turn.Calls) != 1 || turn.Calls[0].Name != "srv.foo__bar" {
+			t.Fatalf("turn=%+v err=%v", turn, err)
+		}
+	})
+	t.Run("unknown tool rejected", func(t *testing.T) {
+		t.Parallel()
+		api := newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+			sse(w, `{"type":"response.output_item.done","item":{"type":"function_call","call_id":"c","namespace":"alfred","name":"nope","arguments":"{}"}}`, completed)
+		})
+		if _, err := newAdapter(t, api, "gpt-x").Step(context.Background(), history, tools); err == nil {
+			t.Fatal("want error for a tool that was not offered")
+		}
+	})
+	for name, specs := range map[string][]task.ToolSpec{
+		"colon":     {spec("srv:tool")},
+		"slash":     {spec("srv/tool")},
+		"too long":  {spec(strings.Repeat("a", 65))},
+		"collision": {spec("a.b"), spec("a__b")},
+	} {
+		t.Run("reject "+name, func(t *testing.T) {
+			t.Parallel()
+			if _, _, err := buildRequest("m", nil, specs); err == nil {
+				t.Fatal("want error")
+			}
+		})
+	}
+}

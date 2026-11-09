@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"regexp"
 	"strings"
 	"sync"
 
@@ -116,9 +117,16 @@ type event struct {
 	} `json:"response"`
 }
 
-// Function names only allow [a-zA-Z0-9_-]; kernel names use dots.
-func wireName(n string) string  { return strings.ReplaceAll(n, ".", "__") }
-func localName(n string) string { return strings.ReplaceAll(n, "__", ".") }
+var wireNameRE = regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+
+// wireName maps a kernel name (dots allowed) to the API's [a-zA-Z0-9_-]{1,64} function names.
+func wireName(n string) (string, error) {
+	w := strings.ReplaceAll(n, ".", "__")
+	if !wireNameRE.MatchString(w) {
+		return "", fmt.Errorf("tool name %q cannot be sent to chatgpt (allowed: letters, digits, '_', '-', '.'; at most 64 characters after encoding)", n)
+	}
+	return w, nil
+}
 
 func str(s string) *string { return &s }
 
@@ -131,7 +139,11 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	if err != nil {
 		return task.AssistantTurn{}, err
 	}
-	body, err := json.Marshal(buildRequest(model, history, tools))
+	built, names, err := buildRequest(model, history, tools)
+	if err != nil {
+		return task.AssistantTurn{}, err
+	}
+	body, err := json.Marshal(built)
 	if err != nil {
 		return task.AssistantTurn{}, fmt.Errorf("encode request: %w", err)
 	}
@@ -140,14 +152,15 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		return task.AssistantTurn{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
-	turn, err := parseStream(resp.Body, token)
+	turn, err := parseStream(resp.Body, token, names)
 	if err != nil && ctx.Err() != nil {
 		return task.AssistantTurn{}, fmt.Errorf("chatgpt stream: %w", ctx.Err())
 	}
 	return turn, err
 }
 
-func buildRequest(model string, history []task.Message, tools []task.ToolSpec) request {
+// buildRequest also returns the wire-name to kernel-name map used to resolve the model's tool calls.
+func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (request, map[string]string, error) {
 	req := request{Model: model, Input: []inputItem{}, Store: false, Stream: true}
 	var system []string
 	for _, m := range history {
@@ -165,7 +178,11 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) r
 				if args == "" {
 					args = "{}"
 				}
-				req.Input = append(req.Input, inputItem{Type: "function_call", CallID: c.ID, Namespace: namespace, Name: wireName(c.Name), Arguments: args})
+				w, err := wireName(c.Name)
+				if err != nil {
+					return request{}, nil, err
+				}
+				req.Input = append(req.Input, inputItem{Type: "function_call", CallID: c.ID, Namespace: namespace, Name: w, Arguments: args})
 			}
 		case task.RoleTool:
 			for _, r := range m.Results {
@@ -178,6 +195,7 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) r
 		}
 	}
 	req.Instructions = strings.Join(system, "\n\n")
+	names := make(map[string]string, len(tools))
 	if len(tools) > 0 {
 		ns := tool{Type: "namespace", Name: namespace, Description: "Alfred kernel tools. Every call is checked by policy and may need the user's approval."}
 		for _, t := range tools {
@@ -185,14 +203,22 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) r
 			if len(params) == 0 {
 				params = json.RawMessage(`{"type":"object","properties":{}}`)
 			}
-			ns.Tools = append(ns.Tools, tool{Type: "function", Name: wireName(t.Name), Description: t.Description, Parameters: params})
+			w, err := wireName(t.Name)
+			if err != nil {
+				return request{}, nil, err
+			}
+			if prev, dup := names[w]; dup {
+				return request{}, nil, fmt.Errorf("tool names %q and %q collide as %q on the chatgpt wire", prev, t.Name, w)
+			}
+			names[w] = t.Name
+			ns.Tools = append(ns.Tools, tool{Type: "function", Name: w, Description: t.Description, Parameters: params})
 		}
 		req.Tools = []tool{ns}
 	}
-	return req
+	return req, names, nil
 }
 
-func parseStream(body io.Reader, token string) (task.AssistantTurn, error) {
+func parseStream(body io.Reader, token string, names map[string]string) (task.AssistantTurn, error) {
 	sc := bufio.NewScanner(body)
 	sc.Buffer(make([]byte, 64<<10), 16<<20)
 	var items []outputItem
@@ -213,7 +239,7 @@ func parseStream(body io.Reader, token string) (task.AssistantTurn, error) {
 			if len(items) == 0 {
 				items = e.Response.Output
 			}
-			turn, err := toTurn(items)
+			turn, err := toTurn(items, names)
 			turn.Usage = task.Usage{InputTokens: e.Response.Usage.InputTokens, OutputTokens: e.Response.Usage.OutputTokens}
 			return turn, err
 		case "response.failed":
@@ -238,7 +264,7 @@ func parseStream(body io.Reader, token string) (task.AssistantTurn, error) {
 	return task.AssistantTurn{}, errors.New("chatgpt stream ended without response.completed")
 }
 
-func toTurn(items []outputItem) (task.AssistantTurn, error) {
+func toTurn(items []outputItem, names map[string]string) (task.AssistantTurn, error) {
 	var turn task.AssistantTurn
 	for _, it := range items {
 		switch it.Type {
@@ -256,7 +282,11 @@ func toTurn(items []outputItem) (task.AssistantTurn, error) {
 			if it.CallID == "" || it.Name == "" || !json.Valid([]byte(it.Arguments)) {
 				return task.AssistantTurn{}, errors.New("chatgpt returned an invalid tool call")
 			}
-			turn.Calls = append(turn.Calls, task.ToolCall{ID: it.CallID, Name: localName(it.Name), Args: json.RawMessage(it.Arguments)})
+			name, known := names[it.Name]
+			if !known {
+				return task.AssistantTurn{}, fmt.Errorf("chatgpt called unknown tool %q", it.Name)
+			}
+			turn.Calls = append(turn.Calls, task.ToolCall{ID: it.CallID, Name: name, Args: json.RawMessage(it.Arguments)})
 		}
 	}
 	return turn, nil
