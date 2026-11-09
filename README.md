@@ -1,6 +1,6 @@
 # HaythOS
 
-Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Spec, milestone plans and run reports: `docs/`.
+Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUDE.md`. Milestone plans and run reports: `docs/` (the full design spec is kept outside this public repo).
 
 ## Run locally (M1)
 
