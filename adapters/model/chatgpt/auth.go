@@ -130,6 +130,9 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("refresh chatgpt token: %w", err)
 	}
+	if tok, replaced, err := s.replacedBy(r.RefreshToken); replaced {
+		return tok, err
+	}
 	// The old refresh token is spent; persist the rotated one before validating so a rejected response cannot lose it.
 	// The access token stays expired until the response validates.
 	if t.Refresh != "" {
@@ -143,10 +146,25 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 	if r, err = s.apply(ctx, r, t, ""); err != nil {
 		return "", err
 	}
+	if tok, replaced, err := s.replacedBy(r.RefreshToken); replaced {
+		return tok, err
+	}
 	if err := s.save(r); err != nil {
 		return "", err
 	}
 	return r.AccessToken, nil
+}
+
+// replacedBy reports whether a concurrent `haythosd auth chatgpt` stored a newer grant, which then wins over ours.
+func (s *Session) replacedBy(ours string) (string, bool, error) {
+	cur, ok := s.load()
+	if !ok || cur.RefreshToken == ours {
+		return "", false, nil
+	}
+	if cur.AccessToken != "" && s.now().Before(cur.ExpiresAt.Add(-time.Minute)) {
+		return cur.AccessToken, true, nil
+	}
+	return "", true, ErrSignInRequired
 }
 
 var (

@@ -42,6 +42,7 @@ type fakeAuth struct {
 	nonce     string
 	ec        *ecdsa.PrivateKey
 	jwksURI   string
+	onToken   func()
 }
 
 func newFakeAuth(t *testing.T) *fakeAuth {
@@ -85,6 +86,9 @@ func newFakeAuth(t *testing.T) *fakeAuth {
 			return
 		}
 		f.issued++
+		if f.onToken != nil {
+			f.onToken()
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"access_token":  fmt.Sprintf("at-%d", f.issued),
 			"refresh_token": fmt.Sprintf("rt-%d", f.issued),
@@ -251,6 +255,30 @@ func TestAccessTokenRefreshRejectedKeepsRotatedToken(t *testing.T) {
 				t.Errorf("persisted = %+v, want rt-1 saved and at-1 not saved", r)
 			}
 		})
+	}
+}
+
+func TestAccessTokenRefreshKeepsConcurrentSignIn(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	path := t.TempDir() + "/v.enc"
+	v := openVault(t, path)
+	seed(t, v, 0)
+	f.onToken = func() {
+		b, _ := json.Marshal(record{
+			HostID: "urn:uuid:00000000-0000-4000-8000-000000000000", ClientID: "oaiapp_test", Subject: "user-1",
+			AccessToken: "at-login", RefreshToken: "rt-login", ExpiresAt: testNow.Add(time.Hour), Scopes: strings.Fields(scope),
+		})
+		if err := openVault(t, path).Set(vaultName, string(b)); err != nil {
+			t.Error(err)
+		}
+	}
+	tok, err := newTestSession(f, v).AccessToken(context.Background())
+	if err != nil || tok != "at-login" {
+		t.Errorf("tok=%q err=%v, want the concurrent sign-in's token", tok, err)
+	}
+	if r := loadRecord(t, openVault(t, path)); r.RefreshToken != "rt-login" || r.AccessToken != "at-login" {
+		t.Errorf("persisted = %+v, want the concurrent sign-in kept", r)
 	}
 }
 
