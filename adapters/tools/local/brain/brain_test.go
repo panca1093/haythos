@@ -6,11 +6,11 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/tools/local"
 	"github.com/panca/haythos/adapters/tools/local/brain"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 func call(t *testing.T, r *local.Registry, ctx context.Context, name, args string) task.ToolResult {

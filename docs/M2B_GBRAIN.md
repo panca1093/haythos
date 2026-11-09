@@ -42,11 +42,11 @@ Embeddings (Voyage or Ollama), gbrain `synthesize`/`think` (need an API key; the
 
 ## Phase gate (end of every phase)
 
-`make gate` exits 0. Frozen tests `tests/acceptance/m1_test.go` and `m2_test.go` unchanged. Commit, then add changed / uncertain / next to `docs/REPORT.md` under "M2B report".
+`make gate` exits 0. Existing tests in `tests/acceptance/` unchanged (files were regrouped by use case after M2B). Commit, then add changed / uncertain / next to `docs/REPORT.md` under "M2B report".
 
 ## Phases
 
-Each phase starts by writing its contract tests in `tests/acceptance/m2b_test.go` (append per phase), committed alone as `contract: M2B phase N acceptance tests`. Frozen from that commit.
+Each phase starts by writing its contract tests in `tests/acceptance/` (historically `m2b_test.go`; now the file for the use case, e.g. `brain_test.go`), committed alone as `contract: M2B phase N acceptance tests`. Frozen from that commit.
 
 ### Phase 1: conversation memory
 

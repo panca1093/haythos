@@ -112,7 +112,7 @@ Needs the brain wired (Phase 2); all three steps are silent unless noted.
 make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + tests
 ```
 
-`tests/acceptance/m1_test.go` holds the frozen M1 contract tests; never edit it to make a test pass.
+`tests/acceptance/` holds the acceptance tests (including the frozen milestone contract tests), grouped by use case (approval, ledger, taint, task lifecycle, settings, jobs, conversation, brain). Existing assertions are never edited to make a test pass; new tests go in the file for their use case.
 
 ## Repo layout
 
@@ -123,12 +123,12 @@ make gate    # gofmt, go vet, golangci-lint, go test -race, sidecar typecheck + 
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
 | `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
-| `internal/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
-| `internal/testfakes/` | In-memory fakes of the interfaces, for tests only |
+| `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
+| `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
 | `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |
 | `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |
 | `sidecar/claude-sdk/` | TypeScript helper that calls the Claude Agent SDK: one step per call, plus the live model list |
-| `tests/acceptance/` | Whole-kernel tests with fakes; the gate for every milestone. Never delete |
+| `tests/acceptance/` | Whole-kernel tests with fakes, one file per use case plus `harness_test.go`; the gate for every milestone. Never delete |
 | `docs/` | Notes for humans: spec, milestone kickoffs, run reports |
 | `experiments/` | Throwaway programs from M1 Phase 0 and their findings; not part of the product. Delete once open items in `docs/REPORT.md` are done |

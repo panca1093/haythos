@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 var liveModels = []app.ModelChoice{

@@ -9,10 +9,10 @@ import (
 	"time"
 
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/testfakes"
 )
 
 const m2bToolOutput = "disk 40% SECRET-TOOL-OUTPUT"
@@ -115,20 +115,6 @@ func (r *m2bRig) send(replyTo string, dm bool, text string) []task.Message {
 	return r.model.histories[before]
 }
 
-func m2bFlat(h []task.Message) string {
-	var b strings.Builder
-	for _, m := range h {
-		b.WriteString(string(m.Role) + ": " + m.Text + "\n")
-		for _, c := range m.Calls {
-			b.WriteString("call " + c.Name + "\n")
-		}
-		for _, res := range m.Results {
-			b.WriteString("result " + res.Content + "\n")
-		}
-	}
-	return b.String()
-}
-
 func m2bSees(t *testing.T, h []task.Message, want ...string) {
 	t.Helper()
 	flat := m2bFlat(h)
@@ -150,7 +136,7 @@ func m2bLacks(t *testing.T, h []task.Message, nope ...string) {
 }
 
 // M2B-1. A later message to the same reply_to sees the earlier user text and answer, never tool calls or results.
-func TestM2BSecondMessageSeesFirstTurnWithoutToolTraffic(t *testing.T) {
+func TestSecondMessageSeesFirstTurnWithoutToolTraffic(t *testing.T) {
 	r := newM2bRig(t)
 	r.send("thread-1", false, "first question")
 	h := r.send("thread-1", false, "second question")
@@ -159,7 +145,7 @@ func TestM2BSecondMessageSeesFirstTurnWithoutToolTraffic(t *testing.T) {
 }
 
 // M2B-2. A different reply_to sees nothing of the first conversation.
-func TestM2BOtherConversationSeesNothing(t *testing.T) {
+func TestOtherConversationSeesNothing(t *testing.T) {
 	r := newM2bRig(t)
 	r.send("thread-1", false, "first question")
 	m2bSees(t, r.send("thread-1", false, "again"), "first question")
@@ -167,7 +153,7 @@ func TestM2BOtherConversationSeesNothing(t *testing.T) {
 }
 
 // M2B-3. A DM turn older than 24 h is dropped; a thread turn of the same age is kept.
-func TestM2BDMLooksBack24HoursThreadsDoNot(t *testing.T) {
+func TestDMLooksBack24HoursThreadsDoNot(t *testing.T) {
 	r := newM2bRig(t)
 	r.send("dm-1", true, "dm old")
 	r.send("thread-1", false, "thread old")
@@ -179,7 +165,7 @@ func TestM2BDMLooksBack24HoursThreadsDoNot(t *testing.T) {
 }
 
 // M2B-4. Past 7,000 estimated tokens the oldest turns become a summary that survives a restart and is not recomputed.
-func TestM2BOverflowFoldsIntoSummaryThatSurvivesRestart(t *testing.T) {
+func TestOverflowFoldsIntoSummaryThatSurvivesRestart(t *testing.T) {
 	r := newM2bRig(t)
 	for _, q := range []string{"big one", "big two", "big three"} {
 		r.send("thread-1", false, q)
@@ -207,7 +193,7 @@ func TestM2BOverflowFoldsIntoSummaryThatSurvivesRestart(t *testing.T) {
 }
 
 // M2B-5. Tasks without reply_to get no conversation history.
-func TestM2BScheduledTasksGetNoHistory(t *testing.T) {
+func TestScheduledTasksGetNoHistory(t *testing.T) {
 	r := newM2bRig(t)
 	r.send("thread-1", false, "first question")
 	m2bSees(t, r.send("thread-1", false, "again"), "first question")

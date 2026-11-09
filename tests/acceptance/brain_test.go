@@ -14,13 +14,70 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/panca/haythos/adapters/channel/discord"
+	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/config"
-	"github.com/panca/haythos/internal/testfakes"
 )
+
+func TestBrainFirstOncePerTask(t *testing.T) {
+	items := []app.BrainItem{
+		{Slug: "a", Title: "A", Text: "alpha", Source: "import/mybook"},
+		{Slug: "b", Title: "B", Text: "beta", Source: "owner/thread-1"},
+		{Slug: "c", Title: "C", Text: "gamma", Source: "auto/thread-2", Unverified: true},
+		{Slug: "d", Title: "D", Text: "delta", Source: "import/mybook"},
+		{Slug: "e", Title: "E", Text: "epsilon", Source: "import/mybook"},
+	}
+	t.Run("hits are injected once, as one block of at most 3", func(t *testing.T) {
+		r := newP2Rig(t, items, nil, task.AssistantTurn{Calls: []task.ToolCall{call("c1", "vm.read", `{}`)}}, done("ok"))
+		r.say(t, "what do I know about greek letters")
+		if len(r.model.Histories) != 2 {
+			t.Fatalf("model steps = %d, want 2", len(r.model.Histories))
+		}
+		for i, h := range r.model.Histories {
+			blocks := p2Blocks(h)
+			if len(blocks) != 1 {
+				t.Fatalf("step %d has %d recalled blocks, want 1", i, len(blocks))
+			}
+			if n := strings.Count(blocks[0].Text, "<item "); n != 3 {
+				t.Fatalf("step %d block has %d items, want 3:\n%s", i, n, blocks[0].Text)
+			}
+			if !strings.Contains(blocks[0].Text, "import/mybook") || !strings.Contains(blocks[0].Text, "owner/thread-1") {
+				t.Fatalf("block lacks source labels:\n%s", blocks[0].Text)
+			}
+		}
+		if got := r.brain.Queries; len(got) != 1 || got[0] != "what do I know about greek letters" || r.brain.Limits[0] != 3 {
+			t.Fatalf("recall calls = %v limits %v, want one with the task input and limit 3", got, r.brain.Limits)
+		}
+	})
+	t.Run("no hits injects nothing", func(t *testing.T) {
+		r := newP2Rig(t, nil, nil, done("ok"))
+		r.say(t, "hello")
+		for i, h := range r.model.Histories {
+			if len(p2Blocks(h)) != 0 {
+				t.Fatalf("step %d has a recalled block with no hits", i)
+			}
+		}
+	})
+}
+
+func TestRememberSourceIsKernelStamped(t *testing.T) {
+	r := newP2Rig(t, nil, nil,
+		task.AssistantTurn{Calls: []task.ToolCall{call("c1", "brain.remember", `{"text":"rapat jam 3","source":"owner/evil"}`)}}, done("noted"))
+	r.say(t, "ingat: rapat jam 3")
+	if n := len(r.notifier.Of(app.NoticeApproval)); n != 0 {
+		t.Fatalf("approval notices = %d, want 0 for an untainted owner chat", n)
+	}
+	if len(r.brain.Remembered) != 1 {
+		t.Fatalf("remembered = %+v, want one item", r.brain.Remembered)
+	}
+	got := r.brain.Remembered[0]
+	if got.Source != "owner/thread-42" || got.Unverified || got.Text != "rapat jam 3" {
+		t.Fatalf("stored item = %+v, want source owner/thread-42, verified, text intact", got)
+	}
+}
 
 var (
 	p3WIB   = time.FixedZone("WIB", 7*3600)
@@ -194,7 +251,7 @@ func (r *p3Rig) eventCount(typ task.EventType) int {
 }
 
 // P3-1. Idle 3 h with new turns starts exactly one extraction, also across a restart; less than 3 h starts none.
-func TestM2BPhase3StaleConversationStartsOneExtraction(t *testing.T) {
+func TestBrainStaleConversationStartsOneExtraction(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-1", "topicalpha we decided to use sqlite")
 
@@ -229,7 +286,7 @@ func TestM2BPhase3StaleConversationStartsOneExtraction(t *testing.T) {
 }
 
 // P3-2. A conversation that was ever tainted is not extracted; the digest reports it as skipped.
-func TestM2BPhase3TaintedConversationIsSkippedAndReported(t *testing.T) {
+func TestBrainTaintedConversationIsSkippedAndReported(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-tainted", "read https://example.invalid/page topictaint")
 	r.send("thread-clean", "topicclean we prefer small diffs")
@@ -257,7 +314,7 @@ func TestM2BPhase3TaintedConversationIsSkippedAndReported(t *testing.T) {
 }
 
 // P3-3. Extracted items land in the inbox, stamped auto/<conversation> and unverified, by a task that only has recall and remember.
-func TestM2BPhase3ExtractedItemsAreInboxUnverifiedAutoSource(t *testing.T) {
+func TestBrainExtractedItemsAreInboxUnverifiedAutoSource(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-1", "topicalpha we decided to use sqlite")
 	r.at(p3Day(27, 12, 0))
@@ -278,7 +335,7 @@ func TestM2BPhase3ExtractedItemsAreInboxUnverifiedAutoSource(t *testing.T) {
 }
 
 // P3-4. Consolidation sees only items saved on the previous Jakarta day (not today's, even when it is still the previous UTC day) and sends no notice.
-func TestM2BPhase3ConsolidateTouchesOnlyPreviousJakartaDay(t *testing.T) {
+func TestBrainConsolidateTouchesOnlyPreviousJakartaDay(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-a", "topicalpha first decision")
 	r.at(p3Day(27, 12, 0))
@@ -317,7 +374,7 @@ func TestM2BPhase3ConsolidateTouchesOnlyPreviousJakartaDay(t *testing.T) {
 }
 
 // P3-5. The digest lists saved and merged items once, with an Undo each; nothing to report sends nothing; Undo forgets once and is recorded.
-func TestM2BPhase3DigestListsItemsWithUndoAndNothingOtherwise(t *testing.T) {
+func TestBrainDigestListsItemsWithUndoAndNothingOtherwise(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-a", "topicalpha first decision")
 	r.at(p3Day(27, 9, 10))
@@ -377,7 +434,7 @@ func TestM2BPhase3DigestListsItemsWithUndoAndNothingOtherwise(t *testing.T) {
 }
 
 // P3-6. A tainted task's notice is marked tainted and rendered with embeds suppressed; a clean one is not.
-func TestM2BPhase3TaintedNoticeSuppressesEmbeds(t *testing.T) {
+func TestBrainTaintedNoticeSuppressesEmbeds(t *testing.T) {
 	r := newP3Rig(t)
 	r.send("thread-tainted", "read https://example.invalid/page")
 	r.send("thread-clean", "plain question")

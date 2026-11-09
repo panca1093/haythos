@@ -23,6 +23,7 @@ import (
 
 	"github.com/panca/haythos/adapters/brain/gbrain"
 	"github.com/panca/haythos/adapters/channel/discord"
+	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/anthropic"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/model/openai"
@@ -36,7 +37,6 @@ import (
 	"github.com/panca/haythos/adapters/vault/file"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
-	"github.com/panca/haythos/internal/config"
 )
 
 const tickEvery = 30 * time.Second
