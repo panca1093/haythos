@@ -3,6 +3,8 @@ package chatgpt
 import (
 	"context"
 	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -14,6 +16,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -37,6 +40,8 @@ type fakeAuth struct {
 	scope     string
 	authorize func(w http.ResponseWriter, r *http.Request)
 	nonce     string
+	ec        *ecdsa.PrivateKey
+	jwksURI   string
 }
 
 func newFakeAuth(t *testing.T) *fakeAuth {
@@ -45,16 +50,28 @@ func newFakeAuth(t *testing.T) *fakeAuth {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f := &fakeAuth{t: t, key: key, sub: "user-1", scope: scope}
+	ec, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakeAuth{t: t, key: key, ec: ec, sub: "user-1", scope: scope}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": f.srv.URL, "jwks_uri": f.srv.URL + "/jwks"})
+		jwks := f.srv.URL + "/jwks"
+		if f.jwksURI != "" {
+			jwks = f.jwksURI
+		}
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": f.srv.URL, "jwks_uri": jwks})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]string{{
 			"kty": "RSA", "kid": "k1", "alg": "RS256",
 			"n": base64.RawURLEncoding.EncodeToString(key.N.Bytes()),
 			"e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(key.E)).Bytes()),
+		}, {
+			"kty": "EC", "kid": "e1", "alg": "ES256", "crv": "P-256",
+			"x": base64.RawURLEncoding.EncodeToString(ec.X.FillBytes(make([]byte, 32))),
+			"y": base64.RawURLEncoding.EncodeToString(ec.Y.FillBytes(make([]byte, 32))),
 		}}})
 	})
 	mux.HandleFunc("/api/accounts/oauth/token", func(w http.ResponseWriter, r *http.Request) {
@@ -105,6 +122,20 @@ func signRS256(t *testing.T, key *rsa.PrivateKey, kid string, claims map[string]
 	if err != nil {
 		t.Fatal(err)
 	}
+	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
+}
+
+func signES256(t *testing.T, key *ecdsa.PrivateKey, kid string, claims map[string]any) string {
+	t.Helper()
+	h, _ := json.Marshal(map[string]string{"alg": "ES256", "kid": kid, "typ": "JWT"})
+	p, _ := json.Marshal(claims)
+	input := base64.RawURLEncoding.EncodeToString(h) + "." + base64.RawURLEncoding.EncodeToString(p)
+	sum := sha256.Sum256([]byte(input))
+	r, ss, err := ecdsa.Sign(rand.Reader, key, sum[:])
+	if err != nil {
+		t.Fatal(err)
+	}
+	sig := slices.Concat(r.FillBytes(make([]byte, 32)), ss.FillBytes(make([]byte, 32)))
 	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
@@ -271,6 +302,7 @@ func TestVerifyIDToken(t *testing.T) {
 	t.Parallel()
 	f := newFakeAuth(t)
 	other, _ := rsa.GenerateKey(rand.Reader, 2048)
+	otherEC, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	s := newTestSession(f, nil)
 	mod := func(k string, v any) string {
 		c := f.claims("oaiapp_test", "n1")
@@ -291,6 +323,8 @@ func TestVerifyIDToken(t *testing.T) {
 		{"expired", mod("exp", testNow.Add(-time.Minute).Unix()), false},
 		{"wrong nonce", mod("nonce", "n2"), false},
 		{"alg none", none, false},
+		{"ES256 valid", signES256(t, f.ec, "e1", f.claims("oaiapp_test", "n1")), true},
+		{"ES256 bad signature", signES256(t, otherEC, "e1", f.claims("oaiapp_test", "n1")), false},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -299,6 +333,16 @@ func TestVerifyIDToken(t *testing.T) {
 				t.Errorf("err = %v, want ok=%v", err, c.ok)
 			}
 		})
+	}
+}
+
+func TestVerifyIDTokenJWKSOffHost(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	f.jwksURI = "https://evil.example/jwks"
+	_, err := newTestSession(f, nil).verifyIDToken(context.Background(), f.idToken("oaiapp_test", "n1"), "oaiapp_test", "n1")
+	if err == nil || !strings.Contains(err.Error(), "JWKS") {
+		t.Fatalf("err = %v, want JWKS host rejection", err)
 	}
 }
 
@@ -450,5 +494,49 @@ func TestLoginHostIDStable(t *testing.T) {
 	}
 	if q1.Get("ext_agent_host_id") == "" || q1.Get("ext_agent_host_id") != q2.Get("ext_agent_host_id") {
 		t.Errorf("host ids %q vs %q", q1.Get("ext_agent_host_id"), q2.Get("ext_agent_host_id"))
+	}
+}
+
+func TestLoginLoopbackGuards(t *testing.T) {
+	t.Parallel()
+	f := newFakeAuth(t)
+	var q url.Values
+	f.onAuthorize(okCallback(), &q)
+	status := func(method, target, host string) int {
+		req, err := http.NewRequest(method, target, nil) //nolint:noctx // test client
+		if err != nil {
+			t.Fatal(err)
+		}
+		if host != "" {
+			req.Host = host
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = resp.Body.Close()
+		return resp.StatusCode
+	}
+	open := func(u string) error {
+		base := strings.TrimSuffix(u[:strings.LastIndex(u, "/")], "/login")
+		if got := status(http.MethodGet, u, "evil.example"); got != http.StatusNotFound {
+			t.Errorf("login with foreign Host = %d, want 404", got)
+		}
+		if got := status(http.MethodGet, base+"/login/wrong-entry", ""); got != http.StatusNotFound {
+			t.Errorf("login with wrong entry = %d, want 404", got)
+		}
+		if got := status(http.MethodGet, base+"/auth/callback?state=x", "evil.example"); got != http.StatusNotFound {
+			t.Errorf("callback with foreign Host = %d, want 404", got)
+		}
+		if err := browser(t)(u); err != nil {
+			return err
+		}
+		if got := status(http.MethodGet, base+"/auth/callback?state=x", ""); got != http.StatusConflict {
+			t.Errorf("second callback = %d, want 409", got)
+		}
+		return nil
+	}
+	if _, err := newTestSession(f, openVault(t, t.TempDir()+"/v.enc")).Login(context.Background(), open); err != nil {
+		t.Fatalf("login failed after rejected probes: %v", err)
 	}
 }
