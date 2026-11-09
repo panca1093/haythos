@@ -31,7 +31,7 @@ gbrain, Jev, morning brief, Slack, Jira, GitHub, Calendar, MCP HTTP connectors, 
 
 ### Phase 1: contract tests first
 
-Write these in `tests/acceptance/m2_test.go` against minimal stubs. They must compile and fail now. Commit them **alone** as `contract: M2 acceptance tests`. Frozen from that commit on, like `m1_test.go`.
+Write these in `tests/acceptance/` (historically `m2_test.go`; now the file for the use case, e.g. `settings_test.go`, `jobs_test.go`) against minimal stubs. They must compile and fail now. Commit them **alone** as `contract: M2 acceptance tests`. Frozen from that commit on, like the M1 contract tests.
 
 1. A setting change survives a restart; the latest change wins; reset returns to the YAML default; history lists every change in order.
 2. An unknown key or an invalid value is rejected and writes no event.
