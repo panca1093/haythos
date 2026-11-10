@@ -221,3 +221,36 @@ func (e *Events) Since(ctx context.Context, cursor int64) ([]task.Event, error) 
 }
 
 func (e *Events) TasksIn(ctx context.Context, state task.State) ([]string, error) { return nil, nil }
+
+type Ledger struct {
+	mu   sync.Mutex
+	rows map[string]task.LedgerEntry
+}
+
+func NewLedger() *Ledger { return &Ledger{rows: map[string]task.LedgerEntry{}} }
+
+func (l *Ledger) Get(ctx context.Context, idemKey string) (task.LedgerEntry, bool, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	e, ok := l.rows[idemKey]
+	return e, ok, nil
+}
+
+func (l *Ledger) Put(ctx context.Context, e task.LedgerEntry) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.rows[e.IdemKey] = e
+	return nil
+}
+
+func (l *Ledger) InState(ctx context.Context, s task.LedgerState) ([]task.LedgerEntry, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	var out []task.LedgerEntry
+	for _, e := range l.rows {
+		if e.State == s {
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
