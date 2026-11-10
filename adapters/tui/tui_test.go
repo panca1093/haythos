@@ -348,3 +348,23 @@ func TestSummary(t *testing.T) {
 		t.Fatal("start time not set")
 	}
 }
+
+func TestControlSequencesAreStrippedFromUntrustedText(t *testing.T) {
+	t.Parallel()
+	evil := "x\x1b]52;c;ZXZpbA==\x07y\x1b[2Jz\u009b31m\x1b]8;;http://e\x07"
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: evil, Answer: evil}}})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "tool.started", Text: "fs.read " + evil})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: evil})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t", Approval: &ws.Approval{ID: "a", Tool: "x", Target: evil, Preview: evil}})
+	m = typeText(m, "hi")
+	out := printed(m) + m.View()
+	for _, bad := range []string{"\x07", "\u009b", "\x1b]"} {
+		if strings.Contains(out, bad) {
+			t.Errorf("output contains %q", bad)
+		}
+	}
+	if strings.Contains(strings.ReplaceAll(out, "\x1b[", ""), "\x1b") {
+		t.Errorf("output contains a raw ESC not from styling")
+	}
+}

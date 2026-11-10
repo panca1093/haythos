@@ -208,7 +208,7 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 	case TypeSubscribe:
 		s.subscribe(ctx, c, f.Conv, f.Workdir)
 	case TypeInput:
-		conv, workdir := s.convOf(c), s.workdirOf(c)
+		conv, workdir := s.attachmentOf(c)
 		switch {
 		case conv == "":
 			s.reply(c, errorFrame("subscribe to a conversation first"))
@@ -326,10 +326,10 @@ func (s *Server) Publish(_ context.Context, n app.Notice) error {
 	return nil
 }
 
-func (s *Server) workdirOf(c *conn) string {
+func (s *Server) attachmentOf(c *conn) (conv, workdir string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	return c.workdir
+	return c.conv, c.workdir
 }
 
 func (s *Server) convOf(c *conn) string {

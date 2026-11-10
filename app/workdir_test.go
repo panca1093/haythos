@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/testfakes"
@@ -133,5 +134,77 @@ func TestFinalMessageCarriesContextWindowAndCache(t *testing.T) {
 				t.Fatalf("message notice = %+v, want context 1234 of window %d with 900 cached", got, tc.wantWindow)
 			}
 		})
+	}
+}
+
+func approvalToolApp(t *testing.T, n *testfakes.Notifier, tool string, tier policy.Tier, turns ...task.AssistantTurn) *app.App {
+	t.Helper()
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: tool, Write: true, TargetArg: "path", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	return app.New(app.Deps{
+		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{tool}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
+		Tools:      tools,
+		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{tool: tier}},
+		Clock:  func() time.Time { return time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC) },
+	})
+}
+
+func TestToolActivityOnlyWhenTheCallActuallyRuns(t *testing.T) {
+	writeCall := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "notes.write", Args: json.RawMessage(`{"path":"a.md"}`)}}}
+	for _, tc := range []struct {
+		name    string
+		tier    policy.Tier
+		decide  bool
+		approve bool
+		want    int
+	}{
+		{"approved", policy.TierInternalWrite, true, true, 1},
+		{"rejected", policy.TierInternalWrite, true, false, 0},
+		{"denied by policy", policy.TierForbidden, false, false, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &testfakes.Notifier{}
+			a := approvalToolApp(t, n, "notes.write", tc.tier, writeCall, task.AssistantTurn{Text: "done"})
+			ctx := context.Background()
+			id, err := a.HandleInput(ctx, app.Input{Text: "write", ReplyTo: "tui:abc"})
+			if err != nil {
+				t.Fatalf("handle input: %v", err)
+			}
+			if got := n.Of(app.NoticeTool); len(got) != 0 {
+				t.Fatalf("tool notices before any decision = %+v, want none", got)
+			}
+			if tc.decide {
+				asks := n.Of(app.NoticeApproval)
+				if len(asks) != 1 {
+					t.Fatalf("approval requests = %d, want 1", len(asks))
+				}
+				if err := a.HandleApproval(ctx, id, asks[0].Approval.Approval.ID, tc.approve); err != nil {
+					t.Fatalf("approval: %v", err)
+				}
+			}
+			if got := n.Of(app.NoticeTool); len(got) != tc.want {
+				t.Fatalf("tool notices = %+v, want %d", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestToolTargetIsCutByRunes(t *testing.T) {
+	n := &testfakes.Notifier{}
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	long, _ := json.Marshal(map[string]string{"path": strings.Repeat("é", 100)})
+	a := workdirApp(t, n, tools, task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "fs.read", Args: long}}}, task.AssistantTurn{Text: "done"})
+	if _, err := a.HandleInput(context.Background(), app.Input{Text: "read", ReplyTo: "tui:abc"}); err != nil {
+		t.Fatal(err)
+	}
+	got := n.Of(app.NoticeTool)
+	if len(got) != 1 || !utf8.ValidString(got[0].Text) || !strings.HasSuffix(got[0].Text, strings.Repeat("é", 80)+"…") {
+		t.Fatalf("notices = %+v, want 80 whole runes then an ellipsis", got)
 	}
 }

@@ -30,9 +30,13 @@ type Config struct {
 }
 
 var (
-	deniedDirs  = []string{".ssh", ".gnupg", ".aws", ".haythos", ".kube", ".docker"}
-	deniedNames = []string{".netrc", ".npmrc", ".pypirc", ".git-credentials"}
-	deniedExts  = []string{".pem", ".key", ".p12", ".pfx", ".enc"}
+	deniedDirs  = []string{".ssh", ".gnupg", ".aws", ".haythos", ".kube", ".docker", ".azure", ".terraform.d", ".claude", ".codex"}
+	deniedHome  = [][]string{{".config", "gh"}, {".config", "gcloud"}}
+	deniedNames = []string{
+		".netrc", ".npmrc", ".pypirc", ".git-credentials", ".envrc", ".pgpass", ".my.cnf",
+		".bash_history", ".zsh_history", ".python_history", ".node_repl_history", ".psql_history",
+	}
+	deniedExts = []string{".pem", ".key", ".p12", ".pfx", ".enc", ".env", ".tfstate", ".tfstate.backup"}
 )
 
 type tool struct{ cfg Config }
@@ -101,26 +105,60 @@ func (t tool) resolve(ctx context.Context, raw []byte) (string, string) {
 
 func (t tool) denied(full string) bool {
 	for _, d := range t.cfg.Deny {
-		if real, err := filepath.EvalSymlinks(d); err == nil && real == full {
+		if real, err := filepath.EvalSymlinks(d); err == nil && strings.EqualFold(real, full) {
 			return true
 		}
 	}
+	parts := splitLower(full)
 	if t.cfg.Home != "" {
-		if home, err := filepath.EvalSymlinks(t.cfg.Home); err == nil && strings.HasPrefix(full, filepath.Join(home, ".config", "gh")) {
-			return true
+		if home, err := filepath.EvalSymlinks(t.cfg.Home); err == nil {
+			if underHome(full, home) {
+				rel := parts[len(splitLower(home)):]
+				for _, d := range deniedHome {
+					if hasPrefix(rel, d) {
+						return true
+					}
+				}
+			}
 		}
 	}
-	for _, part := range strings.Split(full, string(filepath.Separator)) {
+	for i, part := range parts {
 		for _, d := range deniedDirs {
 			if part == d {
 				return true
 			}
 		}
+		if part == ".git" && i == len(parts)-2 && parts[i+1] == "config" {
+			return true
+		}
 	}
 	return deniedName(filepath.Base(full))
 }
 
+func splitLower(p string) []string {
+	return strings.Split(strings.ToLower(p), string(filepath.Separator))
+}
+
+func hasPrefix(parts, prefix []string) bool {
+	if len(parts) < len(prefix) {
+		return false
+	}
+	for i, p := range prefix {
+		if parts[i] != p {
+			return false
+		}
+	}
+	return true
+}
+
+func underHome(full, home string) bool {
+	h := strings.ToLower(home)
+	f := strings.ToLower(full)
+	return f == h || strings.HasPrefix(f, h+string(filepath.Separator))
+}
+
 func deniedName(name string) bool {
+	name = strings.ToLower(name)
 	if name == ".env" || strings.HasPrefix(name, ".env.") || strings.HasPrefix(name, "id_") {
 		return true
 	}
@@ -142,11 +180,17 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	if why != "" {
 		return refuse(why)
 	}
+	if fi, err := os.Stat(full); err != nil || !fi.Mode().IsRegular() {
+		return refuse("not a regular file")
+	}
 	f, err := os.Open(full) //nolint:gosec // path is confined to the chat folder by resolve
 	if err != nil {
 		return refuse("not readable")
 	}
 	defer func() { _ = f.Close() }()
+	if !sameAsResolved(f, full) {
+		return refuse("not readable")
+	}
 	b, err := io.ReadAll(io.LimitReader(f, maxRead+1))
 	if err != nil {
 		return refuse("not readable")
@@ -154,7 +198,7 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	truncated := len(b) > maxRead
 	if truncated {
 		b = b[:maxRead]
-		for len(b) > 0 && !utf8.Valid(b) {
+		for i := 0; i < utf8.UTFMax-1 && len(b) > 0 && !utf8.Valid(b); i++ {
 			b = b[:len(b)-1]
 		}
 	}
@@ -166,6 +210,15 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		out += fmt.Sprintf("\n[truncated at %d KiB]", maxRead>>10)
 	}
 	return task.ToolResult{Content: out}, nil
+}
+
+func sameAsResolved(f *os.File, full string) bool {
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() {
+		return false
+	}
+	resolved, err := os.Stat(full)
+	return err == nil && os.SameFile(opened, resolved)
 }
 
 func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {

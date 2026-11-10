@@ -6,7 +6,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
+	"time"
 
 	"github.com/panca/haythos/adapters/tools/local"
 	"github.com/panca/haythos/app"
@@ -140,5 +142,91 @@ func TestList(t *testing.T) {
 	}
 	if res := f.call(t, f.home, "fs.list", `{"path":".ssh"}`); !res.IsError {
 		t.Errorf("listing .ssh = %+v, want refused", res)
+	}
+}
+
+func TestDeniedIsCaseInsensitiveAndCoversMoreCredentials(t *testing.T) {
+	home := t.TempDir()
+	real, err := filepath.EvalSymlinks(home)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tl := tool{cfg: Config{Home: home, Deny: []string{filepath.Join(home, "Vault.enc")}}}
+	for _, tc := range []struct {
+		rel  string
+		want bool
+	}{
+		{".SSH/ID_RSA", true},
+		{"proj/.ENV", true},
+		{"proj/.Env.Local", true},
+		{".CONFIG/GH/hosts.yml", true},
+		{".config/gh/hosts.yml", true},
+		{".config/ghostty/config", false},
+		{".config/gcloud/credentials.db", true},
+		{".config/GCLOUD", true},
+		{"proj/.envrc", true},
+		{"proj/prod.env", true},
+		{"proj/.pgpass", true},
+		{"proj/.my.cnf", true},
+		{"proj/terraform.tfstate", true},
+		{"proj/.zsh_history", true},
+		{"proj/.bash_history", true},
+		{"proj/.python_history", true},
+		{"proj/.node_repl_history", true},
+		{"proj/.psql_history", true},
+		{"proj/.git-credentials", true},
+		{"proj/.git/config", true},
+		{"proj/.GIT/CONFIG", true},
+		{"proj/.git/HEAD", false},
+		{"proj/config", false},
+		{".azure/accessTokens.json", true},
+		{".terraform.d/credentials.tfrc.json", true},
+		{".claude/settings.json", true},
+		{".codex/auth.json", true},
+		{"proj/README.md", false},
+		{"proj/environment.go", false},
+	} {
+		t.Run(tc.rel, func(t *testing.T) {
+			if got := tl.denied(filepath.Join(real, filepath.FromSlash(tc.rel))); got != tc.want {
+				t.Fatalf("denied(%q) = %v, want %v", tc.rel, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadRefusesNonRegularFiles(t *testing.T) {
+	f := newFixture(t)
+	fifo := filepath.Join(f.root, "pipe")
+	if err := syscall.Mkfifo(fifo, 0o600); err != nil {
+		t.Skipf("mkfifo: %v", err)
+	}
+	done := make(chan task.ToolResult, 1)
+	go func() { done <- f.call(t, f.root, "fs.read", `{"path":"pipe"}`) }()
+	select {
+	case res := <-done:
+		if !res.IsError {
+			t.Fatalf("fifo read = %+v, want refused", res)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("fs.read blocked on a fifo")
+	}
+}
+
+func TestReadTruncationKeepsTextAfterInvalidByte(t *testing.T) {
+	f := newFixture(t)
+	body := "caf\xff" + strings.Repeat("a", maxRead) + "é"
+	if err := os.WriteFile(filepath.Join(f.root, "mixed.txt"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := f.call(t, f.root, "fs.read", `{"path":"mixed.txt"}`); !res.IsError || !strings.Contains(res.Content, "not text") {
+		t.Fatalf("result = %+v, want binary refusal", res)
+	}
+	split := strings.Repeat("a", maxRead-1) + "é"
+	if err := os.WriteFile(filepath.Join(f.root, "split.txt"), []byte(split), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call(t, f.root, "fs.read", `{"path":"split.txt"}`)
+	if res.IsError || !strings.Contains(res.Content, "truncated") {
+		t.Fatalf("result error=%v, want a truncated text read", res.IsError)
 	}
 }

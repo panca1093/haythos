@@ -161,6 +161,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m *model) onFrame(f ws.Frame) tea.Cmd {
+	f = cleanFrame(f)
 	switch f.Type {
 	case ws.TypeWelcome:
 		var cmds []tea.Cmd
@@ -357,12 +358,44 @@ func wordEnd(in []rune, c int) int {
 	return c
 }
 
+func clean(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r == '\n' || r == '\t' || (r >= 0x20 && r < 0x7f) || r > 0x9f {
+			return r
+		}
+		return -1
+	}, s)
+}
+
+func cleanApproval(a ws.Approval) ws.Approval {
+	a.Tool, a.Target, a.Preview = clean(a.Tool), clean(a.Target), clean(a.Preview)
+	return a
+}
+
+// cleanFrame strips terminal control sequences from text a tool or file may have shaped.
+func cleanFrame(f ws.Frame) ws.Frame {
+	f.Text, f.Message = clean(f.Text), clean(f.Message)
+	if f.Approval != nil {
+		a := cleanApproval(*f.Approval)
+		f.Approval = &a
+	}
+	f.Turns = append([]ws.Turn(nil), f.Turns...)
+	for i := range f.Turns {
+		f.Turns[i].User, f.Turns[i].Answer = clean(f.Turns[i].User), clean(f.Turns[i].Answer)
+	}
+	f.Pending = append([]ws.Pending(nil), f.Pending...)
+	for i := range f.Pending {
+		f.Pending[i].Approval = cleanApproval(f.Pending[i].Approval)
+	}
+	return f
+}
+
 // userLine sets the owner's message apart on a shaded band, after a blank line.
 func (m *model) userLine(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return "\n" + userBox.Width(max(m.width, 20)).Render("› "+text)
+	return "\n" + userBox.Width(max(m.width, 20)).Render("› "+clean(text))
 }
 
 // alfredLine starts after a blank line; wrapped lines hang under the text, not under the dot.
