@@ -1,0 +1,183 @@
+package main
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"os"
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/panca/haythos/adapters/channel/ws"
+	"github.com/panca/haythos/adapters/store/sqlite"
+	"github.com/panca/haythos/adapters/testfakes"
+	"github.com/panca/haythos/app"
+	"github.com/panca/haythos/core/policy"
+	"github.com/panca/haythos/core/task"
+)
+
+// shortHome keeps the socket path under the 104-byte limit of macOS.
+func shortHome(t *testing.T) paths {
+	t.Helper()
+	dir, err := os.MkdirTemp("", "hk")
+	if err != nil {
+		t.Fatalf("temp dir: %v", err)
+	}
+	t.Cleanup(func() { _ = os.RemoveAll(dir) })
+	p, err := homePaths(func(k string) string {
+		if k == "HAYTHOS_HOME" {
+			return dir
+		}
+		return ""
+	})
+	if err != nil {
+		t.Fatalf("paths: %v", err)
+	}
+	return p
+}
+
+func dialKernel(t *testing.T, ctx context.Context, socket, conv string) *ws.Client {
+	t.Helper()
+	c, err := ws.Dial(ctx, socket)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if _, err := c.Hello(ctx, "tui", conv, "test"); err != nil {
+		t.Fatalf("hello: %v", err)
+	}
+	if err := c.Send(ctx, ws.Subscribe{Conv: conv}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	return c
+}
+
+func nextOf(t *testing.T, ctx context.Context, c *ws.Client, typ string) ws.Frame {
+	t.Helper()
+	f, err := c.Next(ctx)
+	if err != nil {
+		t.Fatalf("waiting for %s: %v", typ, err)
+	}
+	if f.Type != typ {
+		t.Fatalf("frame = %+v, want %s", f, typ)
+	}
+	return f
+}
+
+func TestKernelOverWS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	p := shortHome(t)
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+
+	write := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "note.add", Args: json.RawMessage(`{"id":"n1"}`)}}}
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	discord := &testfakes.Notifier{}
+	route := &routeNotifier{other: discord}
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": testfakes.NewModel(write, task.AssistantTurn{Text: "noted"})},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:      tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
+		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
+		ApprovalTTL: time.Hour,
+	})
+	srv := ws.New(ws.Config{SocketPath: p.Socket, Version: "v-test", StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
+	route.ws = srv
+	serveCtx, stopServe := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(serveCtx) }()
+	defer func() {
+		stopServe()
+		if err := <-errc; err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	}()
+	waitFor(t, func() bool { _, err := os.Stat(p.Socket); return err == nil })
+
+	var out bytes.Buffer
+	if err := runStatus(ctx, p, &out); err != nil || !strings.HasPrefix(out.String(), "running pid ") || !strings.Contains(out.String(), "version v-test channels discord,tui") {
+		t.Fatalf("status = %q, %v", out.String(), err)
+	}
+
+	clientA := dialKernel(t, ctx, p.Socket, "tui:a")
+	nextOf(t, ctx, clientA, ws.TypeHistory)
+	clientB := dialKernel(t, ctx, p.Socket, "tui:b")
+	nextOf(t, ctx, clientB, ws.TypeHistory)
+
+	if err := clientA.Send(ctx, ws.Input{Conv: "tui:a", Text: "add note n1"}); err != nil {
+		t.Fatalf("input: %v", err)
+	}
+	ask := nextOf(t, ctx, clientA, ws.TypeNotice)
+	if ask.Kind != string(app.NoticeApproval) || ask.Approval == nil || ask.Approval.Tool != "note.add" {
+		t.Fatalf("approval notice = %+v", ask)
+	}
+
+	if err := clientB.Send(ctx, ws.Decide{TaskID: ask.TaskID, ApprovalID: ask.Approval.ID, Approve: true}); err != nil {
+		t.Fatalf("decide from b: %v", err)
+	}
+	if f := nextOf(t, ctx, clientB, ws.TypeError); f.Message == "" {
+		t.Fatalf("error frame without message")
+	}
+	if tools.Count("note.add") != 0 {
+		t.Fatalf("tool ran after a foreign approval")
+	}
+
+	_ = clientA.Close()
+	clientA2 := dialKernel(t, ctx, p.Socket, "tui:a")
+	h := nextOf(t, ctx, clientA2, ws.TypeHistory)
+	if len(h.Pending) != 1 || h.Pending[0].TaskID != ask.TaskID || h.Pending[0].Approval.ID != ask.Approval.ID {
+		t.Fatalf("history pending = %+v, want the open approval", h.Pending)
+	}
+	if err := clientA2.Send(ctx, ws.Decide{TaskID: ask.TaskID, ApprovalID: ask.Approval.ID, Approve: true}); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	done := nextOf(t, ctx, clientA2, ws.TypeNotice)
+	if done.Kind != string(app.NoticeMessage) || done.Text != "noted" {
+		t.Fatalf("final notice = %+v", done)
+	}
+	if tools.Count("note.add") != 1 {
+		t.Fatalf("note.add ran %d times, want 1", tools.Count("note.add"))
+	}
+	if len(discord.Notices) != 0 {
+		t.Fatalf("discord got %d notices from a tui conversation", len(discord.Notices))
+	}
+}
+
+func TestStatusNotRunning(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := runStatus(context.Background(), shortHome(t), &out); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if out.String() != "not running\n" {
+		t.Fatalf("status = %q, want not running", out.String())
+	}
+}
+
+func TestStopNotRunning(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	if err := runStop(context.Background(), shortHome(t), &out); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if out.String() != "not running\n" {
+		t.Fatalf("stop = %q, want not running", out.String())
+	}
+}
+
+func waitFor(t *testing.T, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition never held")
+}

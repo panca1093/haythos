@@ -24,6 +24,7 @@ import (
 
 	"github.com/panca/haythos/adapters/brain/gbrain"
 	"github.com/panca/haythos/adapters/channel/discord"
+	"github.com/panca/haythos/adapters/channel/ws"
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/anthropic"
 	"github.com/panca/haythos/adapters/model/chatgpt"
@@ -73,6 +74,19 @@ func run(args []string) error {
 	cmd, rest := "serve", fs.Args()
 	if len(rest) > 0 {
 		cmd, rest = rest[0], rest[1:]
+	}
+	home, err := homePaths(os.Getenv)
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "status", "stop":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if cmd == "status" {
+			return runStatus(ctx, home, os.Stdout)
+		}
+		return runStop(ctx, home, os.Stdout)
 	}
 
 	cfg, err := config.LoadMain(*cfgPath)
@@ -154,6 +168,7 @@ func run(args []string) error {
 	}
 
 	var notifier app.Notifier = stdoutNotifier{}
+	var route *routeNotifier
 	var channel *discord.Channel
 	if cmd == "serve" {
 		token, err := vault.Resolve("secret://discord")
@@ -173,7 +188,8 @@ func run(args []string) error {
 		tools.Register(spec, handler)
 		postSpec, postHandler := channel.PostTool()
 		tools.Register(postSpec, postHandler)
-		notifier = channel
+		route = &routeNotifier{other: channel}
+		notifier = route
 	}
 
 	dj := defaultJob
@@ -204,6 +220,20 @@ func run(args []string) error {
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":
+		srv := ws.New(ws.Config{SocketPath: home.Socket, Version: binaryVersion(), StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
+		route.ws = srv
+		removePID, err := writePID(home)
+		if err != nil {
+			return err
+		}
+		defer removePID()
+		srvCtx, stopSrv := context.WithCancel(ctx)
+		var srvErr error
+		srvDone := make(chan struct{})
+		go func() { srvErr = srv.Serve(srvCtx); close(srvDone) }()
+		defer func() { stopSrv(); <-srvDone }()
+		slog.Info("listening", "socket", home.Socket)
+
 		if err := a.Start(ctx); err != nil {
 			return fmt.Errorf("start kernel: %w", err)
 		}
@@ -222,11 +252,13 @@ func run(args []string) error {
 			select {
 			case <-ctx.Done():
 				return nil
+			case <-srvDone:
+				return srvErr
 			case <-t.C:
 			}
 		}
 	}
-	return fmt.Errorf("unknown command %q (serve, run-job, auth, setup)", cmd)
+	return fmt.Errorf("unknown command %q (serve, status, stop, run-job, auth, setup)", cmd)
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
