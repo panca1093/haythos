@@ -90,12 +90,12 @@ func localName(n string) string { return strings.ReplaceAll(n, "__", ".") }
 
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	req := request{Model: a.c.Model, MaxTokens: a.c.MaxTokens}
-	var system, summaries []string
+	var system []string
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Kind == task.KindSummary {
-				summaries = append(summaries, m.Text)
+			if m.Context {
+				req.Messages = append(req.Messages, message{Role: "user", Content: []block{{Type: "text", Text: m.Text}}})
 			} else {
 				system = append(system, m.Text)
 			}
@@ -121,10 +121,6 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 				req.Messages = append(req.Messages, message{Role: "user", Content: bs})
 			}
 		}
-	}
-	if len(summaries) > 0 {
-		head := message{Role: "user", Content: []block{{Type: "text", Text: strings.Join(summaries, "\n\n")}}}
-		req.Messages = append([]message{head}, req.Messages...)
 	}
 	if len(system) > 0 {
 		req.System = []block{{Type: "text", Text: strings.Join(system, "\n\n"), CacheControl: &cacheControl{Type: "ephemeral"}}}

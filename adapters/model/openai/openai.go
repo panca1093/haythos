@@ -86,12 +86,11 @@ func str(s string) *string { return &s }
 
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	req := request{Model: a.c.Model}
-	var summaries []message
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Kind == task.KindSummary {
-				summaries = append(summaries, message{Role: "user", Content: str(m.Text)})
+			if m.Context {
+				req.Messages = append(req.Messages, message{Role: "user", Content: str(m.Text)})
 			} else {
 				req.Messages = append(req.Messages, message{Role: "system", Content: str(m.Text)})
 			}
@@ -115,13 +114,6 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 				req.Messages = append(req.Messages, message{Role: "tool", ToolCallID: r.CallID, Content: str(content)})
 			}
 		}
-	}
-	if len(summaries) > 0 {
-		n := 0
-		for n < len(req.Messages) && req.Messages[n].Role == "system" {
-			n++
-		}
-		req.Messages = slices.Insert(req.Messages, n, summaries...)
 	}
 	sorted := slices.Clone(tools)
 	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })

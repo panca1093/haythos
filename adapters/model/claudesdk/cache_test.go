@@ -22,17 +22,17 @@ func TestContextSummaryStaysOutOfSystemPrompt(t *testing.T) {
 	}
 }
 
-func TestOtherContextSystemMessagesStayInSystemPrompt(t *testing.T) {
+func TestRecallIsRenderedInPlaceNotInSystemPrompt(t *testing.T) {
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 		{Role: task.RoleUser, Text: "hi"},
+		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 	}
-	if sys := systemPrompt(history); !strings.HasPrefix(sys, "goal\n\nrecalled memory") {
+	if sys := systemPrompt(history); strings.Contains(sys, "recalled memory") {
 		t.Errorf("system = %q", sys)
 	}
 	_, conv, _ := strings.Cut(renderPrompt(history, nil), "Conversation:\n")
-	if strings.Contains(conv, "recalled memory") {
+	if conv != "[user] hi\nrecalled memory\n" {
 		t.Errorf("conversation = %q", conv)
 	}
 }

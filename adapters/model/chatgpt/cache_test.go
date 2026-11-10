@@ -28,17 +28,17 @@ func TestBuildRequestSummaryIsUserInputAndToolsSorted(t *testing.T) {
 	}
 }
 
-func TestBuildRequestKeepsRecallInInstructions(t *testing.T) {
+func TestBuildRequestRendersRecallInPlace(t *testing.T) {
 	h := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 		{Role: task.RoleUser, Text: "hi"},
+		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 	}
 	req, _, err := buildRequest("m", h, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if req.Instructions != "goal\n\nrecalled memory" || len(req.Input) != 1 {
+	if req.Instructions != "goal" || len(req.Input) != 2 || req.Input[1].Role != "user" || req.Input[1].Content != "recalled memory" {
 		t.Errorf("instructions = %q input = %+v", req.Instructions, req.Input)
 	}
 }

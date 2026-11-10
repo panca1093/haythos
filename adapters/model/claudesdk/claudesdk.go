@@ -222,7 +222,7 @@ func typeMatches(t string, v any) bool {
 func systemPrompt(history []task.Message) string {
 	var parts []string
 	for _, m := range history {
-		if m.Role == task.RoleSystem && m.Kind != task.KindSummary {
+		if m.Role == task.RoleSystem && !m.Context {
 			parts = append(parts, m.Text)
 		}
 	}
@@ -248,12 +248,11 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	}
 	b.WriteString("\nConversation:\n")
 	for _, m := range history {
-		if m.Role == task.RoleSystem && m.Kind == task.KindSummary {
-			fmt.Fprintf(&b, "%s\n", m.Text)
-		}
-	}
-	for _, m := range history {
 		switch m.Role {
+		case task.RoleSystem:
+			if m.Context {
+				fmt.Fprintf(&b, "%s\n", m.Text)
+			}
 		case task.RoleUser:
 			fmt.Fprintf(&b, "[user] %s\n", m.Text)
 		case task.RoleAssistant:

@@ -22,8 +22,8 @@ func TestStepCachesPrefixAndKeepsSummaryOutOfSystem(t *testing.T) {
 	defer srv.Close()
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleUser, Text: "hi"},
 		{Role: task.RoleSystem, Text: "the summary", Context: true, Kind: task.KindSummary},
+		{Role: task.RoleUser, Text: "hi"},
 	}
 	tools := []task.ToolSpec{{Name: "b.tool", InputSchema: json.RawMessage(`{}`)}, {Name: "a.tool", InputSchema: json.RawMessage(`{}`)}}
 	if _, err := New(Config{BaseURL: srv.URL, Model: "m"}).Step(context.Background(), history, tools); err != nil {
@@ -58,7 +58,7 @@ func TestStepCountsCachedTokensInInput(t *testing.T) {
 	}
 }
 
-func TestStepKeepsOtherContextSystemMessagesInSystem(t *testing.T) {
+func TestStepRendersRecallInPlaceOutOfSystem(t *testing.T) {
 	var got request
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, _ := io.ReadAll(r.Body)
@@ -68,13 +68,13 @@ func TestStepKeepsOtherContextSystemMessagesInSystem(t *testing.T) {
 	defer srv.Close()
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 		{Role: task.RoleUser, Text: "hi"},
+		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
 	}
 	if _, err := New(Config{BaseURL: srv.URL, Model: "m"}).Step(context.Background(), history, nil); err != nil {
 		t.Fatal(err)
 	}
-	if len(got.System) != 1 || got.System[0].Text != "goal\n\nrecalled memory" || len(got.Messages) != 1 {
+	if len(got.System) != 1 || got.System[0].Text != "goal" || len(got.Messages) != 2 || got.Messages[1].Content[0].Text != "recalled memory" {
 		t.Errorf("system = %+v messages = %+v", got.System, got.Messages)
 	}
 }

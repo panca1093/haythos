@@ -167,12 +167,11 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (request, map[string]string, error) {
 	req := request{Model: model, Input: []inputItem{}, Store: false, Stream: true}
 	var system []string
-	var summaries []inputItem
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Kind == task.KindSummary {
-				summaries = append(summaries, inputItem{Role: "user", Content: m.Text})
+			if m.Context {
+				req.Input = append(req.Input, inputItem{Role: "user", Content: m.Text})
 			} else {
 				system = append(system, m.Text)
 			}
@@ -203,7 +202,6 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 			}
 		}
 	}
-	req.Input = append(summaries, req.Input...)
 	req.Instructions = strings.Join(system, "\n\n")
 	tools = slices.Clone(tools)
 	slices.SortFunc(tools, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
