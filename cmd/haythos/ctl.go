@@ -125,3 +125,33 @@ func binaryVersion() string {
 	sum := sha256.Sum256(b)
 	return rev + "+" + hex.EncodeToString(sum[:4])
 }
+
+type serving struct {
+	done chan struct{}
+	err  error
+	stop func()
+}
+
+// serveAfterStart runs start to completion before the socket opens, so no client input races ledger reconciliation.
+func serveAfterStart(ctx context.Context, home paths, srv *ws.Server, start func(context.Context) error) (*serving, error) {
+	if err := start(ctx); err != nil {
+		return nil, fmt.Errorf("start kernel: %w", err)
+	}
+	srvCtx, stopSrv := context.WithCancel(ctx)
+	s := &serving{done: make(chan struct{})}
+	go func() { s.err = srv.Serve(srvCtx); close(s.done) }()
+	select {
+	case <-srv.Listening():
+	case <-s.done:
+		stopSrv()
+		return nil, s.err
+	}
+	removePID, err := writePID(home)
+	if err != nil {
+		stopSrv()
+		<-s.done
+		return nil, err
+	}
+	s.stop = func() { stopSrv(); <-s.done; removePID() }
+	return s, nil
+}

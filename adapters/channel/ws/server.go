@@ -50,6 +50,7 @@ type Server struct {
 	mu    sync.Mutex
 	conns map[*conn]struct{}
 	work  sync.WaitGroup
+	up    chan struct{}
 }
 
 type conn struct {
@@ -60,8 +61,11 @@ type conn struct {
 }
 
 func New(cfg Config, h Handler) *Server {
-	return &Server{cfg: cfg, h: h, conns: map[*conn]struct{}{}}
+	return &Server{cfg: cfg, h: h, conns: map[*conn]struct{}{}, up: make(chan struct{})}
 }
+
+// Listening is closed once Serve has bound the socket.
+func (s *Server) Listening() <-chan struct{} { return s.up }
 
 // Serve listens until ctx is done, then closes every client and removes the socket.
 func (s *Server) Serve(ctx context.Context) error {
@@ -69,6 +73,7 @@ func (s *Server) Serve(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	close(s.up)
 	srv := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.accept(ctx, w, r) }),
 		ReadHeaderTimeout: 10 * time.Second,

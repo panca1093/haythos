@@ -249,21 +249,13 @@ func run(args []string) error {
 	case "serve":
 		srv := ws.New(ws.Config{SocketPath: home.Socket, Version: binaryVersion(), StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
 		route.ws = srv
-		removePID, err := writePID(home)
+		sv, err := serveAfterStart(ctx, home, srv, a.Start)
 		if err != nil {
 			return err
 		}
-		defer removePID()
-		srvCtx, stopSrv := context.WithCancel(ctx)
-		var srvErr error
-		srvDone := make(chan struct{})
-		go func() { srvErr = srv.Serve(srvCtx); close(srvDone) }()
-		defer func() { stopSrv(); <-srvDone }()
+		defer sv.stop()
 		slog.Info("listening", "socket", home.Socket)
 
-		if err := a.Start(ctx); err != nil {
-			return fmt.Errorf("start kernel: %w", err)
-		}
 		channel.SetHandler(a)
 		if err := channel.Open(); err != nil {
 			return err
@@ -279,8 +271,8 @@ func run(args []string) error {
 			select {
 			case <-ctx.Done():
 				return nil
-			case <-srvDone:
-				return srvErr
+			case <-sv.done:
+				return sv.err
 			case <-t.C:
 			}
 		}
