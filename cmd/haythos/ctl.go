@@ -98,6 +98,13 @@ func writePID(p paths) (func(), error) {
 }
 
 // binaryVersion changes with every rebuild, so a client can tell an old kernel is still running.
+// displayOf is the version users see: the short commit only, never the dirty flag or the executable hash.
+func displayOf(version string) string {
+	v, _, _ := strings.Cut(version, "+")
+	v, _, _ = strings.Cut(v, "-")
+	return v
+}
+
 func binaryVersion() string {
 	rev := "dev"
 	if bi, ok := debug.ReadBuildInfo(); ok {

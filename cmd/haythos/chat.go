@@ -59,12 +59,43 @@ func runChat(ctx context.Context, home paths, serve []string, args []string) err
 	if err != nil {
 		return err
 	}
-	_, err = tea.NewProgram(tui.New(c, conv, binaryVersion()), tea.WithAltScreen(), tea.WithContext(ctx)).Run()
+	wd, _ := os.Getwd()
+	userHome, _ := os.UserHomeDir()
+	version := binaryVersion()
+	opts := tui.Options{Conv: conv, Version: version, Display: displayOf(version), Workdir: wd, Home: userHome}
+	final, err := tea.NewProgram(tui.New(c, opts), tea.WithContext(ctx)).Run()
 	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
 		return fmt.Errorf("run chat: %w", err)
 	}
-	_, _ = fmt.Fprintf(os.Stdout, "left %s; the kernel keeps running (haythos chat --session %s)\n", conv, strings.TrimPrefix(conv, ws.Prefix))
+	if s, ok := tui.SummaryOf(final); ok {
+		printSummary(os.Stdout, s, time.Now())
+	}
 	return nil
+}
+
+// printSummary is the Hermes-style recap printed after the chat closes.
+func printSummary(out io.Writer, s tui.Summary, now time.Time) {
+	id := strings.TrimPrefix(s.Conv, ws.Prefix)
+	title := s.Title
+	if title == "" {
+		title = "(belum ada)"
+	}
+	lines := []string{
+		"",
+		"Lanjutkan sesi ini dengan:",
+		"  haythos chat --session " + id,
+		"  haythos chat --resume",
+		"",
+		fmt.Sprintf("%-10s %s", "Sesi:", s.Conv),
+		fmt.Sprintf("%-10s %s", "Judul:", title),
+		fmt.Sprintf("%-10s %s", "Durasi:", spoken(now.Sub(s.Started))),
+		fmt.Sprintf("%-10s %d (%d kamu, %d tool)", "Pesan:", s.UserMessages+s.ToolCalls, s.UserMessages, s.ToolCalls),
+	}
+	if s.Pending > 0 {
+		lines = append(lines, fmt.Sprintf("%-10s %d izin belum diputuskan", "Menunggu:", s.Pending))
+	}
+	lines = append(lines, "Alfred tetap jalan di background (Discord dan job terjadwal aktif).")
+	_, _ = fmt.Fprintln(out, strings.Join(lines, "\n"))
 }
 
 func runSessions(ctx context.Context, home paths, serve []string, out io.Writer) error {
@@ -127,4 +158,17 @@ func printSessions(out io.Writer, items []ws.Session, loc *time.Location) {
 	for _, it := range items {
 		_, _ = fmt.Fprintf(out, "%s  %s  %s\n", it.Conv, it.LastAt.In(loc).Format("2006-01-02 15:04"), it.FirstUser)
 	}
+}
+
+// spoken renders 13m51s as "13m 51s".
+func spoken(d time.Duration) string {
+	d = d.Round(time.Second)
+	h, m, sec := int(d.Hours()), int(d.Minutes())%60, int(d.Seconds())%60
+	switch {
+	case h > 0:
+		return fmt.Sprintf("%dh %dm %ds", h, m, sec)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, sec)
+	}
+	return fmt.Sprintf("%ds", sec)
 }

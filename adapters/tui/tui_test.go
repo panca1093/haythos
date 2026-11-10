@@ -35,10 +35,12 @@ func (c *fakeConn) frames() []any {
 	return append([]any(nil), c.sent...)
 }
 
-func start(t *testing.T, version string) (tea.Model, *fakeConn) {
+var opts = Options{Conv: "tui:abc", Version: "6682326+aa", Display: "6682326", Workdir: "/home/me/proj", Home: "/home/me"}
+
+func start(t *testing.T) (tea.Model, *fakeConn) {
 	t.Helper()
 	c := &fakeConn{}
-	m := New(c, "tui:abc", version)
+	m := New(c, opts)
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
 	return m, c
 }
@@ -48,8 +50,6 @@ func feed(m tea.Model, f ws.Frame) tea.Model {
 	return m
 }
 
-func key(m tea.Model, k tea.KeyMsg) (tea.Model, tea.Cmd) { return m.Update(k) }
-
 func typeText(m tea.Model, s string) tea.Model {
 	for _, r := range s {
 		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
@@ -57,164 +57,201 @@ func typeText(m tea.Model, s string) tea.Model {
 	return m
 }
 
-func run(cmd tea.Cmd) {
+func enter(m tea.Model) (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
+
+func printed(m tea.Model) string { return strings.Join(m.(*model).printed, "\n") }
+
+// drain runs a command tree, ignoring commands that block on the connection.
+func drain(cmd tea.Cmd) []tea.Msg {
 	if cmd == nil {
-		return
+		return nil
 	}
-	if b, ok := cmd().(tea.BatchMsg); ok {
-		for _, c := range b {
-			run(c)
+	done := make(chan tea.Msg, 1)
+	go func() { done <- cmd() }()
+	select {
+	case msg := <-done:
+		if b, ok := msg.(tea.BatchMsg); ok {
+			var out []tea.Msg
+			for _, c := range b {
+				out = append(out, drain(c)...)
+			}
+			return out
 		}
+		return []tea.Msg{msg}
+	case <-time.After(200 * time.Millisecond):
+		return nil
 	}
 }
 
-func TestInitSubscribes(t *testing.T) {
+func TestInitSendsHelloAndSubscribeWithFolder(t *testing.T) {
 	t.Parallel()
 	c := &fakeConn{}
-	m := New(c, "tui:abc", "v1")
-	cmd := m.Init()
-	done := make(chan struct{})
-	go func() { defer close(done); run(cmd) }()
-	deadline := time.Now().Add(2 * time.Second)
-	for len(c.frames()) < 2 && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
-	}
+	drain(New(c, opts).Init())
 	got := c.frames()
-	if len(got) != 2 {
-		t.Fatalf("sent %v, want hello then subscribe", got)
+	if len(got) < 2 {
+		t.Fatalf("frames = %+v", got)
 	}
-	if h, ok := got[0].(ws.Hello); !ok || h.Client != "tui" || h.Version != "v1" {
-		t.Fatalf("first frame = %#v, want hello", got[0])
+	if h, ok := got[0].(ws.Hello); !ok || h.Version != opts.Version {
+		t.Fatalf("first frame = %+v, want hello with the full build id", got[0])
 	}
-	if s, ok := got[1].(ws.Subscribe); !ok || s.Conv != "tui:abc" {
-		t.Fatalf("second frame = %#v, want subscribe tui:abc", got[1])
+	if s, ok := got[1].(ws.Subscribe); !ok || s.Conv != "tui:abc" || s.Workdir != "/home/me/proj" {
+		t.Fatalf("second frame = %+v, want subscribe with the folder", got[1])
 	}
 }
 
-func TestHistoryRenders(t *testing.T) {
+func TestWelcomePrintsTheCard(t *testing.T) {
 	t.Parallel()
-	m, _ := start(t, "v1")
-	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: "v1"})
-	m = feed(m, ws.Frame{Type: ws.TypeHistory, Conv: "tui:abc", Turns: []ws.Turn{{User: "hi there", Answer: "hello, sir"}}})
-	v := m.View()
-	for _, want := range []string{"hi there", "hello, sir", "kernel v1 · tui:abc"} {
-		if !strings.Contains(v, want) {
-			t.Fatalf("view lacks %q:\n%s", want, v)
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, Model: "opus", DefaultModel: "claude-sub"})
+	out := printed(m)
+	for _, want := range []string{"◆ Alfred", "v6682326", "opus · claude-sub", "~/proj"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("card lacks %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(v, "differs from this binary") {
-		t.Fatalf("same version shows a mismatch warning:\n%s", v)
+	for _, never := range []string{"kernel", "dirty", "+aa"} {
+		if strings.Contains(out+m.View(), never) {
+			t.Errorf("screen shows %q:\n%s\n%s", never, out, m.View())
+		}
 	}
 }
 
-func TestEnterSendsInput(t *testing.T) {
+func TestWelcomeWithProviderDefaultModel(t *testing.T) {
 	t.Parallel()
-	m, c := start(t, "v1")
-	m = typeText(m, "check the vm")
-	m, cmd := key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	run(cmd)
-	got := c.frames()
-	if len(got) != 1 {
-		t.Fatalf("sent %v, want one input", got)
-	}
-	if in, ok := got[0].(ws.Input); !ok || in.Conv != "tui:abc" || in.Text != "check the vm" {
-		t.Fatalf("frame = %#v, want input on tui:abc", got[0])
-	}
-	if v := m.View(); !strings.Contains(v, "check the vm") || !strings.Contains(v, "running") {
-		t.Fatalf("view after send:\n%s", v)
-	}
-	_, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-	run(cmd)
-	if len(c.frames()) != 1 {
-		t.Fatalf("empty enter sent a frame")
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, DefaultModel: "claude-sub"})
+	if out := printed(m); !strings.Contains(out, "default · claude-sub") {
+		t.Fatalf("card = %s", out)
 	}
 }
 
-func TestApprovalBlockAndDecide(t *testing.T) {
+func TestVersionMismatchWarnsOnce(t *testing.T) {
 	t.Parallel()
-	for _, tt := range []struct {
-		key     string
-		approve bool
-	}{{"y", true}, {"n", false}} {
-		m, c := start(t, "v1")
-		m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "chat-1", Text: "post to #infra",
-			Approval: &ws.Approval{ID: "ap-9", Tool: "discord.post", Target: "#infra", Tier: 2, Preview: "post to #infra: hello"}})
-		v := m.View()
-		for _, want := range []string{"discord.post", "#infra", "post to #infra: hello", "[y] approve", "[n] reject", "waiting_approval"} {
-			if !strings.Contains(v, want) {
-				t.Fatalf("approval view lacks %q:\n%s", want, v)
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: "older+bb"})
+	if out := printed(m); strings.Count(out, "haythos stop") != 1 {
+		t.Fatalf("want one mismatch warning naming haythos stop:\n%s", out)
+	}
+}
+
+func TestConversationLines(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: "hi", Answer: "hello"}}})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "tool.started", Text: "fs.read README.md"})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "README is fine"})
+	out := printed(m)
+	for _, want := range []string{"› hi", "● hello", "⎿ fs.read README.md", "● README is fine"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("transcript lacks %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestEnterSendsInputAndPrintsIt(t *testing.T) {
+	t.Parallel()
+	m, c := start(t)
+	m = typeText(m, "cek README")
+	m, cmd := enter(m)
+	drain(cmd)
+	var sent ws.Input
+	for _, f := range c.frames() {
+		if in, ok := f.(ws.Input); ok {
+			sent = in
+		}
+	}
+	if sent.Conv != "tui:abc" || sent.Text != "cek README" {
+		t.Fatalf("input = %+v", sent)
+	}
+	if !strings.Contains(printed(m), "› cek README") {
+		t.Fatalf("transcript = %s", printed(m))
+	}
+}
+
+func TestExitWordsQuitWithoutSending(t *testing.T) {
+	t.Parallel()
+	for _, word := range []string{"exit", "/exit", "/quit", " EXIT "} {
+		t.Run(word, func(t *testing.T) {
+			t.Parallel()
+			m, c := start(t)
+			m = typeText(m, word)
+			_, cmd := enter(m)
+			msgs := drain(cmd)
+			quit := false
+			for _, msg := range msgs {
+				_, quit = msg.(tea.QuitMsg)
 			}
-		}
-		m, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tt.key)})
-		run(cmd)
-		got := c.frames()
-		want := ws.Decide{TaskID: "chat-1", ApprovalID: "ap-9", Approve: tt.approve}
-		if len(got) != 1 || got[0] != want {
-			t.Fatalf("%s: sent %#v, want %#v", tt.key, got, want)
-		}
-		if strings.Contains(m.View(), "[y] approve") {
-			t.Fatalf("%s: approval block still shown after deciding", tt.key)
-		}
+			if !quit {
+				t.Fatalf("%q did not quit: %+v", word, msgs)
+			}
+			for _, f := range c.frames() {
+				if _, ok := f.(ws.Input); ok {
+					t.Fatalf("%q was sent to Alfred", word)
+				}
+			}
+		})
 	}
 }
 
-func TestPendingFromHistory(t *testing.T) {
+func TestApprovalBlock(t *testing.T) {
 	t.Parallel()
-	m, c := start(t, "v1")
-	m = feed(m, ws.Frame{Type: ws.TypeHistory, Pending: []ws.Pending{{TaskID: "chat-2", Approval: ws.Approval{ID: "ap-1", Tool: "note.add", Target: "n1", Tier: 1, Preview: "add n1"}}}})
-	if !strings.Contains(m.View(), "[y] approve") {
-		t.Fatalf("pending approval from history not shown:\n%s", m.View())
+	m, c := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "ap1", Tool: "discord.post", Target: "#infra", Tier: 2, Preview: "deploy done"}})
+	view := m.View()
+	for _, want := range []string{"Butuh izin", "tier 2", "discord.post → #infra", "deploy done", "[y] izinkan", "[n] tolak"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("approval view lacks %q:\n%s", want, view)
+		}
 	}
-	_, cmd := key(m, tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
-	run(cmd)
-	if got := c.frames(); len(got) != 1 || got[0] != (ws.Decide{TaskID: "chat-2", ApprovalID: "ap-1", Approve: true}) {
-		t.Fatalf("sent %#v", got)
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	drain(cmd)
+	var d ws.Decide
+	for _, f := range c.frames() {
+		if x, ok := f.(ws.Decide); ok {
+			d = x
+		}
 	}
-}
-
-func TestVersionMismatchWarning(t *testing.T) {
-	t.Parallel()
-	m, _ := start(t, "v2")
-	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: "v1"})
-	want := `kernel v1 differs from this binary v2; run "haythos stop" and start chat again`
-	if v := m.View(); strings.Count(v, want) != 1 {
-		t.Fatalf("view lacks one warning line %q:\n%s", want, v)
+	if d.TaskID != "t1" || d.ApprovalID != "ap1" || !d.Approve {
+		t.Fatalf("decide = %+v", d)
 	}
-}
-
-func TestQuit(t *testing.T) {
-	t.Parallel()
-	for _, k := range []string{"/quit", "ctrl+c"} {
-		m, c := start(t, "v1")
-		var cmd tea.Cmd
-		if k == "ctrl+c" {
-			_, cmd = key(m, tea.KeyMsg{Type: tea.KeyCtrlC})
-		} else {
-			m = typeText(m, k)
-			_, cmd = key(m, tea.KeyMsg{Type: tea.KeyEnter})
-		}
-		if cmd == nil {
-			t.Fatalf("%s: no command, want tea.Quit", k)
-		}
-		if _, ok := cmd().(tea.QuitMsg); !ok {
-			t.Fatalf("%s: command is not tea.Quit", k)
-		}
-		if len(c.frames()) != 0 {
-			t.Fatalf("%s: sent %v, want nothing", k, c.frames())
-		}
+	if strings.Contains(m.View(), "Butuh izin") {
+		t.Fatalf("approval still shown after deciding:\n%s", m.View())
 	}
 }
 
-func TestNoticesAndErrorsRender(t *testing.T) {
+func TestViewIsInputAndHintOnly(t *testing.T) {
 	t.Parallel()
-	m, _ := start(t, "v1")
-	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", TaskID: "t", Text: "all green"})
-	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "task.state", State: "failed", Text: "Task failed: budget"})
-	m = feed(m, ws.Frame{Type: ws.TypeError, Message: "approval refused"})
-	v := m.View()
-	for _, want := range []string{"all green", "Task failed: budget", "approval refused", "failed"} {
-		if !strings.Contains(v, want) {
-			t.Fatalf("view lacks %q:\n%s", want, v)
+	m, _ := start(t)
+	view := m.View()
+	for _, want := range []string{"›", "tanya Alfred…", "exit / /exit / /quit"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("view lacks %q:\n%s", want, view)
 		}
+	}
+	if lines := strings.Count(view, "\n") + 1; lines > 6 {
+		t.Fatalf("idle view is %d lines; the transcript belongs in the scrollback:\n%s", lines, view)
+	}
+}
+
+func TestSummary(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: "cek README di folder ini apa yang kurang sebelum rilis besok pagi"}}, UserMessages: 2, ToolCalls: 1})
+	m = typeText(m, "lagi")
+	m, _ = enter(m)
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "tool.started", Text: "fs.list"})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "ap1", Tool: "x", Target: "y"}})
+	s, ok := SummaryOf(m)
+	if !ok {
+		t.Fatal("no summary")
+	}
+	if s.Conv != "tui:abc" || s.UserMessages != 3 || s.ToolCalls != 2 || s.Pending != 1 {
+		t.Fatalf("summary = %+v", s)
+	}
+	if s.Title != "cek README di folder ini apa yang kurang sebelum r…" {
+		t.Fatalf("title = %q", s.Title)
+	}
+	if s.Started.IsZero() {
+		t.Fatal("start time not set")
 	}
 }

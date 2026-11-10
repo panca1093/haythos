@@ -12,12 +12,29 @@ import (
 	"github.com/panca/haythos/adapters/channel/ws"
 )
 
-const sendTimeout = 5 * time.Second
+const (
+	sendTimeout = 5 * time.Second
+	titleRunes  = 50
+)
 
 // Conn is the kernel connection the TUI talks through.
 type Conn interface {
 	Send(ctx context.Context, frame any) error
 	Next(ctx context.Context) (ws.Frame, error)
+}
+
+// Options: Version is the full build id used to spot a stale kernel; Display is what the user sees.
+type Options struct {
+	Conv, Version, Display string
+	Workdir, Home          string
+}
+
+// Summary is what the chat prints after the TUI closes.
+type Summary struct {
+	Conv, Title             string
+	Started                 time.Time
+	UserMessages, ToolCalls int
+	Pending                 int
 }
 
 type frameMsg ws.Frame
@@ -26,46 +43,46 @@ type connErrMsg struct{ err error }
 
 type sendErrMsg struct{ err error }
 
-type entryKind int
-
-const (
-	fromUser entryKind = iota
-	fromAlfred
-	fromKernel
-	isError
-)
-
-type entry struct {
-	kind entryKind
-	text string
-}
-
 type model struct {
-	conn          Conn
-	conv, version string
-	kernelVersion string
-	warning       string
-	state         string
-	entries       []entry
-	pending       []ws.Pending
-	input         []rune
-	scroll        int
-	width, height int
+	conn    Conn
+	opts    Options
+	state   string
+	pending []ws.Pending
+	input   []rune
+	width   int
+	printed []string
+	carded  bool
+	summary Summary
 }
 
 var (
-	userStyle   = lipgloss.NewStyle().Bold(true)
-	alfredStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("6"))
-	dimStyle    = lipgloss.NewStyle().Faint(true)
-	errStyle    = lipgloss.NewStyle().Foreground(lipgloss.Color("1"))
-	warnStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("3"))
-	blockStyle  = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("3")).Padding(0, 1)
-	statusStyle = lipgloss.NewStyle().Reverse(true)
+	accent    = lipgloss.Color("#e0a458")
+	userStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#9ab8e6"))
+	dimStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#7b828c"))
+	nameStyle = lipgloss.NewStyle().Foreground(accent).Bold(true)
+	dotStyle  = lipgloss.NewStyle().Foreground(accent)
+	errStyle  = lipgloss.NewStyle().Foreground(lipgloss.Color("#e06c75"))
+	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6c07b"))
+	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7fbf7f"))
+	ruleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4a525c"))
+	cardStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#4a525c")).Padding(0, 1)
+	askStyle  = lipgloss.NewStyle().Border(lipgloss.ThickBorder(), false, false, false, true).BorderForeground(lipgloss.Color("#e6c07b")).PaddingLeft(1)
 )
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
-func New(c Conn, conv string, version string) tea.Model {
-	return &model{conn: c, conv: conv, version: version, state: "idle", width: 80, height: 24}
+func New(c Conn, opts Options) tea.Model {
+	return &model{conn: c, opts: opts, state: "idle", width: 80, summary: Summary{Conv: opts.Conv, Started: time.Now()}}
+}
+
+// SummaryOf returns the exit summary of a model New returned.
+func SummaryOf(m tea.Model) (Summary, bool) {
+	mm, ok := m.(*model)
+	if !ok {
+		return Summary{}, false
+	}
+	s := mm.summary
+	s.Pending = len(mm.pending)
+	return s, true
 }
 
 func (m *model) Init() tea.Cmd {
@@ -74,7 +91,11 @@ func (m *model) Init() tea.Cmd {
 
 func (m *model) handshake() tea.Cmd {
 	return func() tea.Msg {
-		for _, f := range []any{ws.Hello{Client: "tui", Instance: m.conv, Version: m.version}, ws.Subscribe{Conv: m.conv}} {
+		frames := []any{
+			ws.Hello{Client: "tui", Instance: m.opts.Conv, Version: m.opts.Version},
+			ws.Subscribe{Conv: m.opts.Conv, Workdir: m.opts.Workdir},
+		}
+		for _, f := range frames {
 			if err := m.send(f); err != nil {
 				return sendErrMsg{err}
 			}
@@ -108,67 +129,83 @@ func (m *model) sendCmd(f any) tea.Cmd {
 	}
 }
 
+// print adds finished lines to the terminal scrollback above the live input area.
+func (m *model) print(s string) tea.Cmd {
+	if strings.TrimSpace(s) == "" {
+		return nil
+	}
+	m.printed = append(m.printed, s)
+	return tea.Println(s)
+}
+
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width, m.height = msg.Width, msg.Height
+		m.width = msg.Width
 	case frameMsg:
-		m.onFrame(ws.Frame(msg))
-		return m, m.read()
+		return m, tea.Batch(m.onFrame(ws.Frame(msg)), m.read())
 	case connErrMsg:
-		m.add(isError, "disconnected from the kernel: "+msg.err.Error()+" (Ctrl+C to quit)")
+		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
-		m.add(isError, "could not reach the kernel: "+msg.err.Error())
+		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
 		return m.onKey(msg)
 	}
 	return m, nil
 }
 
-func (m *model) onFrame(f ws.Frame) {
+func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	switch f.Type {
 	case ws.TypeWelcome:
-		m.kernelVersion = f.Version
-		if f.Version != m.version {
-			m.warning = fmt.Sprintf(`kernel %s differs from this binary %s; run "haythos stop" and start chat again`, f.Version, m.version)
+		var cmds []tea.Cmd
+		if !m.carded {
+			m.carded = true
+			cmds = append(cmds, m.print(m.card(f)))
 		}
+		if f.Version != m.opts.Version {
+			cmds = append(cmds, m.print(warnStyle.Render(`Alfred yang berjalan lebih lama dari aplikasi ini; jalankan "haythos stop" lalu buka chat lagi.`)))
+		}
+		return tea.Batch(cmds...)
 	case ws.TypeHistory:
-		m.entries = nil
+		m.summary.UserMessages, m.summary.ToolCalls = f.UserMessages, f.ToolCalls
+		var cmds []tea.Cmd
 		for _, t := range f.Turns {
-			m.add(fromUser, t.User)
-			m.add(fromAlfred, t.Answer)
+			m.title(t.User)
+			cmds = append(cmds, m.print(userLine(t.User)), m.print(alfredLine(t.Answer)))
 		}
 		m.pending = nil
 		for _, p := range f.Pending {
 			m.addPending(p)
 		}
-		if len(m.pending) > 0 {
-			m.state = "waiting_approval"
-		}
+		return tea.Batch(cmds...)
 	case ws.TypeNotice:
-		m.onNotice(f)
+		return m.onNotice(f)
 	case ws.TypeError:
-		m.add(isError, f.Message)
+		return m.print(errStyle.Render(f.Message))
 	}
+	return nil
 }
 
-func (m *model) onNotice(f ws.Frame) {
+func (m *model) onNotice(f ws.Frame) tea.Cmd {
 	switch f.Kind {
 	case "approval.request":
 		if f.Approval != nil {
 			m.addPending(ws.Pending{TaskID: f.TaskID, Approval: *f.Approval})
-			m.state = "waiting_approval"
 		}
+		return nil
+	case "tool.started":
+		m.summary.ToolCalls++
+		return m.print(dimStyle.Render("  ⎿ " + f.Text))
 	case "message.done":
-		m.add(fromAlfred, f.Text)
 		m.state = "done"
+		return m.print(alfredLine(f.Text))
 	case "task.state":
-		m.add(fromKernel, f.Text)
 		if f.State != "" {
 			m.state = f.State
 		}
+		return m.print(dimStyle.Render("  " + f.Text))
 	default:
-		m.add(fromKernel, f.Text)
+		return m.print(warnStyle.Render("! " + f.Text))
 	}
 }
 
@@ -179,38 +216,47 @@ func (m *model) addPending(p ws.Pending) {
 		}
 	}
 	m.pending = append(m.pending, p)
+	m.state = "waiting approval"
 }
 
-func (m *model) add(k entryKind, text string) {
-	if strings.TrimSpace(text) == "" {
+func (m *model) title(text string) {
+	if m.summary.Title != "" || strings.TrimSpace(text) == "" {
 		return
 	}
-	m.entries = append(m.entries, entry{k, text})
-	m.scroll = 0
+	r := []rune(strings.Join(strings.Fields(text), " "))
+	if len(r) > titleRunes {
+		m.summary.Title = string(r[:titleRunes]) + "…"
+		return
+	}
+	m.summary.Title = string(r)
+}
+
+func isExit(text string) bool {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "exit", "/exit", "/quit":
+		return true
+	}
+	return false
 }
 
 func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch k.Type {
-	case tea.KeyCtrlC:
+	if k.Type == tea.KeyCtrlC {
 		return m, tea.Quit
-	case tea.KeyPgUp:
-		m.scroll += m.height / 2
-		return m, nil
-	case tea.KeyPgDown:
-		m.scroll = max(0, m.scroll-m.height/2)
-		return m, nil
 	}
 	if len(m.pending) > 0 {
 		if k.Type == tea.KeyRunes && len(k.Runes) == 1 && (k.Runes[0] == 'y' || k.Runes[0] == 'n') {
 			p := m.pending[0]
 			m.pending = m.pending[1:]
 			approve := k.Runes[0] == 'y'
-			verdict := "rejected"
+			verdict := "  ✗ ditolak: "
 			if approve {
-				verdict, m.state = "approved", "running"
+				verdict = "  ✓ diizinkan: "
 			}
-			m.add(fromKernel, verdict+" "+p.Approval.Tool+" on "+p.Approval.Target)
-			return m, m.sendCmd(ws.Decide{TaskID: p.TaskID, ApprovalID: p.Approval.ID, Approve: approve})
+			m.state = "running"
+			return m, tea.Batch(
+				m.print(dimStyle.Render(verdict+p.Approval.Tool+" → "+p.Approval.Target)),
+				m.sendCmd(ws.Decide{TaskID: p.TaskID, ApprovalID: p.Approval.ID, Approve: approve}),
+			)
 		}
 		return m, nil
 	}
@@ -218,15 +264,16 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(string(m.input))
 		m.input = nil
-		switch text {
-		case "":
+		switch {
+		case text == "":
 			return m, nil
-		case "/quit":
+		case isExit(text):
 			return m, tea.Quit
 		}
-		m.add(fromUser, text)
+		m.title(text)
+		m.summary.UserMessages++
 		m.state = "running"
-		return m, m.sendCmd(ws.Input{Conv: m.conv, Text: text})
+		return m, tea.Batch(m.print(userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}))
 	case tea.KeyBackspace:
 		if len(m.input) > 0 {
 			m.input = m.input[:len(m.input)-1]
@@ -239,65 +286,66 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-func (m *model) View() string {
-	w := max(m.width, 20)
-	var bottom []string
-	if len(m.pending) > 0 {
-		p := m.pending[0].Approval
-		title := fmt.Sprintf("approval needed · tier %d", p.Tier)
-		if p.Escalated {
-			title += " (escalated: untrusted content in this task)"
-		}
-		body := strings.Join([]string{
-			warnStyle.Render(title),
-			"tool: " + p.Tool + "   target: " + p.Target,
-			p.Preview,
-			userStyle.Render("[y] approve  [n] reject"),
-		}, "\n")
-		bottom = append(bottom, blockStyle.Width(w-2).Render(body))
+func userLine(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
 	}
-	if m.warning != "" {
-		bottom = append(bottom, warnStyle.Width(w).Render(m.warning))
-	}
-	kv := m.kernelVersion
-	if kv == "" {
-		kv = "?"
-	}
-	bottom = append(bottom, statusStyle.Width(w).Render(fmt.Sprintf("kernel %s · %s · %s", kv, m.conv, m.state)))
-	prompt := "> " + string(m.input)
-	if len(m.pending) > 0 {
-		prompt = dimStyle.Render("> answer the approval first (y/n), Ctrl+C quits")
-	}
-	bottom = append(bottom, prompt)
-	foot := strings.Join(bottom, "\n")
-
-	room := m.height - lipgloss.Height(foot)
-	lines := m.scrollback(w)
-	end := max(0, len(lines)-m.scroll)
-	begin := max(0, end-room)
-	shown := lines[begin:end]
-	for len(shown) < room {
-		shown = append([]string{""}, shown...)
-	}
-	return strings.Join(append(shown, foot), "\n")
+	return "\n" + userStyle.Render("› "+text)
 }
 
-func (m *model) scrollback(w int) []string {
-	var out []string
-	wrap := lipgloss.NewStyle().Width(w)
-	for _, e := range m.entries {
-		var s string
-		switch e.kind {
-		case fromUser:
-			s = userStyle.Render("you: ") + e.text
-		case fromAlfred:
-			s = alfredStyle.Render("Alfred: ") + e.text
-		case fromKernel:
-			s = dimStyle.Render("· " + e.text)
-		case isError:
-			s = errStyle.Render("error: " + e.text)
-		}
-		out = append(out, strings.Split(wrap.Render(s), "\n")...)
+func alfredLine(text string) string {
+	if strings.TrimSpace(text) == "" {
+		return ""
 	}
-	return out
+	return dotStyle.Render("●") + " " + text
+}
+
+func (m *model) card(f ws.Frame) string {
+	model := f.Model
+	if model == "" {
+		model = "default"
+	}
+	if f.DefaultModel != "" {
+		model += " · " + f.DefaultModel
+	}
+	lines := []string{nameStyle.Render("◆ Alfred") + "  " + dimStyle.Render("v"+m.opts.Display), dimStyle.Render(model)}
+	if dir := shortPath(m.opts.Workdir, m.opts.Home); dir != "" {
+		lines = append(lines, dimStyle.Render(dir))
+	}
+	return cardStyle.Width(min(max(m.width-2, 30), 60)).Render(strings.Join(lines, "\n"))
+}
+
+func shortPath(dir, home string) string {
+	if home != "" && (dir == home || strings.HasPrefix(dir, home+"/")) {
+		return "~" + strings.TrimPrefix(dir, home)
+	}
+	return dir
+}
+
+func (m *model) View() string {
+	w := max(m.width, 20)
+	rule := ruleStyle.Render(strings.Repeat("─", w))
+	var parts []string
+	if len(m.pending) > 0 {
+		p := m.pending[0].Approval
+		head := warnStyle.Render("Butuh izin") + dimStyle.Render(fmt.Sprintf(" · tier %d", p.Tier))
+		if p.Escalated {
+			head += dimStyle.Render(" · naik karena konten tidak tepercaya")
+		}
+		body := []string{head, p.Tool + " → " + p.Target}
+		if p.Preview != "" {
+			body = append(body, dimStyle.Render(p.Preview))
+		}
+		body = append(body, okStyle.Render("[y] izinkan")+"   "+dimStyle.Render("[n] tolak"))
+		parts = append(parts, askStyle.Width(w-2).Render(strings.Join(body, "\n")))
+	}
+	prompt := userStyle.Render("› ") + string(m.input)
+	switch {
+	case len(m.pending) > 0:
+		prompt = userStyle.Render("› ") + dimStyle.Render("(menunggu izin…)")
+	case len(m.input) == 0:
+		prompt = userStyle.Render("› ") + dimStyle.Render("tanya Alfred…")
+	}
+	parts = append(parts, rule, prompt, rule, dimStyle.Render("  ● "+m.state+" · exit / /exit / /quit untuk keluar"))
+	return strings.Join(parts, "\n")
 }
