@@ -246,6 +246,7 @@ func (nopHandler) Conversations(context.Context, string) ([]app.ConversationSumm
 	return nil, nil
 }
 func (nopHandler) TaskOrigin(context.Context, string) (string, error) { return "", nil }
+func (nopHandler) CurrentModel() string                               { return "" }
 
 func TestStopIgnoresStalePIDFile(t *testing.T) {
 	t.Parallel()

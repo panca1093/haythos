@@ -86,3 +86,22 @@ func TestToolActivityIsNotSentForTasksWithoutOrigin(t *testing.T) {
 		t.Fatalf("tool notices = %+v, want none for a task without an origin", got)
 	}
 }
+
+func TestConversationViewCountsMessagesAndToolCalls(t *testing.T) {
+	n := &testfakes.Notifier{}
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	a := workdirApp(t, n, tools, readCall(), task.AssistantTurn{Text: "done"}, task.AssistantTurn{Text: "hi"})
+	ctx := context.Background()
+	for _, text := range []string{"read it", "thanks"} {
+		if _, err := a.HandleInput(ctx, app.Input{Text: text, ReplyTo: "tui:abc", Workdir: "/p"}); err != nil {
+			t.Fatalf("handle input: %v", err)
+		}
+	}
+	v, err := a.ConversationView(ctx, "tui:abc")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if v.UserMessages != 2 || v.ToolCalls != 1 {
+		t.Fatalf("counts = %d user, %d tool, want 2 and 1", v.UserMessages, v.ToolCalls)
+	}
+}

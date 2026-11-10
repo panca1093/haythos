@@ -251,7 +251,7 @@ func run(args []string) error {
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":
-		srv := ws.New(ws.Config{SocketPath: home.Socket, Version: binaryVersion(), StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
+		srv := ws.New(ws.Config{SocketPath: home.Socket, Version: binaryVersion(), DefaultModel: cfg.DefaultModel, StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
 		route.ws = srv
 		sv, err := serveAfterStart(ctx, home, srv, a.Start)
 		if err != nil {
