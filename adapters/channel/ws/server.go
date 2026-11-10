@@ -23,6 +23,8 @@ const (
 	writeTimeout = 5 * time.Second
 	readLimit    = 1 << 20
 	probeTimeout = time.Second
+	// maxSocketPath is the macOS sun_path limit (104 with the NUL); Linux allows 108.
+	maxSocketPath = 103
 )
 
 // Handler is the slice of the kernel a WS client may reach.
@@ -94,6 +96,9 @@ func (s *Server) Serve(ctx context.Context) error {
 // listen replaces a socket file nobody answers on, and refuses one a live kernel holds.
 func (s *Server) listen(ctx context.Context) (net.Listener, error) {
 	path := s.cfg.SocketPath
+	if len(path) > maxSocketPath {
+		return nil, fmt.Errorf("socket path %s is %d bytes, more than the %d a unix socket allows; set HAYTHOS_HOME to a shorter directory", path, len(path), maxSocketPath)
+	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return nil, fmt.Errorf("create socket dir: %w", err)

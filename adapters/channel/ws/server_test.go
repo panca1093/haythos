@@ -403,3 +403,12 @@ func TestLiveSocketRefused(t *testing.T) {
 	}
 	waitListening(t, r.socket)
 }
+
+func TestSocketPathTooLong(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortDir(t), strings.Repeat("d", 120), "haythos.sock")
+	err := ws.New(ws.Config{SocketPath: socket}, newFakeHandler()).Serve(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "HAYTHOS_HOME") {
+		t.Fatalf("serve on a %d-byte path = %v, want a hint to shorten HAYTHOS_HOME", len(socket), err)
+	}
+}
