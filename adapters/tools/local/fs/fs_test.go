@@ -230,3 +230,20 @@ func TestReadTruncationKeepsTextAfterInvalidByte(t *testing.T) {
 		t.Fatalf("result error=%v, want a truncated text read", res.IsError)
 	}
 }
+
+func TestCaseAndFoldVariantsOfDeniedPathsAreRefused(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	if err := os.WriteFile(filepath.Join(f.home, ".bash_history"), []byte("secret cmd"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []string{".SSH/config", ".\u017fsh/config", ".bash_hi\ufb06ory", "project/.ENV", "project/.env.LOCAL"} {
+		t.Run(p, func(t *testing.T) {
+			b, _ := json.Marshal(map[string]string{"path": p})
+			res := f.call(t, f.home, "fs.read", string(b))
+			if !res.IsError || strings.Contains(res.Content, "Host x") || strings.Contains(res.Content, "secret") {
+				t.Fatalf("read %q = %+v, want refused without content", p, res)
+			}
+		})
+	}
+}

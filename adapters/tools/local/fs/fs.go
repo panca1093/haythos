@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"syscall"
 	"unicode/utf8"
 
 	"github.com/panca/haythos/adapters/tools/local"
@@ -93,6 +94,12 @@ func (t tool) resolve(ctx context.Context, raw []byte) (string, string) {
 	if err != nil {
 		return "", a.Path + ": not readable"
 	}
+	if full, err = onDisk(full); err != nil {
+		return "", a.Path + ": not readable"
+	}
+	if realRoot, err = onDisk(realRoot); err != nil {
+		return "", "the chat folder is not readable"
+	}
 	rel, err := filepath.Rel(realRoot, full)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
 		return "", a.Path + ": outside the chat folder"
@@ -101,6 +108,44 @@ func (t tool) resolve(ctx context.Context, raw []byte) (string, string) {
 		return "", a.Path + ": not allowed (credential file)"
 	}
 	return full, ""
+}
+
+// onDisk rewrites each component of an absolute, symlink-free path to the name stored on disk, because case-insensitive file systems (APFS) open ".ſsh" or ".SSH" as ".ssh".
+func onDisk(full string) (string, error) {
+	out := string(filepath.Separator)
+	for _, part := range strings.Split(strings.TrimPrefix(full, out), string(filepath.Separator)) {
+		if part == "" {
+			continue
+		}
+		name, err := storedName(out, part)
+		if err != nil {
+			return "", err
+		}
+		out = filepath.Join(out, name)
+	}
+	return out, nil
+}
+
+func storedName(dir, typed string) (string, error) {
+	want, err := os.Lstat(filepath.Join(dir, typed))
+	if err != nil {
+		return "", err
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", err
+	}
+	for _, e := range entries {
+		if e.Name() == typed {
+			return typed, nil
+		}
+	}
+	for _, e := range entries {
+		if fi, err := os.Lstat(filepath.Join(dir, e.Name())); err == nil && os.SameFile(fi, want) {
+			return e.Name(), nil
+		}
+	}
+	return "", fmt.Errorf("stored name of %s: %w", typed, os.ErrNotExist)
 }
 
 func (t tool) denied(full string) bool {
@@ -180,15 +225,16 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	if why != "" {
 		return refuse(why)
 	}
-	if fi, err := os.Stat(full); err != nil || !fi.Mode().IsRegular() {
+	resolved, err := os.Lstat(full)
+	if err != nil || !resolved.Mode().IsRegular() {
 		return refuse("not a regular file")
 	}
-	f, err := os.Open(full) //nolint:gosec // path is confined to the chat folder by resolve
+	f, err := os.OpenFile(full, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // path is confined to the chat folder by resolve
 	if err != nil {
 		return refuse("not readable")
 	}
 	defer func() { _ = f.Close() }()
-	if !sameAsResolved(f, full) {
+	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() || !os.SameFile(opened, resolved) {
 		return refuse("not readable")
 	}
 	b, err := io.ReadAll(io.LimitReader(f, maxRead+1))
@@ -210,15 +256,6 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		out += fmt.Sprintf("\n[truncated at %d KiB]", maxRead>>10)
 	}
 	return task.ToolResult{Content: out}, nil
-}
-
-func sameAsResolved(f *os.File, full string) bool {
-	opened, err := f.Stat()
-	if err != nil || !opened.Mode().IsRegular() {
-		return false
-	}
-	resolved, err := os.Stat(full)
-	return err == nil && os.SameFile(opened, resolved)
 }
 
 func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
