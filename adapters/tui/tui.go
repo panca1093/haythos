@@ -70,6 +70,7 @@ var (
 	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7fbf7f"))
 	ruleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4a525c"))
 	curStyle  = lipgloss.NewStyle().Reverse(true)
+	userBox   = lipgloss.NewStyle().Background(lipgloss.Color("#26333d")).Foreground(lipgloss.Color("#cfe0f5"))
 	cardStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#4a525c")).Padding(0, 1)
 	askStyle  = lipgloss.NewStyle().Border(lipgloss.ThickBorder(), false, false, false, true).BorderForeground(lipgloss.Color("#e6c07b")).PaddingLeft(1)
 )
@@ -177,7 +178,7 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 		var cmds []tea.Cmd
 		for _, t := range f.Turns {
 			m.title(t.User)
-			cmds = append(cmds, m.print(userLine(t.User)), m.print(alfredLine(t.Answer)))
+			cmds = append(cmds, m.print(m.userLine(t.User)), m.print(m.alfredLine(t.Answer)))
 		}
 		m.pending = nil
 		for _, p := range f.Pending {
@@ -207,7 +208,7 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		if f.Budget > 0 {
 			m.tokens, m.budget = f.Tokens, f.Budget
 		}
-		return m.print(alfredLine(f.Text))
+		return m.print(m.alfredLine(f.Text))
 	case "task.state":
 		if f.State != "" {
 			m.state = f.State
@@ -285,7 +286,7 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.title(text)
 		m.summary.UserMessages++
 		m.state = "running"
-		return m, tea.Batch(m.print(userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}))
+		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}))
 	}
 	return m, nil
 }
@@ -356,18 +357,21 @@ func wordEnd(in []rune, c int) int {
 	return c
 }
 
-func userLine(text string) string {
+// userLine sets the owner's message apart on a shaded band, after a blank line.
+func (m *model) userLine(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return "\n" + userStyle.Render("› "+text)
+	return "\n" + userBox.Width(max(m.width, 20)).Render("› "+text)
 }
 
-func alfredLine(text string) string {
+// alfredLine starts after a blank line; wrapped lines hang under the text, not under the dot.
+func (m *model) alfredLine(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return dotStyle.Render("●") + " " + text
+	body := lipgloss.NewStyle().Width(max(m.width-2, 18)).Render(text)
+	return "\n" + dotStyle.Render("●") + " " + strings.ReplaceAll(body, "\n", "\n  ")
 }
 
 func modelLabel(f ws.Frame) string {

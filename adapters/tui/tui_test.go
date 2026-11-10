@@ -148,6 +148,26 @@ func TestConversationLines(t *testing.T) {
 	}
 }
 
+func TestMessagesAreSeparatedAndWrapped(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 30})
+	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: "hi", Answer: "a long answer from Alfred that has to wrap across more than one line"}}})
+	p := m.(*model).printed
+	if len(p) != 2 || !strings.HasPrefix(p[0], "\n") || !strings.HasPrefix(p[1], "\n") {
+		t.Fatalf("each message should start after a blank line: %q", p)
+	}
+	lines := strings.Split(strings.TrimPrefix(p[1], "\n"), "\n")
+	if len(lines) < 2 {
+		t.Fatalf("answer did not wrap at width 40: %q", p[1])
+	}
+	for _, l := range lines[1:] {
+		if !strings.HasPrefix(l, "  ") {
+			t.Fatalf("wrapped answer lines should hang under the text, got %q", l)
+		}
+	}
+}
+
 func TestEnterSendsInputAndPrintsIt(t *testing.T) {
 	t.Parallel()
 	m, c := start(t)
