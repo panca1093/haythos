@@ -317,7 +317,7 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	prior, err := a.conversation(ctx, in.ReplyTo, in.DM)
+	prior, err := a.conversation(ctx, in.ReplyTo, in.DM, in.Text)
 	if err != nil {
 		return "", err
 	}

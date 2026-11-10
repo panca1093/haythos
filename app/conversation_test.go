@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -115,7 +116,7 @@ func TestCompactionThreshold(t *testing.T) {
 		},
 		{
 			name:          "anchor at threshold folds all but the tail once",
-			turns:         []task.AssistantTurn{used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 920), used("SUM", 0), used("A3", 100)},
+			turns:         []task.AssistantTurn{used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 846), used("SUM", 0), used("A3", 100)},
 			sends:         3,
 			wantSummaries: 1,
 			wantInLast:    []string{"Summary of the earlier conversation (reference only; if it conflicts with the latest user message, the latest message wins):\nSUM", "A2"},
@@ -123,7 +124,7 @@ func TestCompactionThreshold(t *testing.T) {
 		},
 		{
 			name:       "anchor just below threshold writes nothing",
-			turns:      []task.AssistantTurn{used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 919), used("A3", 100)},
+			turns:      []task.AssistantTurn{used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 845), used("A3", 100)},
 			sends:      3,
 			wantInLast: []string{"A1", "A2"}, wantNotInLast: []string{"Summary"},
 		},
@@ -169,7 +170,7 @@ func TestCompactionThreshold(t *testing.T) {
 func TestSummarizerPromptCarriesPreviousSummary(t *testing.T) {
 	t.Parallel()
 	r := newConvRig(t,
-		used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 920), used("SUM1", 0), used(answerOf(75, "A3"), 920), used("SUM2", 0), used("A4", 0))
+		used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 846), used("SUM1", 0), used(answerOf(75, "A3"), 846), used("SUM2", 0), used("A4", 0))
 	for _, q := range []string{"Q1", "Q2", "Q3", "Q4"} {
 		r.send(t, "c1", false, q)
 	}
@@ -205,7 +206,7 @@ func (m summaryFailModel) Step(ctx context.Context, h []task.Message, tools []ta
 }
 
 func TestFailedSummaryFallsBackToTailAndStillAnswers(t *testing.T) {
-	r := newConvRig(t, used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 920), used("A3", 0))
+	r := newConvRig(t, used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 846), used("A3", 0))
 	r.app = rebuild(t, r, summaryFailModel{r.model})
 	r.send(t, "c1", false, "Q1")
 	r.send(t, "c1", false, "Q2")
@@ -213,6 +214,86 @@ func TestFailedSummaryFallsBackToTailAndStillAnswers(t *testing.T) {
 	got := texts(r.model.Histories[2])
 	if strings.Contains(got, "A1") || !strings.Contains(got, "A2") || strings.Contains(got, "Summary") {
 		t.Fatalf("history after failed summary = %.200q, want only the tail", got)
+	}
+}
+
+type countingFailModel struct {
+	*testfakes.Model
+	attempts int
+}
+
+func (m *countingFailModel) Step(ctx context.Context, h []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
+	if len(tools) == 0 && len(h) == 2 && h[0].Role == task.RoleSystem && strings.HasPrefix(h[0].Text, "Summarize") {
+		m.attempts++
+		return task.AssistantTurn{}, errors.New("model down")
+	}
+	return m.Model.Step(ctx, h, tools)
+}
+
+func TestFailedSummaryCannotHideRealSizeBehindSmallAnchor(t *testing.T) {
+	r := newConvRig(t, task.AssistantTurn{Text: answerOf(500, "A1")}, task.AssistantTurn{Text: answerOf(500, "A2")}, used("A3", 100), used("A4", 100))
+	m := &countingFailModel{Model: r.model}
+	r.app = rebuild(t, r, m)
+	for _, q := range []string{"Q1", "Q2", "Q3", "Q4"} {
+		r.send(t, "c1", false, q)
+	}
+	if m.attempts != 2 {
+		t.Fatalf("summarize attempts = %d, want 2: the small anchor after a failed fold must not suppress the next one", m.attempts)
+	}
+}
+
+func TestIncomingMessageCountsTowardCompaction(t *testing.T) {
+	t.Parallel()
+	r := newConvRig(t, used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 770), used("SUM", 0), used("A3", 0))
+	r.send(t, "c1", false, "Q1")
+	r.send(t, "c1", false, "Q2")
+	r.send(t, "c1", false, strings.Repeat("q", 320))
+	if got := summaryCalls(r); got != 1 {
+		t.Fatalf("summary calls = %d, want 1: anchor 845 plus an 80-token message reaches the threshold", got)
+	}
+}
+
+func TestSingleHugeTurnIsTruncatedInReplay(t *testing.T) {
+	t.Parallel()
+	r := newConvRig(t, task.AssistantTurn{Text: answerOf(2000, "A1")}, task.AssistantTurn{Text: "A2"})
+	r.send(t, "c1", false, "Q1")
+	r.send(t, "c1", false, "Q2")
+	var replayed string
+	for _, m := range r.model.Histories[1] {
+		if m.Context && m.Role == task.RoleAssistant {
+			replayed = m.Text
+		}
+	}
+	if !strings.HasSuffix(replayed, "[truncated]") || !strings.HasPrefix(replayed, "A1") || len(replayed) > 920*4 {
+		t.Fatalf("replayed answer has %d bytes, suffix %q; want a head of the answer that fits the threshold, noted [truncated]", len(replayed), replayed[max(0, len(replayed)-20):])
+	}
+}
+
+func TestAnchorIgnoresInTaskToolTraffic(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	read := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "note.read", Args: json.RawMessage(`{}`)}}, Usage: task.Usage{InputTokens: 100}}
+	model := testfakes.NewModel(used(answerOf(75, "A1"), 100), read, used(answerOf(75, "A2"), 1500), used("A3", 100))
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": model},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		Events:     st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy:  policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}},
+		Clock:   time.Now,
+		Windows: map[string]int{"default": 1000},
+	})
+	for _, q := range []string{"Q1", "Q2", "Q3"} {
+		if _, err := a.HandleInput(context.Background(), app.Input{Text: q, ReplyTo: "c1"}); err != nil {
+			t.Fatalf("handle %q: %v", q, err)
+		}
+	}
+	if got := texts(model.Histories[len(model.Histories)-1]); strings.Contains(got, "Summary") || !strings.Contains(got, "Q1") {
+		t.Fatalf("history = %.300q, want Q1 replayed and no summary: the 1500-token tool step is never replayed", got)
 	}
 }
 
@@ -229,7 +310,7 @@ func rebuild(t *testing.T, r *convRig, m app.Model) *app.App {
 
 func TestDMSummaryIsDroppedOnceItsTurnsExpire(t *testing.T) {
 	r := newConvRig(t,
-		used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 100), used(answerOf(75, "A3"), 920),
+		used(answerOf(75, "A1"), 100), used(answerOf(75, "A2"), 100), used(answerOf(75, "A3"), 846),
 		used("SUMMARY-OF-1-2", 0), used("A4", 100), used("A5", 100))
 	r.send(t, "dm", true, "Q1")
 	r.clock.Advance(10 * time.Hour)

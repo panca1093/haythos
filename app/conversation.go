@@ -60,15 +60,26 @@ func splitTail(turns []convTurn, budget int) (older, recent []convTurn) {
 	return older, recent
 }
 
-func estimatePrompt(summary string, fresh []convTurn) int {
-	if n := len(fresh); n > 0 && fresh[n-1].Context > 0 {
-		return fresh[n-1].Context
-	}
-	est := len(summary) / 4
+func estimatePrompt(summary string, fresh []convTurn, incoming string) int {
+	est := (len(summary) + len(incoming)) / 4
 	for _, t := range fresh {
 		est += t.tokens()
 	}
+	if n := len(fresh); n > 0 && fresh[n-1].Context > 0 {
+		est = max(est, fresh[n-1].Context+len(incoming)/4)
+	}
 	return est
+}
+
+// fitTurn cuts the answer so the turn fits budget tokens; the user text is kept whole.
+func fitTurn(t convTurn, budget int) (convTurn, bool) {
+	const marker = "\n[truncated]"
+	if t.tokens() <= budget {
+		return t, false
+	}
+	keep := min(max(budget*4-len(t.User)-len(marker), 0), len(t.Answer))
+	t.Answer = strings.ToValidUTF8(t.Answer[:keep], "") + marker
+	return t, true
 }
 
 func (a *App) chatWindow() int {
@@ -95,7 +106,10 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 			break
 		}
 	}
-	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock(), Context: s.Context}
+	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock()}
+	if s.FirstInput > 0 {
+		turn.Context = s.FirstInput + len(answer)/4
+	}
 	marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
 	if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
 		return fmt.Errorf("record brain turn marker: %w", err)
@@ -107,7 +121,7 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 }
 
 // conversation returns the earlier turns of replyTo as context messages: a summary of folded turns, then recent turns verbatim.
-func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task.Message, error) {
+func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incoming string) ([]task.Message, error) {
 	if replyTo == "" {
 		return nil, nil
 	}
@@ -156,7 +170,8 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task
 	}
 	window := a.chatWindow()
 	recent := fresh
-	if float64(estimatePrompt(summary.Text, fresh)) >= a.d.CompactAt*float64(window) {
+	limit := a.d.CompactAt * float64(window)
+	if float64(estimatePrompt(summary.Text, fresh, incoming)) >= limit {
 		var older []convTurn
 		older, recent = splitTail(fresh, int(convTailShare*float64(window)))
 		if len(older) > 0 {
@@ -164,10 +179,17 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task
 				return nil, err
 			}
 		}
+		if len(recent) == 1 {
+			fit, cut := fitTurn(recent[0], int(limit)-(len(summary.Text)+len(incoming))/4)
+			if cut {
+				slog.Warn("newest conversation turn alone exceeds the compaction threshold; truncating its answer in the replay", "conversation", replyTo, "tokens", recent[0].tokens())
+				recent = []convTurn{fit}
+			}
+		}
 	}
 	var out []task.Message
 	if summary.Text != "" {
-		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true})
+		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true, Kind: task.KindSummary})
 	}
 	for _, t := range recent {
 		out = append(out,
