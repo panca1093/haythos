@@ -443,7 +443,7 @@ func TestWorkingIndicatorStopsOnEveryOutcome(t *testing.T) {
 		{"answer", frameMsg(ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "ok"})},
 		{"failed task", frameMsg(ws.Frame{Type: ws.TypeNotice, Kind: "task.state", State: "failed", Text: "Task failed: budget"})},
 		{"kernel error", frameMsg(ws.Frame{Type: ws.TypeError, Message: "input failed"})},
-		{"send error", sendErrMsg{err: errors.New("timeout")}},
+		{"send error", sendErrMsg{err: errors.New("timeout"), input: true}},
 		{"disconnect", connErrMsg{err: errors.New("eof")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -476,5 +476,21 @@ func TestWorkingIndicatorWaitsForEveryMessageInFlight(t *testing.T) {
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "answer two"})
 	if strings.Contains(m.View(), "…  (") {
 		t.Fatalf("indicator still shown after both answers:\n%s", m.View())
+	}
+}
+
+func TestErrorsNotAboutAMessageKeepTheIndicator(t *testing.T) {
+	t.Parallel()
+	for _, msg := range []tea.Msg{
+		frameMsg(ws.Frame{Type: ws.TypeError, Message: "approval refused: it can only be decided from the conversation that asked for it"}),
+		frameMsg(ws.Frame{Type: ws.TypeError, Message: "decide failed"}),
+		sendErrMsg{err: errors.New("timeout")},
+	} {
+		m, _ := start(t)
+		m, _ = enter(typeText(m, "hi"))
+		m, _ = m.Update(msg)
+		if !strings.Contains(m.View(), "…  (") {
+			t.Fatalf("indicator hidden by %+v:\n%s", msg, m.View())
+		}
 	}
 }

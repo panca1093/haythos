@@ -41,7 +41,10 @@ type frameMsg ws.Frame
 
 type connErrMsg struct{ err error }
 
-type sendErrMsg struct{ err error }
+type sendErrMsg struct {
+	err   error
+	input bool
+}
 
 type tickMsg struct{}
 
@@ -121,7 +124,7 @@ func (m *model) handshake() tea.Cmd {
 		}
 		for _, f := range frames {
 			if err := m.send(f); err != nil {
-				return sendErrMsg{err}
+				return sendErrMsg{err: err}
 			}
 		}
 		return nil
@@ -147,7 +150,8 @@ func (m *model) send(f any) error {
 func (m *model) sendCmd(f any) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.send(f); err != nil {
-			return sendErrMsg{err}
+			_, input := f.(ws.Input)
+			return sendErrMsg{err: err, input: input}
 		}
 		return nil
 	}
@@ -179,7 +183,9 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inflight = 0
 		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
-		m.answered()
+		if msg.input {
+			m.answered()
+		}
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
 		return m.onKey(msg)
@@ -216,7 +222,9 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	case ws.TypeNotice:
 		return m.onNotice(f)
 	case ws.TypeError:
-		m.answered()
+		if inputError(f.Message) {
+			m.answered()
+		}
 		return m.print(errStyle.Render(f.Message))
 	}
 	return nil
@@ -332,6 +340,11 @@ func (m *model) work() tea.Cmd {
 	}
 	m.inflight++
 	return m.startTicker()
+}
+
+// inputError reports whether an error frame answers a sent message; the strings mirror adapters/channel/ws/server.go.
+func inputError(msg string) bool {
+	return strings.HasPrefix(msg, "input ") || msg == "empty input" || msg == "subscribe to a conversation first"
 }
 
 func (m *model) answered() { m.inflight = max(0, m.inflight-1) }
