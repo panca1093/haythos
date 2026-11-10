@@ -26,6 +26,11 @@ func (w *workdirTools) Call(ctx context.Context, call task.ToolCall) (task.ToolR
 
 func workdirApp(t *testing.T, n *testfakes.Notifier, tools *workdirTools, turns ...task.AssistantTurn) *app.App {
 	t.Helper()
+	return workdirAppWindows(t, nil, n, tools, turns...)
+}
+
+func workdirAppWindows(t *testing.T, windows map[string]int, n *testfakes.Notifier, tools *workdirTools, turns ...task.AssistantTurn) *app.App {
+	t.Helper()
 	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -35,6 +40,7 @@ func workdirApp(t *testing.T, n *testfakes.Notifier, tools *workdirTools, turns 
 		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
 		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"fs.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
 		Tools:      tools,
+		Windows:    windows,
 		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{"fs.read": policy.TierRead}},
 		Clock:  func() time.Time { return time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC) },
@@ -106,15 +112,26 @@ func TestConversationViewCountsMessagesAndToolCalls(t *testing.T) {
 	}
 }
 
-func TestFinalMessageCarriesTokensAndBudget(t *testing.T) {
-	n := &testfakes.Notifier{}
-	tools := &workdirTools{Tools: testfakes.NewTools()}
-	a := workdirApp(t, n, tools, task.AssistantTurn{Text: "hi", Usage: task.Usage{InputTokens: 1200, OutputTokens: 34, CacheReadTokens: 900}})
-	if _, err := a.HandleInput(context.Background(), app.Input{Text: "hello", ReplyTo: "tui:abc"}); err != nil {
-		t.Fatal(err)
-	}
-	got := n.Of(app.NoticeMessage)
-	if len(got) != 1 || got[0].Tokens != 1234 || got[0].Budget != 50000 || got[0].Cached != 900 {
-		t.Fatalf("message notice = %+v, want tokens 1234 of budget 50000 with 900 cached", got)
+func TestFinalMessageCarriesContextWindowAndCache(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		windows    map[string]int
+		wantWindow int
+	}{
+		{"default window", nil, 200000},
+		{"configured window", map[string]int{"default": 1000000}, 1000000},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			n := &testfakes.Notifier{}
+			tools := &workdirTools{Tools: testfakes.NewTools()}
+			a := workdirAppWindows(t, tc.windows, n, tools, task.AssistantTurn{Text: "hi", Usage: task.Usage{InputTokens: 1200, OutputTokens: 34, CacheReadTokens: 900}})
+			if _, err := a.HandleInput(context.Background(), app.Input{Text: "hello", ReplyTo: "tui:abc"}); err != nil {
+				t.Fatal(err)
+			}
+			got := n.Of(app.NoticeMessage)
+			if len(got) != 1 || got[0].Context != 1234 || got[0].Window != tc.wantWindow || got[0].Cached != 900 {
+				t.Fatalf("message notice = %+v, want context 1234 of window %d with 900 cached", got, tc.wantWindow)
+			}
+		})
 	}
 }

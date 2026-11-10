@@ -507,7 +507,7 @@ func (a *App) finish(ctx context.Context, id, text string) error {
 	}
 	n := Notice{Kind: NoticeMessage, Text: text}
 	if s, err := a.Snapshot(ctx, id); err == nil {
-		n.Tokens, n.Budget, n.Cached = s.Tokens, s.Created.Budget.Tokens, s.Cached
+		n.Context, n.Window, n.Cached = s.Context, a.window(s.Created.Model), s.Cached
 	}
 	return a.notify(ctx, id, "final", n)
 }
