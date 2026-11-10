@@ -175,7 +175,12 @@ func TestDecideRefusesApprovalOfAnotherTask(t *testing.T) {
 	serveCtx, stopServe := context.WithCancel(ctx)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(serveCtx) }()
-	defer func() { stopServe(); <-errc }()
+	defer func() {
+		stopServe()
+		if err := <-errc; err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	}()
 	waitFor(t, func() bool { _, err := os.Stat(p.Socket); return err == nil })
 
 	clientA := dialKernel(t, ctx, p.Socket, "tui:a")
@@ -270,7 +275,12 @@ func TestStopSignalsThePIDFromWelcome(t *testing.T) {
 	serveCtx, stopServe := context.WithCancel(ctx)
 	errc := make(chan error, 1)
 	go func() { errc <- srv.Serve(serveCtx) }()
-	defer func() { stopServe(); <-errc }()
+	defer func() {
+		stopServe()
+		if err := <-errc; err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	}()
 	waitFor(t, func() bool { _, err := os.Stat(p.Socket); return err == nil })
 	if err := os.MkdirAll(p.Run, 0o700); err != nil {
 		t.Fatalf("mkdir: %v", err)
