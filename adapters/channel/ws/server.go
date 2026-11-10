@@ -160,6 +160,7 @@ func (s *Server) bind(ctx context.Context, path string) (net.Listener, error) {
 	if err != nil {
 		return nil, fmt.Errorf("listen on %s: %w", path, err)
 	}
+	// The 0700 directory is what protects the window between bind and this chmod.
 	if err := os.Chmod(path, 0o600); err != nil {
 		_ = ln.Close()
 		return nil, fmt.Errorf("restrict socket: %w", err)
