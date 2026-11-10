@@ -48,6 +48,8 @@ type Request struct {
 	BrainSource string
 	Trusted     []string
 	Approval    *policy.Approval
+	// OnExecute runs once, right before the tool is invoked, after every check has passed.
+	OnExecute func()
 }
 
 type Pending struct {
@@ -143,6 +145,9 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	}
 
 	if !spec.Write {
+		if req.OnExecute != nil {
+			req.OnExecute()
+		}
 		res, err := g.invoke(ctx, call, spec)
 		return Outcome{Result: res}, err
 	}
@@ -166,6 +171,9 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 		return Outcome{}, err
 	}
 
+	if req.OnExecute != nil {
+		req.OnExecute()
+	}
 	res, execErr := g.invoke(ctx, call, spec)
 	if err := g.d.Hook("gateway.after_execute"); err != nil {
 		return Outcome{}, err

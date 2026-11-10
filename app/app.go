@@ -386,11 +386,11 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
-	a.publishToolActivity(ctx, id, s.Created.ReplyTo, call)
 	tctx := context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource)
 	out, err := a.gw.Execute(WithWorkdir(tctx, s.Created.Workdir), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
+		OnExecute: func() { a.publishToolActivity(ctx, id, s.Created.ReplyTo, call) },
 	})
 	switch {
 	case errors.Is(err, policy.ErrApprovalVoid):
@@ -690,8 +690,8 @@ func toolTarget(specs []task.ToolSpec, call task.ToolCall) string {
 		}
 	}
 	v, _ := args[key].(string)
-	if len(v) > 80 {
-		v = v[:80] + "…"
+	if r := []rune(v); len(r) > 80 {
+		v = string(r[:80]) + "…"
 	}
 	return v
 }
