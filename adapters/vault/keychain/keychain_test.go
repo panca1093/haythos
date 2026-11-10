@@ -41,7 +41,7 @@ func TestArgvPerOS(t *testing.T) {
 		missing int
 	}{
 		{"darwin", []string{"security", "find-generic-password", "-s", "haythos", "-a", "vault-key", "-w"},
-			call{Argv: []string{"security", "add-generic-password", "-U", "-s", "haythos", "-a", "vault-key", "-w", value}}, 44},
+			call{Stdin: "add-generic-password -U -s haythos -a vault-key -w \"" + value + "\"\n", Argv: []string{"security", "-i"}}, 44},
 		{"linux", []string{"secret-tool", "lookup", "service", "haythos", "account", "vault-key"},
 			call{Stdin: value, Argv: []string{"secret-tool", "store", "--label=haythos", "service", "haythos", "account", "vault-key"}}, 1},
 	}

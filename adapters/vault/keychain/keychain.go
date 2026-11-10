@@ -55,8 +55,8 @@ func (k *Keychain) Set(ctx context.Context, value string) error {
 	var err error
 	switch k.goos {
 	case "darwin":
-		// TODO: uncertain — key briefly visible in the process list during service install, verify acceptable
-		_, err = k.run(ctx, "", "security", "add-generic-password", "-U", "-s", service, "-a", account, "-w", value)
+		quoted := `"` + strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(value) + `"`
+		_, err = k.run(ctx, "add-generic-password -U -s "+service+" -a "+account+" -w "+quoted+"\n", "security", "-i")
 		if err != nil {
 			return failed("security", err)
 		}
