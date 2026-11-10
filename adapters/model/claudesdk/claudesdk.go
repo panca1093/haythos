@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -222,7 +223,7 @@ func typeMatches(t string, v any) bool {
 func systemPrompt(history []task.Message) string {
 	var parts []string
 	for _, m := range history {
-		if m.Role == task.RoleSystem {
+		if m.Role == task.RoleSystem && !m.Context {
 			parts = append(parts, m.Text)
 		}
 	}
@@ -241,10 +242,17 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	if len(tools) == 0 {
 		b.WriteString("(none)\n")
 	}
-	for _, t := range tools {
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		fmt.Fprintf(&b, "- %s: %s\n  input schema: %s\n", t.Name, t.Description, t.InputSchema)
 	}
 	b.WriteString("\nConversation:\n")
+	for _, m := range history {
+		if m.Role == task.RoleSystem && m.Context {
+			fmt.Fprintf(&b, "[earlier conversation summary] %s\n", m.Text)
+		}
+	}
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleUser:

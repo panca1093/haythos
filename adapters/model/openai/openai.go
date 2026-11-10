@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/panca/haythos/core/task"
@@ -82,10 +83,17 @@ func str(s string) *string { return &s }
 
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	req := request{Model: a.c.Model}
+	var summaries []message
 	for _, m := range history {
 		switch m.Role {
-		case task.RoleSystem, task.RoleUser:
-			req.Messages = append(req.Messages, message{Role: string(m.Role), Content: str(m.Text)})
+		case task.RoleSystem:
+			if m.Context {
+				summaries = append(summaries, message{Role: "user", Content: str("[earlier conversation summary] " + m.Text)})
+			} else {
+				req.Messages = append(req.Messages, message{Role: "system", Content: str(m.Text)})
+			}
+		case task.RoleUser:
+			req.Messages = append(req.Messages, message{Role: "user", Content: str(m.Text)})
 		case task.RoleAssistant:
 			am := message{Role: "assistant"}
 			if m.Text != "" {
@@ -105,7 +113,16 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 			}
 		}
 	}
-	for _, t := range tools {
+	if len(summaries) > 0 {
+		n := 0
+		for n < len(req.Messages) && req.Messages[n].Role == "system" {
+			n++
+		}
+		req.Messages = slices.Insert(req.Messages, n, summaries...)
+	}
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		req.Tools = append(req.Tools, toolDef{Type: "function", Function: fn{Name: wireName(t.Name), Description: t.Description, Parameters: t.InputSchema}})
 	}
 

@@ -4,6 +4,8 @@ package tools
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
@@ -19,6 +21,7 @@ func (m Mux) List(scope []string) []task.ToolSpec {
 	for _, t := range m {
 		out = append(out, t.List(scope)...)
 	}
+	slices.SortStableFunc(out, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	return out
 }
 
