@@ -52,11 +52,11 @@ type model struct {
 	cursor  int
 	width   int
 	// modelName, tokens and budget feed the status line.
-	modelName      string
-	tokens, budget int
-	printed        []string
-	carded         bool
-	summary        Summary
+	modelName              string
+	tokens, budget, cached int
+	printed                []string
+	carded                 bool
+	summary                Summary
 }
 
 var (
@@ -206,7 +206,7 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 	case "message.done":
 		m.state = "done"
 		if f.Budget > 0 {
-			m.tokens, m.budget = f.Tokens, f.Budget
+			m.tokens, m.budget, m.cached = f.Tokens, f.Budget, f.Cached
 		}
 		return m.print(m.alfredLine(f.Text))
 	case "task.state":
@@ -448,6 +448,9 @@ func (m *model) status() string {
 		ctx = fmt.Sprintf("ctx %s/%s %s", kilo(m.tokens), kilo(m.budget), bar(m.tokens, m.budget, 10))
 	}
 	parts = append(parts, ctx)
+	if m.cached > 0 {
+		parts = append(parts, "cache "+kilo(m.cached))
+	}
 	return dimStyle.Render("  ") + strings.Join(parts, dimStyle.Render(" · "))
 }
 

@@ -155,6 +155,7 @@ type Frame struct {
 	Approval *Approval `json:"approval,omitempty"`
 	Tokens   int       `json:"tokens,omitempty"`
 	Budget   int       `json:"budget,omitempty"`
+	Cached   int       `json:"cached,omitempty"`
 
 	Items []Session `json:"items,omitempty"`
 
@@ -180,7 +181,7 @@ func historyFrame(conv string, v app.ConversationView) Frame {
 }
 
 func noticeFrame(n app.Notice) Frame {
-	f := Frame{Type: TypeNotice, Kind: string(n.Kind), TaskID: n.TaskID, Text: n.Text, State: string(n.State), Reason: n.Reason, Tokens: n.Tokens, Budget: n.Budget}
+	f := Frame{Type: TypeNotice, Kind: string(n.Kind), TaskID: n.TaskID, Text: n.Text, State: string(n.State), Reason: n.Reason, Tokens: n.Tokens, Budget: n.Budget, Cached: n.Cached}
 	if n.Approval != nil {
 		a := approvalOf(*n.Approval)
 		f.Approval = &a

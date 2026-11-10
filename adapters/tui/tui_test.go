@@ -260,9 +260,9 @@ func TestStatusShowsModelAndContextUse(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
 	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, Model: "opus", DefaultModel: "claude-sub"})
-	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Tokens: 12400, Budget: 50000})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Tokens: 12400, Budget: 50000, Cached: 11000})
 	view := m.View()
-	for _, want := range []string{"opus", "ctx 12.4k/50k", "▰▰▱▱▱▱▱▱▱▱"} {
+	for _, want := range []string{"opus", "ctx 12.4k/50k", "▰▰▱▱▱▱▱▱▱▱", "cache 11k"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("status lacks %q:\n%s", want, view)
 		}

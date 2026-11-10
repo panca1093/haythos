@@ -109,12 +109,12 @@ func TestConversationViewCountsMessagesAndToolCalls(t *testing.T) {
 func TestFinalMessageCarriesTokensAndBudget(t *testing.T) {
 	n := &testfakes.Notifier{}
 	tools := &workdirTools{Tools: testfakes.NewTools()}
-	a := workdirApp(t, n, tools, task.AssistantTurn{Text: "hi", Usage: task.Usage{InputTokens: 1200, OutputTokens: 34}})
+	a := workdirApp(t, n, tools, task.AssistantTurn{Text: "hi", Usage: task.Usage{InputTokens: 1200, OutputTokens: 34, CacheReadTokens: 900}})
 	if _, err := a.HandleInput(context.Background(), app.Input{Text: "hello", ReplyTo: "tui:abc"}); err != nil {
 		t.Fatal(err)
 	}
 	got := n.Of(app.NoticeMessage)
-	if len(got) != 1 || got[0].Tokens != 1234 || got[0].Budget != 50000 {
-		t.Fatalf("message notice = %+v, want tokens 1234 of budget 50000", got)
+	if len(got) != 1 || got[0].Tokens != 1234 || got[0].Budget != 50000 || got[0].Cached != 900 {
+		t.Fatalf("message notice = %+v, want tokens 1234 of budget 50000 with 900 cached", got)
 	}
 }

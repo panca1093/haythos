@@ -79,9 +79,11 @@ type Message struct {
 	Context bool `json:"context,omitempty"`
 }
 
+// Usage is one model request; InputTokens is the whole prompt, cached parts included.
 type Usage struct {
-	InputTokens  int `json:"input_tokens"`
-	OutputTokens int `json:"output_tokens"`
+	InputTokens     int `json:"input_tokens"`
+	OutputTokens    int `json:"output_tokens"`
+	CacheReadTokens int `json:"cache_read_tokens,omitempty"`
 }
 
 type AssistantTurn struct {
@@ -147,6 +149,8 @@ type Snapshot struct {
 	Tainted bool
 	Steps   int
 	Tokens  int
+	// Cached is the last step's cache reads.
+	Cached int
 }
 
 type LedgerState string
@@ -219,6 +223,7 @@ func Replay(events []Event) (Snapshot, error) {
 				return Snapshot{}, fmt.Errorf("decode usage event seq %d: %w", e.Seq, err)
 			}
 			s.Tokens += u.InputTokens + u.OutputTokens
+			s.Cached = u.CacheReadTokens
 		}
 	}
 	return s, nil

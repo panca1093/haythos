@@ -104,7 +104,7 @@ func (c *CLI) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 	if len(res.StructuredOutput) > 0 && string(res.StructuredOutput) != "null" {
 		text = string(res.StructuredOutput)
 	}
-	return StepResponse{Text: text, Usage: task.Usage{InputTokens: res.Usage.InputTokens + res.Usage.CacheCreation + res.Usage.CacheRead, OutputTokens: res.Usage.OutputTokens}}, nil
+	return StepResponse{Text: text, Usage: task.Usage{InputTokens: res.Usage.InputTokens + res.Usage.CacheCreation + res.Usage.CacheRead, OutputTokens: res.Usage.OutputTokens, CacheReadTokens: res.Usage.CacheRead}}, nil
 }
 
 // Models asks the CLI for its live model list through the stream-json initialize handshake; no model turn is sent.

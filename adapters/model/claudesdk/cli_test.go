@@ -150,8 +150,8 @@ func TestCLIStepCountsCachedInput(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Usage.InputTokens != 2+1458+9000 || resp.Usage.OutputTokens != 53 {
-		t.Errorf("usage = %+v, want cache creation and cache reads counted as input", resp.Usage)
+	if resp.Usage.InputTokens != 2+1458+9000 || resp.Usage.OutputTokens != 53 || resp.Usage.CacheReadTokens != 9000 {
+		t.Errorf("usage = %+v, want cache creation and cache reads counted as input, cache reads also kept apart", resp.Usage)
 	}
 }
 
