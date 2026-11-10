@@ -150,6 +150,61 @@ func TestKernelOverWS(t *testing.T) {
 	}
 }
 
+func TestDecideRefusesApprovalOfAnotherTask(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	p := shortHome(t)
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer func() { _ = st.Close() }()
+	writeA := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "note.add", Args: json.RawMessage(`{"id":"n1"}`)}}}
+	writeB := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c2", Name: "note.add", Args: json.RawMessage(`{"id":"n2"}`)}}}
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	route := &routeNotifier{other: &testfakes.Notifier{}}
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": testfakes.NewModel(writeA, writeB, task.AssistantTurn{Text: "noted"})},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:      tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
+		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
+		ApprovalTTL: time.Hour,
+	})
+	srv := ws.New(ws.Config{SocketPath: p.Socket, Version: "v-test", StartedAt: time.Now()}, a)
+	route.ws = srv
+	serveCtx, stopServe := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(serveCtx) }()
+	defer func() { stopServe(); <-errc }()
+	waitFor(t, func() bool { _, err := os.Stat(p.Socket); return err == nil })
+
+	clientA := dialKernel(t, ctx, p.Socket, "tui:a")
+	nextOf(t, ctx, clientA, ws.TypeHistory)
+	clientB := dialKernel(t, ctx, p.Socket, "tui:b")
+	nextOf(t, ctx, clientB, ws.TypeHistory)
+	if err := clientA.Send(ctx, ws.Input{Conv: "tui:a", Text: "add note n1"}); err != nil {
+		t.Fatalf("input a: %v", err)
+	}
+	askA := nextOf(t, ctx, clientA, ws.TypeNotice)
+	if err := clientB.Send(ctx, ws.Input{Conv: "tui:b", Text: "add note n1"}); err != nil {
+		t.Fatalf("input b: %v", err)
+	}
+	askB := nextOf(t, ctx, clientB, ws.TypeNotice)
+	if askA.TaskID == askB.TaskID || askA.Approval.ID == askB.Approval.ID {
+		t.Fatalf("setup: both conversations share a task or approval id")
+	}
+
+	if err := clientA.Send(ctx, ws.Decide{TaskID: askA.TaskID, ApprovalID: askB.Approval.ID, Approve: true}); err != nil {
+		t.Fatalf("decide: %v", err)
+	}
+	if f := nextOf(t, ctx, clientA, ws.TypeError); f.Message == "" {
+		t.Fatalf("error frame without message")
+	}
+	if n := tools.Count("note.add"); n != 0 {
+		t.Fatalf("tool ran %d times after an approval id from another task", n)
+	}
+}
+
 func TestStatusNotRunning(t *testing.T) {
 	t.Parallel()
 	var out bytes.Buffer
