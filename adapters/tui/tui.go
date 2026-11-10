@@ -358,6 +358,9 @@ func wordEnd(in []rune, c int) int {
 	return c
 }
 
+// Clean strips terminal control characters from text that is printed as-is.
+func Clean(s string) string { return clean(s) }
+
 func clean(s string) string {
 	return strings.Map(func(r rune) rune {
 		if r == '\n' || r == '\t' || (r >= 0x20 && r < 0x7f) || r > 0x9f {

@@ -93,3 +93,12 @@ func TestDisplayVersionHidesBuildDetails(t *testing.T) {
 		}
 	}
 }
+
+func TestPrintSessionsStripsControlCharacters(t *testing.T) {
+	t.Parallel()
+	var out bytes.Buffer
+	printSessions(&out, []ws.Session{{Conv: "tui:abc", FirstUser: "hi \x1b]52;c;cGF3bmVk\x07there", LastAt: time.Unix(0, 0)}}, time.UTC)
+	if strings.ContainsRune(out.String(), 0x1b) || strings.ContainsRune(out.String(), 0x07) {
+		t.Fatalf("session list kept control characters: %q", out.String())
+	}
+}

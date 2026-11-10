@@ -167,13 +167,13 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	if g.d.Paused() {
 		return denied(call, "paused: writes are stopped"), nil
 	}
+	if req.OnExecute != nil {
+		req.OnExecute()
+	}
 	if err := g.setLedger(ctx, &entry, task.LedgerDispatching, ""); err != nil {
 		return Outcome{}, err
 	}
 
-	if req.OnExecute != nil {
-		req.OnExecute()
-	}
 	res, execErr := g.invoke(ctx, call, spec)
 	if err := g.d.Hook("gateway.after_execute"); err != nil {
 		return Outcome{}, err
