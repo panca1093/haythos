@@ -149,8 +149,9 @@ type Snapshot struct {
 	Tainted bool
 	Steps   int
 	Tokens  int
-	// Cached is the last step's cache reads.
-	Cached int
+	// Context is the last step's prompt plus output; Cached is that step's cache reads.
+	Context int
+	Cached  int
 }
 
 type LedgerState string
@@ -223,7 +224,7 @@ func Replay(events []Event) (Snapshot, error) {
 				return Snapshot{}, fmt.Errorf("decode usage event seq %d: %w", e.Seq, err)
 			}
 			s.Tokens += u.InputTokens + u.OutputTokens
-			s.Cached = u.CacheReadTokens
+			s.Context, s.Cached = u.InputTokens+u.OutputTokens, u.CacheReadTokens
 		}
 	}
 	return s, nil

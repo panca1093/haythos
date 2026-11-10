@@ -87,7 +87,7 @@ func TestReplaySumsTokensAndKeepsLastCacheReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Tokens != 116 || s.Cached != 0 {
+	if s.Tokens != 116 || s.Cached != 0 || s.Context != 21 {
 		t.Errorf("tokens = %d cached = %d, want the sum of all steps (116) and the last step's cache reads (0)", s.Tokens, s.Cached)
 	}
 }
