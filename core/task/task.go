@@ -77,7 +77,11 @@ type Message struct {
 	Results []ToolResult `json:"results,omitempty"`
 	// Context marks replayed conversation memory: not a trusted instruction and not a step of this task.
 	Context bool `json:"context,omitempty"`
+	// Kind is KindSummary only on the compaction summary.
+	Kind string `json:"kind,omitempty"`
 }
+
+const KindSummary = "summary"
 
 // Usage is one model request; InputTokens is the whole prompt, cached parts included.
 type Usage struct {
@@ -152,6 +156,8 @@ type Snapshot struct {
 	// Context is the last step's prompt plus output; Cached is that step's cache reads.
 	Context int
 	Cached  int
+	// FirstInput is the first step's prompt: the conversation as replayed, before in-task tool traffic.
+	FirstInput int
 }
 
 type LedgerState string
@@ -222,6 +228,9 @@ func Replay(events []Event) (Snapshot, error) {
 			var u Usage
 			if err := json.Unmarshal(e.Payload, &u); err != nil {
 				return Snapshot{}, fmt.Errorf("decode usage event seq %d: %w", e.Seq, err)
+			}
+			if s.FirstInput == 0 {
+				s.FirstInput = u.InputTokens
 			}
 			s.Tokens += u.InputTokens + u.OutputTokens
 			s.Context, s.Cached = u.InputTokens+u.OutputTokens, u.CacheReadTokens
