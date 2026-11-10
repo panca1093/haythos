@@ -45,9 +45,12 @@ type cliResult struct {
 	Subtype          string          `json:"subtype"`
 	Result           string          `json:"result"`
 	StructuredOutput json.RawMessage `json:"structured_output"`
-	Usage            struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+	// Cached prompt tokens are reported apart from input_tokens; they are still context the model read.
+	Usage struct {
+		InputTokens   int `json:"input_tokens"`
+		CacheCreation int `json:"cache_creation_input_tokens"`
+		CacheRead     int `json:"cache_read_input_tokens"`
+		OutputTokens  int `json:"output_tokens"`
 	} `json:"usage"`
 }
 
@@ -101,7 +104,7 @@ func (c *CLI) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 	if len(res.StructuredOutput) > 0 && string(res.StructuredOutput) != "null" {
 		text = string(res.StructuredOutput)
 	}
-	return StepResponse{Text: text, Usage: task.Usage{InputTokens: res.Usage.InputTokens, OutputTokens: res.Usage.OutputTokens}}, nil
+	return StepResponse{Text: text, Usage: task.Usage{InputTokens: res.Usage.InputTokens + res.Usage.CacheCreation + res.Usage.CacheRead, OutputTokens: res.Usage.OutputTokens}}, nil
 }
 
 // Models asks the CLI for its live model list through the stream-json initialize handshake; no model turn is sent.

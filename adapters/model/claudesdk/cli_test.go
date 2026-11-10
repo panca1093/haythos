@@ -42,6 +42,8 @@ func TestCLIHelper(t *testing.T) {
 	switch mode {
 	case "structured":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"text":"hi"},"usage":{"input_tokens":3,"output_tokens":2}}`)
+	case "cached":
+		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":2,"cache_creation_input_tokens":1458,"cache_read_input_tokens":9000,"output_tokens":53}}`)
 	case "plain":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"plain","usage":{"input_tokens":1,"output_tokens":1}}`)
 	case "error":
@@ -139,6 +141,17 @@ func TestCLIStepParsesStructuredOutput(t *testing.T) {
 	}
 	if resp.Text != `{"text":"hi"}` || resp.Usage.InputTokens != 3 || resp.Usage.OutputTokens != 2 {
 		t.Errorf("resp = %+v", resp)
+	}
+}
+
+func TestCLIStepCountsCachedInput(t *testing.T) {
+	c, _ := fakeCLI(t, "cached")
+	resp, err := c.Step(context.Background(), StepRequest{Tools: []string{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Usage.InputTokens != 2+1458+9000 || resp.Usage.OutputTokens != 53 {
+		t.Errorf("usage = %+v, want cache creation and cache reads counted as input", resp.Usage)
 	}
 }
 
