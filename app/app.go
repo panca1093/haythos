@@ -90,6 +90,11 @@ func originFrom(ctx context.Context) string {
 
 type workdirKey struct{}
 
+// WithWorkdir sets the chat folder tools see; the kernel sets it from the task, tests set it directly.
+func WithWorkdir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, workdirKey{}, dir)
+}
+
 // WorkdirFrom is the folder of the chat whose tool call is running; empty when the task has none.
 func WorkdirFrom(ctx context.Context) string {
 	dir, _ := ctx.Value(workdirKey{}).(string)
@@ -383,7 +388,7 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	}
 	a.publishToolActivity(ctx, id, s.Created.ReplyTo, call)
 	tctx := context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource)
-	out, err := a.gw.Execute(context.WithValue(tctx, workdirKey{}, s.Created.Workdir), gateway.Request{
+	out, err := a.gw.Execute(WithWorkdir(tctx, s.Created.Workdir), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
 	})
