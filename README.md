@@ -7,7 +7,7 @@ Personal agentic OS. Go kernel, persona "Alfred". Architecture and rules: `CLAUD
 Requirements: Go (version in `go.mod`), the official `claude` CLI for the Claude subscription model, `golangci-lint` v2.
 
 ```bash
-export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it the vault cannot be read
+export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it the vault cannot be read (a service reads it from the OS keychain, see below)
 ```
 
 ### `haythos setup` (Claude subscription, recommended)
@@ -57,11 +57,54 @@ Headless server (VPS): the login callback goes to `127.0.0.1` on the machine wit
 ### Start
 
 ```bash
-go run ./cmd/haythos              # serve: Discord + scheduler
+go run ./cmd/haythos              # serve: Discord + scheduler + the client socket
 go run ./cmd/haythos run-job vm-health   # one-shot manual trigger, prints the report to stdout
 ```
 
 Only one `haythos` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
+
+### Terminal chat (`haythos chat`)
+
+One binary, `haythos`. The kernel (`haythos serve`) keeps Discord and the scheduler running and opens one WebSocket on a unix socket, `<home>/run/haythos.sock`, where `<home>` is `$HAYTHOS_HOME` or `~/.haythos` (directory `0700`, socket `0600`). Every terminal client talks to the kernel through that one socket; there is no TCP listener.
+
+```bash
+go install ./cmd/haythos            # chat starts the kernel from this binary, so build it (go run uses a temp file)
+haythos chat                        # new conversation tui:<12 hex>; starts the kernel in the background if none answers
+haythos chat --resume               # continue the most recent terminal conversation
+haythos chat --session 6836b54688f8 # continue a given one (ids from `haythos sessions`)
+haythos sessions                    # <id>  <last active>  <first line>, newest first
+haythos status                      # running pid <n> since <time> version <v> channels <list>, or not running
+haythos stop                        # SIGTERM to the kernel, waits up to 10 s
+```
+
+Run these from the directory that holds `config/` (or pass `-config`, `-policy`, `-jobs` before the subcommand); a kernel started by `chat` gets the same files as absolute paths and logs to `<home>/logs/haythos.log`.
+
+- Enter sends; `/quit` or Ctrl+C closes the window only. The kernel keeps running and a running task keeps going.
+- An approval for this conversation shows inline with tool, target and preview; press `y` or `n`. Approvals stay where they were asked: a Discord approval never shows in the terminal and the reverse, and a terminal client can only act on its own `tui:` conversation.
+- Close the window while Alfred waits for your approval and the task stays waiting; `haythos chat --resume` shows the approval again.
+- After rebuilding the binary the old kernel keeps running; the chat says so in one line. Run `haythos stop` and start `chat` again.
+- PgUp/PgDn scroll the history.
+
+### Run the kernel as a service
+
+```bash
+haythos service install     # macOS: launchd agent; Linux: systemd user unit (haythos.service)
+haythos service uninstall
+```
+
+The service starts the kernel at login and restarts it when it dies (on macOS also after `haythos stop`; use `service uninstall` to stop it for good). It runs `haythos <same flags> serve` from the directory you install from, logging to `<home>/logs/haythos.log`. A service gets no environment, so the vault key comes from the OS keychain (macOS keychain, or Secret Service via `secret-tool` on Linux; service `haythos`, account `vault-key`). `install` offers to copy `HAYTHOS_VAULT_KEY` there once; the key is never written into the plist or unit file. When `HAYTHOS_VAULT_KEY` is set it always wins over the keychain. `install` stops a kernel you started by hand first, so the service owns the socket. The service PATH is minimal: if `claude` lives in Homebrew, set `claude_cli.command` to its absolute path.
+
+### Chat with a kernel on another machine
+
+There is no network listener. Forward the socket over SSH and point the client at it with `HAYTHOS_HOME`:
+
+```bash
+mkdir -p ~/.haythos-vps/run && chmod 700 ~/.haythos-vps/run
+ssh -N -o StreamLocalBindUnlink=yes -L $HOME/.haythos-vps/run/haythos.sock:/home/<user>/.haythos/run/haythos.sock vps
+HAYTHOS_HOME=~/.haythos-vps haythos chat    # in another terminal, while the tunnel is up
+```
+
+Start the tunnel first: with nothing answering on that socket, `chat` would start a local kernel instead.
 
 Discord: only `discord.owner_id` is obeyed, everywhere; everyone else is ignored. Alfred answers like this:
 
@@ -134,11 +177,15 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 
 | Folder | What it is |
 | --- | --- |
-| `cmd/haythos/` | The `haythos` binary: CLI subcommands (`serve`, `run-job`, `auth`, `setup`) and wiring of everything below |
+| `cmd/haythos/` | The `haythos` binary: CLI subcommands (`serve`, `chat`, `sessions`, `status`, `stop`, `service`, `run-job`, `auth`, `setup`) and wiring of everything below |
 | `core/` | Pure rules with no I/O: task state machine, policy tiers, output contract |
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
 | `adapters/` | Real implementations of those interfaces: model providers, Discord, SQLite, tools, vault |
+| `adapters/channel/ws/` | The one WebSocket client API on the kernel's unix socket (server and client) |
+| `adapters/tui/` | The terminal chat screen (Bubble Tea) |
+| `adapters/service/` | launchd plist and systemd unit generation, `service install`/`uninstall` |
+| `adapters/vault/keychain/` | Reads and stores the vault key in the OS keychain |
 | `adapters/model/chatgpt/` | ChatGPT plan model: Sign in with ChatGPT (browser login, token refresh) and one step on the Responses API |
 | `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
 | `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
