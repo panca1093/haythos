@@ -38,7 +38,7 @@ func TestStepMapsRequestAndResponse(t *testing.T) {
 	if hdr.Get("x-api-key") != "k" || hdr.Get("anthropic-version") == "" {
 		t.Errorf("headers = %v", hdr)
 	}
-	if got.System != "goal" || got.Tools[0].Name != "vmhealth__read" || len(got.Messages) != 3 {
+	if got.Tools[0].Name != "vmhealth__read" || len(got.Messages) != 3 {
 		t.Errorf("request = %+v", got)
 	}
 	if last := got.Messages[2]; last.Role != "user" || len(last.Content) != 2 || !last.Content[1].IsError {

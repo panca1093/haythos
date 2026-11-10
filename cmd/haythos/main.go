@@ -234,6 +234,7 @@ func run(args []string) error {
 	a := app.New(app.Deps{
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: allTools, Events: store, Ledger: store, Brain: brain,
 		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,
+		Windows: windows(cfg), CompactAt: cfg.CompactAt,
 	})
 	jobtools.Register(tools, a)
 	switch cmd {
@@ -282,6 +283,14 @@ func run(args []string) error {
 		}
 	}
 	return fmt.Errorf("unknown command %q (serve, chat, sessions, status, stop, service, run-job, auth, setup)", cmd)
+}
+
+func windows(cfg config.Main) map[string]int {
+	out := map[string]int{}
+	for name, m := range cfg.Models {
+		out[name] = m.ContextWindow
+	}
+	return out
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.

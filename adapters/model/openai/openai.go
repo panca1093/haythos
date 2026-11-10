@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/panca/haythos/core/task"
@@ -69,8 +70,11 @@ type response struct {
 		Message message `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -84,8 +88,14 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	req := request{Model: a.c.Model}
 	for _, m := range history {
 		switch m.Role {
-		case task.RoleSystem, task.RoleUser:
-			req.Messages = append(req.Messages, message{Role: string(m.Role), Content: str(m.Text)})
+		case task.RoleSystem:
+			if m.Context {
+				req.Messages = append(req.Messages, message{Role: "user", Content: str(m.Text)})
+			} else {
+				req.Messages = append(req.Messages, message{Role: "system", Content: str(m.Text)})
+			}
+		case task.RoleUser:
+			req.Messages = append(req.Messages, message{Role: "user", Content: str(m.Text)})
 		case task.RoleAssistant:
 			am := message{Role: "assistant"}
 			if m.Text != "" {
@@ -105,7 +115,9 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 			}
 		}
 	}
-	for _, t := range tools {
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		req.Tools = append(req.Tools, toolDef{Type: "function", Function: fn{Name: wireName(t.Name), Description: t.Description, Parameters: t.InputSchema}})
 	}
 
@@ -139,7 +151,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		return task.AssistantTurn{}, fmt.Errorf("openai response has no choices")
 	}
 	msg := out.Choices[0].Message
-	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens}}
+	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens, CacheReadTokens: out.Usage.PromptTokensDetails.CachedTokens}}
 	if msg.Content != nil {
 		turn.Text = *msg.Content
 	}

@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 
@@ -108,8 +109,11 @@ type event struct {
 		Output []outputItem `json:"output"`
 		Error  *apiError    `json:"error"`
 		Usage  struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 		Incomplete struct {
 			Reason string `json:"reason"`
@@ -166,7 +170,11 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			system = append(system, m.Text)
+			if m.Context {
+				req.Input = append(req.Input, inputItem{Role: "user", Content: m.Text})
+			} else {
+				system = append(system, m.Text)
+			}
 		case task.RoleUser:
 			req.Input = append(req.Input, inputItem{Role: "user", Content: m.Text})
 		case task.RoleAssistant:
@@ -195,6 +203,8 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 		}
 	}
 	req.Instructions = strings.Join(system, "\n\n")
+	tools = slices.Clone(tools)
+	slices.SortFunc(tools, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
 	names := make(map[string]string, len(tools))
 	if len(tools) > 0 {
 		ns := tool{Type: "namespace", Name: namespace, Description: "Alfred kernel tools. Every call is checked by policy and may need the user's approval."}
@@ -240,7 +250,7 @@ func parseStream(body io.Reader, token string, names map[string]string) (task.As
 				items = e.Response.Output
 			}
 			turn, err := toTurn(items, names)
-			turn.Usage = task.Usage{InputTokens: e.Response.Usage.InputTokens, OutputTokens: e.Response.Usage.OutputTokens}
+			turn.Usage = task.Usage{InputTokens: e.Response.Usage.InputTokens, OutputTokens: e.Response.Usage.OutputTokens, CacheReadTokens: e.Response.Usage.InputTokensDetails.CachedTokens}
 			return turn, err
 		case "response.failed":
 			ae := apiError{Code: "unknown_error"}

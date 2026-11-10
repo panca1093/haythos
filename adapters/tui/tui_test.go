@@ -260,11 +260,28 @@ func TestStatusShowsModelAndContextUse(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
 	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, Model: "opus", DefaultModel: "claude-sub"})
-	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Tokens: 12400, Budget: 50000, Cached: 11000})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Context: 38000, Window: 1000000, Cached: 35000})
 	view := m.View()
-	for _, want := range []string{"opus", "ctx 12.4k/50k", "▰▰▱▱▱▱▱▱▱▱", "cache 11k"} {
+	for _, want := range []string{"opus", "ctx 38k/1M", "▰▱▱▱▱▱▱▱▱▱", "cache 35k"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("status lacks %q:\n%s", want, view)
+		}
+	}
+}
+
+func TestStatusShowsNoContextBeforeFirstAnswer(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	if view := m.View(); !strings.Contains(view, "ctx --") {
+		t.Fatalf("status lacks %q:\n%s", "ctx --", view)
+	}
+}
+
+func TestKilo(t *testing.T) {
+	t.Parallel()
+	for n, want := range map[int]string{999: "999", 1000: "1k", 12400: "12.4k", 200000: "200k", 1000000: "1M", 1500000: "1.5M"} {
+		if got := kilo(n); got != want {
+			t.Errorf("kilo(%d) = %q, want %q", n, got, want)
 		}
 	}
 }

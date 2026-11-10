@@ -333,6 +333,20 @@ func TestPublishOnlyToSubscribers(t *testing.T) {
 	}
 }
 
+func TestNoticeFrameCarriesContext(t *testing.T) {
+	t.Parallel()
+	r := startServer(t, newFakeHandler())
+	a := dialRaw(t, r.socket)
+	a.subscribe("tui:a")
+	n := app.Notice{Kind: app.NoticeMessage, TaskID: "t1", Text: "done", ReplyTo: "tui:a", Context: 38000, Window: 1000000, Cached: 35000}
+	if err := r.srv.Publish(context.Background(), n); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if f := a.expect(ws.TypeNotice); f.Context != 38000 || f.Window != 1000000 || f.Cached != 35000 {
+		t.Fatalf("notice = %+v, want context 38000 of window 1000000 with 35000 cached", f)
+	}
+}
+
 func TestStalledClientDoesNotBlockPublish(t *testing.T) {
 	t.Parallel()
 	r := startServer(t, newFakeHandler())

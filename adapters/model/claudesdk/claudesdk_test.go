@@ -155,3 +155,24 @@ func TestStepKeepsCacheReads(t *testing.T) {
 		t.Errorf("usage = %+v, want cache reads passed through", turn.Usage)
 	}
 }
+
+type retryTransport struct{ calls int }
+
+func (r *retryTransport) Step(_ context.Context, _ StepRequest) (StepResponse, error) {
+	r.calls++
+	if r.calls == 1 {
+		return StepResponse{Text: "not json", Usage: task.Usage{InputTokens: 900, OutputTokens: 4, CacheReadTokens: 800}}, nil
+	}
+	return StepResponse{Text: `{"text":"ok"}`, Usage: task.Usage{InputTokens: 950, OutputTokens: 5, CacheReadTokens: 900}}, nil
+}
+
+func TestStepRetryReportsLastPromptAndSumsOutput(t *testing.T) {
+	t.Parallel()
+	turn, err := New(&retryTransport{}).Step(context.Background(), []task.Message{{Role: task.RoleUser, Text: "hi"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (task.Usage{InputTokens: 950, OutputTokens: 9, CacheReadTokens: 900}); turn.Usage != want {
+		t.Errorf("usage = %+v, want %+v", turn.Usage, want)
+	}
+}

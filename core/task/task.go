@@ -149,8 +149,11 @@ type Snapshot struct {
 	Tainted bool
 	Steps   int
 	Tokens  int
-	// Cached is the last step's cache reads.
-	Cached int
+	// Context is the last step's prompt plus output; Cached is that step's cache reads.
+	Context int
+	Cached  int
+	// FirstInput is the first step's prompt: the conversation as replayed, before in-task tool traffic.
+	FirstInput int
 }
 
 type LedgerState string
@@ -222,8 +225,11 @@ func Replay(events []Event) (Snapshot, error) {
 			if err := json.Unmarshal(e.Payload, &u); err != nil {
 				return Snapshot{}, fmt.Errorf("decode usage event seq %d: %w", e.Seq, err)
 			}
+			if s.FirstInput == 0 {
+				s.FirstInput = u.InputTokens
+			}
 			s.Tokens += u.InputTokens + u.OutputTokens
-			s.Cached = u.CacheReadTokens
+			s.Context, s.Cached = u.InputTokens+u.OutputTokens, u.CacheReadTokens
 		}
 	}
 	return s, nil

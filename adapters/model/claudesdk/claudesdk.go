@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync"
 
@@ -94,9 +95,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		if err != nil {
 			return task.AssistantTurn{}, fmt.Errorf("sidecar step: %w", err)
 		}
-		usage.InputTokens += resp.Usage.InputTokens
+		usage.InputTokens, usage.CacheReadTokens = resp.Usage.InputTokens, resp.Usage.CacheReadTokens
 		usage.OutputTokens += resp.Usage.OutputTokens
-		usage.CacheReadTokens = resp.Usage.CacheReadTokens
 		turn, err := parseOutput(resp.Text, tools, len(history))
 		if err == nil {
 			turn.Usage = usage
@@ -222,7 +222,7 @@ func typeMatches(t string, v any) bool {
 func systemPrompt(history []task.Message) string {
 	var parts []string
 	for _, m := range history {
-		if m.Role == task.RoleSystem {
+		if m.Role == task.RoleSystem && !m.Context {
 			parts = append(parts, m.Text)
 		}
 	}
@@ -241,12 +241,18 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	if len(tools) == 0 {
 		b.WriteString("(none)\n")
 	}
-	for _, t := range tools {
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		fmt.Fprintf(&b, "- %s: %s\n  input schema: %s\n", t.Name, t.Description, t.InputSchema)
 	}
 	b.WriteString("\nConversation:\n")
 	for _, m := range history {
 		switch m.Role {
+		case task.RoleSystem:
+			if m.Context {
+				fmt.Fprintf(&b, "%s\n", m.Text)
+			}
 		case task.RoleUser:
 			fmt.Fprintf(&b, "[user] %s\n", m.Text)
 		case task.RoleAssistant:

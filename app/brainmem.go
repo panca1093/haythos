@@ -407,7 +407,7 @@ func (a *App) turnsAfter(ctx context.Context, replyTo, after string) ([]convTurn
 		}
 		turns = append(turns, t)
 	}
-	_, recent := splitWindow(turns, convWindowTokens)
+	_, recent := splitWindow(turns, extractWindowTokens)
 	return recent, nil
 }
 

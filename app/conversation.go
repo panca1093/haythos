@@ -12,18 +12,21 @@ import (
 )
 
 const (
-	evConvTurn         = task.EventType("conv.turn")
-	evConvSummary      = task.EventType("conv.summary")
-	convWindowTokens   = 7000
-	convDMLookback     = 24 * time.Hour
-	convSummaryRequest = "Summarize the conversation below for your own later reference. Keep facts, decisions, names and open questions; drop pleasantries. At most 200 words. Output only the summary."
+	evConvTurn          = task.EventType("conv.turn")
+	evConvSummary       = task.EventType("conv.summary")
+	extractWindowTokens = 7000
+	convDMLookback      = 24 * time.Hour
+	convTailShare       = 0.10
+	convSummaryFraming  = "Summary of the earlier conversation (reference only; if it conflicts with the latest user message, the latest message wins):\n"
+	convSummaryRequest  = "Summarize the conversation below for your own later reference. Use these sections: Goal; Constraints & preferences; Decisions; Done; Open questions & pending; Key facts (names, paths, numbers, links). Keep facts, drop pleasantries. If an earlier summary is given, update it with the new turns instead of rewriting from scratch. At most about 1,500 words. Output only the summary."
 )
 
 type convTurn struct {
-	Task   string    `json:"task"`
-	User   string    `json:"user"`
-	Answer string    `json:"answer"`
-	At     time.Time `json:"at"`
+	Task    string    `json:"task"`
+	User    string    `json:"user"`
+	Answer  string    `json:"answer"`
+	At      time.Time `json:"at"`
+	Context int       `json:"context,omitempty"`
 }
 
 type convSummary struct {
@@ -48,6 +51,45 @@ func splitWindow(turns []convTurn, budget int) (older, recent []convTurn) {
 	return turns[:i], turns[i:]
 }
 
+// splitTail is splitWindow that always keeps the newest turn.
+func splitTail(turns []convTurn, budget int) (older, recent []convTurn) {
+	older, recent = splitWindow(turns, budget)
+	if len(recent) == 0 && len(turns) > 0 {
+		return turns[:len(turns)-1], turns[len(turns)-1:]
+	}
+	return older, recent
+}
+
+func estimatePrompt(summary string, fresh []convTurn, incoming string) int {
+	est := (len(summary) + len(incoming)) / 4
+	for _, t := range fresh {
+		est += t.tokens()
+	}
+	if n := len(fresh); n > 0 && fresh[n-1].Context > 0 {
+		est = max(est, fresh[n-1].Context+len(incoming)/4)
+	}
+	return est
+}
+
+// fitTurn cuts the answer so the turn fits budget tokens; the user text is kept whole.
+func fitTurn(t convTurn, budget int) (convTurn, bool) {
+	const marker = "\n[truncated]"
+	if t.tokens() <= budget {
+		return t, false
+	}
+	keep := min(max(budget*4-len(t.User)-len(marker), 0), len(t.Answer))
+	t.Answer = strings.ToValidUTF8(t.Answer[:keep], "") + marker
+	return t, true
+}
+
+func (a *App) chatWindow() int {
+	model := a.d.DefaultJob.Model
+	if sel := a.d.ModelSelector; sel != nil && a.d.Windows[sel.Current()] > 0 {
+		model = sel.Current()
+	}
+	return a.window(model)
+}
+
 // recordTurn runs before the task turns Done so a crash cannot lose it; readers drop duplicates by task id.
 func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 	s, err := a.Snapshot(ctx, id)
@@ -65,6 +107,9 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 		}
 	}
 	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock()}
+	if s.FirstInput > 0 {
+		turn.Context = s.FirstInput + len(answer)/4
+	}
 	marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
 	if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
 		return fmt.Errorf("record brain turn marker: %w", err)
@@ -76,7 +121,7 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 }
 
 // conversation returns the earlier turns of replyTo as context messages: a summary of folded turns, then recent turns verbatim.
-func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task.Message, error) {
+func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incoming string) ([]task.Message, error) {
 	if replyTo == "" {
 		return nil, nil
 	}
@@ -123,21 +168,28 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task
 			fresh = append(fresh, t)
 		}
 	}
-	older, recent := splitWindow(fresh, convWindowTokens)
-	if len(older) > 0 {
-		text, err := a.summarize(ctx, summary.Text, older)
-		if err != nil {
-			slog.Warn("summarize conversation failed; dropping folded turns for this message", "conversation", replyTo, "err", err)
-		} else {
-			summary = convSummary{Text: text, Covers: append(summary.Covers, turnIDs(older)...)}
-			if _, err := a.d.Events.Append(ctx, stream, evConvSummary, summary); err != nil {
-				return nil, fmt.Errorf("record conversation summary: %w", err)
+	window := a.chatWindow()
+	recent := fresh
+	limit := a.d.CompactAt * float64(window)
+	if float64(estimatePrompt(summary.Text, fresh, incoming)) >= limit {
+		var older []convTurn
+		older, recent = splitTail(fresh, int(convTailShare*float64(window)))
+		if len(older) > 0 {
+			if summary, err = a.compact(ctx, stream, summary, older, replyTo); err != nil {
+				return nil, err
+			}
+		}
+		if len(recent) == 1 {
+			fit, cut := fitTurn(recent[0], int(limit)-(len(summary.Text)+len(incoming))/4)
+			if cut {
+				slog.Warn("newest conversation turn alone exceeds the compaction threshold; truncating its answer in the replay", "conversation", replyTo, "tokens", recent[0].tokens())
+				recent = []convTurn{fit}
 			}
 		}
 	}
 	var out []task.Message
 	if summary.Text != "" {
-		out = append(out, task.Message{Role: task.RoleSystem, Text: "Summary of the earlier conversation:\n" + summary.Text, Context: true})
+		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true})
 	}
 	for _, t := range recent {
 		out = append(out,
@@ -145,6 +197,19 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool) ([]task
 			task.Message{Role: task.RoleAssistant, Text: t.Answer, Context: true})
 	}
 	return out, nil
+}
+
+func (a *App) compact(ctx context.Context, stream string, summary convSummary, older []convTurn, replyTo string) (convSummary, error) {
+	text, err := a.summarize(ctx, summary.Text, older)
+	if err != nil {
+		slog.Warn("summarize conversation failed; replaying the tail only for this message", "conversation", replyTo, "err", err)
+		return summary, nil
+	}
+	next := convSummary{Text: text, Covers: append(append([]string{}, summary.Covers...), turnIDs(older)...)}
+	if _, err := a.d.Events.Append(ctx, stream, evConvSummary, next); err != nil {
+		return summary, fmt.Errorf("record conversation summary: %w", err)
+	}
+	return next, nil
 }
 
 func turnIDs(turns []convTurn) []string {

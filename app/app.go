@@ -30,7 +30,11 @@ const (
 )
 
 type Deps struct {
-	Models      map[string]Model
+	Models map[string]Model
+	// Windows maps a model name to its context size in tokens; missing means defaultWindow.
+	Windows map[string]int
+	// CompactAt is the share of the window at which a conversation is compacted; 0 means defaultCompactAt.
+	CompactAt   float64
 	DefaultJob  Job
 	Jobs        []Job
 	Tools       Tools
@@ -119,6 +123,9 @@ func New(d Deps) *App {
 	if d.StepTimeout == 0 {
 		d.StepTimeout = defaultStepTimeout
 	}
+	if d.CompactAt <= 0 || d.CompactAt > 1 {
+		d.CompactAt = defaultCompactAt
+	}
 	a := &App{d: d}
 	a.registerSettings()
 	a.gw = gateway.New(gateway.Deps{
@@ -126,6 +133,19 @@ func New(d Deps) *App {
 		Clock: d.Clock, ApprovalTTL: d.ApprovalTTL, Paused: a.paused.Load, Hook: a.hook,
 	})
 	return a
+}
+
+const (
+	defaultWindow    = 200_000
+	defaultCompactAt = 0.92
+)
+
+// window is the context size of model in tokens.
+func (a *App) window(model string) int {
+	if w := a.d.Windows[model]; w > 0 {
+		return w
+	}
+	return defaultWindow
 }
 
 func (a *App) hook(point string) error {
@@ -297,7 +317,7 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	prior, err := a.conversation(ctx, in.ReplyTo, in.DM)
+	prior, err := a.conversation(ctx, in.ReplyTo, in.DM, in.Text)
 	if err != nil {
 		return "", err
 	}
@@ -487,7 +507,7 @@ func (a *App) finish(ctx context.Context, id, text string) error {
 	}
 	n := Notice{Kind: NoticeMessage, Text: text}
 	if s, err := a.Snapshot(ctx, id); err == nil {
-		n.Tokens, n.Budget, n.Cached = s.Tokens, s.Created.Budget.Tokens, s.Cached
+		n.Context, n.Window, n.Cached = s.Context, a.window(s.Created.Model), s.Cached
 	}
 	return a.notify(ctx, id, "final", n)
 }

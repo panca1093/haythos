@@ -87,8 +87,8 @@ type Notice struct {
 	ReplyTo  string
 	// Tainted marks a notice from a task that read untrusted content; channels must not unfurl links in it.
 	Tainted bool
-	// Tokens is what the task has used of its Budget, and Cached its last step's cache reads; set on the final message.
-	Tokens, Budget, Cached int
+	// Context is the last step's size against the model's Window, and Cached its cache reads; set on the final message.
+	Context, Window, Cached int
 	// Undo are the per-item Undo buttons of a digest; the channel passes the chosen ID to App.UndoBrain.
 	Undo []UndoAction
 }

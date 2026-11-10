@@ -19,6 +19,8 @@ type Model struct {
 	Model   string `yaml:"model"`
 	BaseURL string `yaml:"base_url"`
 	Secret  string `yaml:"secret"`
+	// ContextWindow is the model's context size in tokens; 0 means unknown (the app assumes 200K).
+	ContextWindow int `yaml:"context_window"`
 }
 
 type MCPServer struct {
@@ -33,7 +35,9 @@ type Main struct {
 	Vault        string           `yaml:"vault"`
 	DefaultModel string           `yaml:"default_model"`
 	Models       map[string]Model `yaml:"models"`
-	ClaudeCLI    struct {
+	// CompactAt is the share of a model's context window at which a conversation is compacted; 0 means 0.92.
+	CompactAt float64 `yaml:"compact_at"`
+	ClaudeCLI struct {
 		Command string `yaml:"command"`
 	} `yaml:"claude_cli"`
 	// Deprecated and ignored since the Node sidecar was removed; still decoded so older configs keep loading.

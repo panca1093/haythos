@@ -117,6 +117,20 @@ func TestStepParsesTextAndToolCalls(t *testing.T) {
 	}
 }
 
+func TestStepReadsCachedTokens(t *testing.T) {
+	t.Parallel()
+	api := newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) {
+		sse(w, `{"type":"response.completed","response":{"status":"completed","usage":{"input_tokens":500,"output_tokens":5,"input_tokens_details":{"cached_tokens":400}}}}`)
+	})
+	turn, err := newAdapter(t, api, "gpt-x").Step(context.Background(), history, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (task.Usage{InputTokens: 500, OutputTokens: 5, CacheReadTokens: 400}); turn.Usage != want {
+		t.Errorf("usage = %+v, want %+v", turn.Usage, want)
+	}
+}
+
 func TestStepUsesCompletedOutputWhenNoItemEvents(t *testing.T) {
 	t.Parallel()
 	api := newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) {

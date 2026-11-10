@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/panca/haythos/core/task"
@@ -46,6 +47,12 @@ type block struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
 }
 
 type message struct {
@@ -62,7 +69,7 @@ type toolDef struct {
 type request struct {
 	Model     string    `json:"model"`
 	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
+	System    []block   `json:"system,omitempty"`
 	Messages  []message `json:"messages"`
 	Tools     []toolDef `json:"tools,omitempty"`
 }
@@ -70,8 +77,10 @@ type request struct {
 type response struct {
 	Content []block `json:"content"`
 	Usage   struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens   int `json:"input_tokens"`
+		CacheCreation int `json:"cache_creation_input_tokens"`
+		CacheRead     int `json:"cache_read_input_tokens"`
+		OutputTokens  int `json:"output_tokens"`
 	} `json:"usage"`
 }
 
@@ -85,7 +94,11 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			system = append(system, m.Text)
+			if m.Context {
+				req.Messages = append(req.Messages, message{Role: "user", Content: []block{{Type: "text", Text: m.Text}}})
+			} else {
+				system = append(system, m.Text)
+			}
 		case task.RoleUser:
 			req.Messages = append(req.Messages, message{Role: "user", Content: []block{{Type: "text", Text: m.Text}}})
 		case task.RoleAssistant:
@@ -109,8 +122,18 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 			}
 		}
 	}
-	req.System = strings.Join(system, "\n\n")
-	for _, t := range tools {
+	if len(system) > 0 {
+		req.System = []block{{Type: "text", Text: strings.Join(system, "\n\n"), CacheControl: &cacheControl{Type: "ephemeral"}}}
+	}
+	if n := len(req.Messages); n > 0 {
+		c := req.Messages[n-1].Content
+		if len(c) > 0 {
+			c[len(c)-1].CacheControl = &cacheControl{Type: "ephemeral"}
+		}
+	}
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		req.Tools = append(req.Tools, toolDef{Name: wireName(t.Name), Description: t.Description, InputSchema: t.InputSchema})
 	}
 
@@ -141,7 +164,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return task.AssistantTurn{}, fmt.Errorf("decode response: %w", err)
 	}
-	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens}}
+	u := out.Usage
+	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: u.InputTokens + u.CacheCreation + u.CacheRead, OutputTokens: u.OutputTokens, CacheReadTokens: u.CacheRead}}
 	for _, b := range out.Content {
 		switch b.Type {
 		case "text":

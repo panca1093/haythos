@@ -87,7 +87,35 @@ func TestReplaySumsTokensAndKeepsLastCacheReads(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if s.Tokens != 116 || s.Cached != 0 {
+	if s.Tokens != 116 || s.Cached != 0 || s.Context != 21 {
 		t.Errorf("tokens = %d cached = %d, want the sum of all steps (116) and the last step's cache reads (0)", s.Tokens, s.Cached)
+	}
+}
+
+func TestReplayFirstInputIsTheFirstStepsPrompt(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name   string
+		events []Event
+		want   int
+	}{
+		{"no usage", []Event{ev(1, EvCreated, Created{Job: "j"})}, 0},
+		{"one step", []Event{ev(1, EvUsage, Usage{InputTokens: 30, OutputTokens: 5})}, 30},
+		{"later steps do not move it", []Event{
+			ev(1, EvUsage, Usage{InputTokens: 30, OutputTokens: 5}),
+			ev(2, EvUsage, Usage{InputTokens: 90, OutputTokens: 5}),
+		}, 30},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := Replay(tc.events)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.FirstInput != tc.want {
+				t.Errorf("FirstInput = %d, want %d", s.FirstInput, tc.want)
+			}
+		})
 	}
 }

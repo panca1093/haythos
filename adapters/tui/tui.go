@@ -51,12 +51,12 @@ type model struct {
 	input   []rune
 	cursor  int
 	width   int
-	// modelName, tokens and budget feed the status line.
-	modelName              string
-	tokens, budget, cached int
-	printed                []string
-	carded                 bool
-	summary                Summary
+	// modelName, context and window feed the status line.
+	modelName               string
+	context, window, cached int
+	printed                 []string
+	carded                  bool
+	summary                 Summary
 }
 
 var (
@@ -206,8 +206,8 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		return m.print(dimStyle.Render("  ⎿ " + f.Text))
 	case "message.done":
 		m.state = "done"
-		if f.Budget > 0 {
-			m.tokens, m.budget, m.cached = f.Tokens, f.Budget, f.Cached
+		if f.Window > 0 {
+			m.context, m.window, m.cached = f.Context, f.Window, f.Cached
 		}
 		return m.print(m.alfredLine(f.Text))
 	case "task.state":
@@ -480,8 +480,8 @@ func (m *model) status() string {
 		parts = append(parts, nameStyle.Render(m.modelName))
 	}
 	ctx := "ctx --"
-	if m.budget > 0 {
-		ctx = fmt.Sprintf("ctx %s/%s %s", kilo(m.tokens), kilo(m.budget), bar(m.tokens, m.budget, 10))
+	if m.window > 0 {
+		ctx = fmt.Sprintf("ctx %s/%s %s", kilo(m.context), kilo(m.window), bar(m.context, m.window, 10))
 	}
 	parts = append(parts, ctx)
 	if m.cached > 0 {
@@ -494,11 +494,15 @@ func kilo(n int) string {
 	if n < 1000 {
 		return fmt.Sprint(n)
 	}
-	s := fmt.Sprintf("%.1f", float64(n)/1000)
-	return strings.TrimSuffix(s, ".0") + "k"
+	unit, div := "k", 1000.0
+	if n >= 1000000 {
+		unit, div = "M", 1000000.0
+	}
+	s := fmt.Sprintf("%.1f", float64(n)/div)
+	return strings.TrimSuffix(s, ".0") + unit
 }
 
 func bar(used, total, cells int) string {
-	filled := min(cells, max(0, (used*cells+total/2)/total))
+	filled := min(cells, max(0, (used*cells+total-1)/total))
 	return strings.Repeat("▰", filled) + strings.Repeat("▱", cells-filled)
 }
