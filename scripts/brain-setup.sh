@@ -67,4 +67,4 @@ say "importing $total pages (--no-embed: keyword search only)"
 # gbrain import refuses a symlinked root (macOS /var -> /private/var)
 gbrain import "$(realpath "$stage")" --no-embed
 
-say "done. Add the gbrain server to config/haythos.yaml (see README, Brain section) and restart haythosd."
+say "done. Add the gbrain server to config/haythos.yaml (see README, Brain section) and restart haythos."

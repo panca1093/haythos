@@ -24,6 +24,7 @@ import (
 
 	"github.com/panca/haythos/adapters/brain/gbrain"
 	"github.com/panca/haythos/adapters/channel/discord"
+	"github.com/panca/haythos/adapters/channel/ws"
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/anthropic"
 	"github.com/panca/haythos/adapters/model/chatgpt"
@@ -37,6 +38,7 @@ import (
 	"github.com/panca/haythos/adapters/tools/local/vmhealth"
 	"github.com/panca/haythos/adapters/tools/mcp"
 	"github.com/panca/haythos/adapters/vault/file"
+	"github.com/panca/haythos/adapters/vault/keychain"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
 )
@@ -57,13 +59,13 @@ var brainChatTools = []string{"brain.recall", "brain.remember", "brain.forget"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		slog.Error("haythosd failed", "err", err)
+		slog.Error("haythos failed", "err", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("haythosd", flag.ContinueOnError)
+	fs := flag.NewFlagSet("haythos", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/haythos.yaml", "main config")
 	policyPath := fs.String("policy", "config/policy.yaml", "policy config")
 	jobsDir := fs.String("jobs", "jobs", "jobs directory")
@@ -74,6 +76,45 @@ func run(args []string) error {
 	if len(rest) > 0 {
 		cmd, rest = rest[0], rest[1:]
 	}
+	home, err := homePaths(os.Getenv)
+	if err != nil {
+		return err
+	}
+	switch cmd {
+	case "status", "stop":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		if cmd == "status" {
+			return runStatus(ctx, home, os.Stdout)
+		}
+		return runStop(ctx, home, os.Stdout)
+	case "chat", "sessions":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		args, err := serveArgs(*cfgPath, *policyPath, *jobsDir)
+		if err != nil {
+			return err
+		}
+		if cmd == "chat" {
+			return runChat(ctx, home, args, rest)
+		}
+		return runSessions(ctx, home, args, os.Stdout)
+	case "service":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		args, err := serveArgs(*cfgPath, *policyPath, *jobsDir)
+		if err != nil {
+			return err
+		}
+		in, err := newInstaller(home, args)
+		if err != nil {
+			return err
+		}
+		return runService(ctx, rest, &serviceDeps{
+			kc: keychain.New(), getenv: os.Getenv, in: os.Stdin, out: os.Stdout, installer: in,
+			stop: func(ctx context.Context) error { return runStop(ctx, home, os.Stdout) },
+		})
+	}
 
 	cfg, err := config.LoadMain(*cfgPath)
 	if err != nil {
@@ -82,7 +123,7 @@ func run(args []string) error {
 	if cfg.Sidecar.Command != "" {
 		slog.Warn("the sidecar block is ignored since claude-sub runs the claude CLI directly; delete it from the config")
 	}
-	key, err := file.KeyFromEnv(os.Getenv)
+	key, err := file.Key(context.Background(), os.Getenv, keychain.New())
 	if err != nil {
 		return err
 	}
@@ -154,11 +195,12 @@ func run(args []string) error {
 	}
 
 	var notifier app.Notifier = stdoutNotifier{}
+	var route *routeNotifier
 	var channel *discord.Channel
 	if cmd == "serve" {
 		token, err := vault.Resolve("secret://discord")
 		if err != nil {
-			return fmt.Errorf("discord token missing, run `haythosd auth discord`: %w", err)
+			return fmt.Errorf("discord token missing, run `haythos auth discord`: %w", err)
 		}
 		if cfg.Discord.OwnerID == "" {
 			return errors.New("discord.owner_id must be set in the config")
@@ -173,7 +215,8 @@ func run(args []string) error {
 		tools.Register(spec, handler)
 		postSpec, postHandler := channel.PostTool()
 		tools.Register(postSpec, postHandler)
-		notifier = channel
+		route = &routeNotifier{other: channel}
+		notifier = route
 	}
 
 	dj := defaultJob
@@ -192,7 +235,7 @@ func run(args []string) error {
 	switch cmd {
 	case "run-job":
 		if len(rest) != 1 {
-			return errors.New("usage: haythosd run-job <name>")
+			return errors.New("usage: haythos run-job <name>")
 		}
 		// Other tasks are left for serve: resuming them here would deliver their notices to stdout.
 		if err := a.RestorePause(ctx); err != nil {
@@ -204,15 +247,21 @@ func run(args []string) error {
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":
-		if err := a.Start(ctx); err != nil {
-			return fmt.Errorf("start kernel: %w", err)
+		srv := ws.New(ws.Config{SocketPath: home.Socket, Version: binaryVersion(), StartedAt: time.Now(), Channels: []string{"discord", "tui"}}, a)
+		route.ws = srv
+		sv, err := serveAfterStart(ctx, home, srv, a.Start)
+		if err != nil {
+			return err
 		}
+		defer sv.stop()
+		slog.Info("listening", "socket", home.Socket)
+
 		channel.SetHandler(a)
 		if err := channel.Open(); err != nil {
 			return err
 		}
 		defer func() { _ = channel.Close() }()
-		slog.Info("haythosd running", "jobs", len(jobs))
+		slog.Info("haythos running", "jobs", len(jobs))
 		t := time.NewTicker(tickEvery)
 		defer t.Stop()
 		for {
@@ -222,11 +271,13 @@ func run(args []string) error {
 			select {
 			case <-ctx.Done():
 				return nil
+			case <-sv.done:
+				return sv.err
 			case <-t.C:
 			}
 		}
 	}
-	return fmt.Errorf("unknown command %q (serve, run-job, auth, setup)", cmd)
+	return fmt.Errorf("unknown command %q (serve, chat, sessions, status, stop, service, run-job, auth, setup)", cmd)
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
@@ -250,7 +301,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "anthropic", "openai":
 			secret, err := vault.Resolve("secret://" + m.Secret)
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythosd auth`", "model", name)
+				slog.Warn("model skipped: credential missing, run `haythos auth`", "model", name)
 				continue
 			}
 			if m.Kind == "anthropic" {
@@ -261,7 +312,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "claudesdk":
 			token, err := vault.Resolve("secret://claude")
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythosd auth claude`", "model", name)
+				slog.Warn("model skipped: credential missing, run `haythos auth claude`", "model", name)
 				continue
 			}
 			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token))
@@ -272,7 +323,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 			}
 		case "chatgpt":
 			if !vault.Has("chatgpt") {
-				slog.Warn("model skipped: not signed in, run `haythosd auth chatgpt`", "model", name)
+				slog.Warn("model skipped: not signed in, run `haythos auth chatgpt`", "model", name)
 				continue
 			}
 			// One session for all chatgpt models, so refreshes of the rotating token stay serialized.
@@ -347,7 +398,7 @@ var authTargets = map[string]authTarget{
 // runAuth stores one secret in the vault. The kernel never does OAuth; it only stores what the user pastes.
 func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (string, error)) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: haythosd auth <claude|chatgpt|anthropic|openai|discord>")
+		return fmt.Errorf("usage: haythos auth <claude|chatgpt|anthropic|openai|discord>")
 	}
 	t, ok := authTargets[args[0]]
 	if !ok {
@@ -414,7 +465,7 @@ func lockInstance(dbPath string) (func(), error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("another haythosd is using %s; stop it first", dbPath)
+			return nil, fmt.Errorf("another haythos is using %s; stop it first", dbPath)
 		}
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
@@ -459,7 +510,7 @@ func runSetup(ctx context.Context, d setupDeps) error {
 	}
 	token := extractToken(raw.String())
 	if token == "" {
-		return errors.New("no token found in the `claude setup-token` output (it may be wrapped across lines); run `haythosd auth claude` and paste the token instead")
+		return errors.New("no token found in the `claude setup-token` output (it may be wrapped across lines); run `haythos auth claude` and paste the token instead")
 	}
 	if err := d.vault.Set("claude", token); err != nil {
 		return fmt.Errorf("store token: %w", err)

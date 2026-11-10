@@ -1,0 +1,12 @@
+[Unit]
+Description=HaythOS kernel
+
+[Service]
+ExecStart=/opt/haythos/bin/haythos -config /srv/haythos/config/haythos.yaml serve
+WorkingDirectory=/srv/haythos
+Restart=on-failure
+StandardOutput=append:/home/me/.haythos/logs/haythos.log
+StandardError=append:/home/me/.haythos/logs/haythos.log
+
+[Install]
+WantedBy=default.target

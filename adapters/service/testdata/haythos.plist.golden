@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>io.github.panca1093.haythos</string>
+	<key>ProgramArguments</key>
+	<array>
+		<string>/opt/haythos/bin/haythos</string>
+		<string>-config</string>
+		<string>/srv/haythos/config/haythos.yaml</string>
+		<string>serve</string>
+	</array>
+	<key>WorkingDirectory</key>
+	<string>/srv/haythos</string>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<true/>
+	<key>StandardOutPath</key>
+	<string>/home/me/.haythos/logs/haythos.log</string>
+	<key>StandardErrorPath</key>
+	<string>/home/me/.haythos/logs/haythos.log</string>
+</dict>
+</plist>

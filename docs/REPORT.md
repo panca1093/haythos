@@ -216,3 +216,47 @@ All M1 and M2 contract tests pass; `m1_test.go` and `m2_test.go` are unchanged s
 1. Run `scripts/brain-setup.sh`, add the `gbrain` server to `config/haythos.yaml` (README), start, check for no "mcp server skipped" warning.
 2. Ask something from the wiki; say "ingat …" in a thread (no button), then ask from another thread.
 3. Leave a thread idle 3 h; next morning check the 07:00 digest and press Undo once.
+
+# TUI and client socket (2026-11-10)
+
+Plan: `docs/plans/2026-11-10-tui-ws-gateway.md`. One binary `haythos`; the kernel opens exactly one WebSocket (unix socket `<home>/run/haythos.sock`) for every terminal client; Discord stays in-process; notices route by origin (`tui:` to the socket, everything else to Discord as before).
+
+## Decisions
+
+1. **Client frames are typed** (`ws.Hello`, `ws.Subscribe`, `ws.Input`, `ws.Decide`, `ws.Sessions`) and add their `type` when marshalled; every server frame is one flat `ws.Frame`. Approvals carry only id, tool, target, tier, preview and the escalated flag.
+2. **One conversation per connection.** `subscribe` sets it and sends `history` under the connection's write lock, so no notice can overtake the history. `input` must name the subscribed conversation; `approval.decide` must belong to a task whose origin is that conversation. Anything else gets an `error` frame and the kernel is not called.
+3. **Input and approvals run under the kernel's context**, not the connection's: closing the window never cancels a task. Kernel shutdown does.
+4. **A notice for a `tui:` conversation nobody is attached to counts as delivered.** On reattach the client gets the recorded turns and the approvals still waiting (`App.ConversationView`).
+5. **`Conversations` also lists a conversation whose only task is still waiting for approval** (it has no turn yet), so `--resume` finds a window closed mid-approval on its first message. Order is by the last event in the log.
+6. **Version** = VCS revision (with `-dirty`) plus the first 4 bytes of the executable's SHA-256, so every rebuild differs. `status` asks the kernel over the socket, never trusts the pid file alone.
+7. **`stop` counts the pid exiting as stopped** as well as the socket going away: launchd (`KeepAlive`) can restart the kernel before the client sees the socket vanish.
+8. **Spawned and service kernels get the caller's `-config`, `-policy`, `-jobs` as absolute paths**; the service also gets `WorkingDirectory` = the install directory, because `db:` and `vault:` in the config are relative.
+9. **The TUI locks the input box while an approval is pending**: `y`/`n` would otherwise be typed into a message. Ctrl+C still quits.
+10. **A socket path over 103 bytes** (macOS limit) is refused with a hint to shorten `HAYTHOS_HOME`, instead of the kernel's `bind: invalid argument`.
+
+## Uncertain (`TODO: uncertain` in code)
+
+- `app/convview.go`: full event-log scan per `ConversationView`/`Conversations` call; fine for one user, add an index past ~1e5 events.
+- `adapters/vault/keychain/keychain.go`: macOS `security add-generic-password -w <key>` puts the key in argv for a moment during `service install`. `security -i` reading the command from stdin would avoid it but is untested.
+
+Other open points:
+- `serve` still needs the Discord token and `owner_id`; without them `chat` waits 15 s for a kernel that exited at once, then names the log. Discord-optional `serve` and early-exit detection are follow-ups.
+- Alerts and failure notices for a `tui:` conversation with no client attached are not replayed on reattach (only turns and pending approvals are).
+- launchd `KeepAlive` restarts after any exit, systemd `Restart=on-failure` does not restart after `stop`. Kept as the plan says.
+- The service has launchd's/systemd's default PATH; the `claude` CLI or MCP servers from Homebrew need absolute paths in the config.
+- `binaryVersion` reads the whole executable once per start (tens of ms).
+
+## Verified here (Linux)
+
+- `make gate` green at every commit.
+- In a pseudo-terminal at 80x24, `haythos chat` against an in-process kernel with a scripted model: reply rendered, approval block shown, `y` approved and the final answer arrived, the version warning showed, Ctrl+C left the kernel running. `status`/`stop`/`sessions` with no kernel; `sessions` with a kernel that cannot start timed out naming the log.
+
+## Needs you live
+
+1. `haythos service install` on your Mac, then log out and in: the kernel is back (`haythos status`) and Discord answers.
+2. The keychain prompt on the first `security` access (allow `haythos`), and that the service starts with `HAYTHOS_VAULT_KEY` unset.
+3. `haythos chat` in a real terminal at 80 columns: layout, colours, wrapping, PgUp/PgDn.
+4. Discord and a terminal chat at the same time; an approval asked in each stays where it was asked.
+5. Close the terminal while an approval waits, `haythos chat --resume`, approve, and the task finishes.
+6. SSH socket forwarding to a VPS kernel (README).
+7. Linux only: `service install` with `secret-tool` (libsecret) and a systemd user session.

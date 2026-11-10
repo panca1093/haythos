@@ -2,8 +2,10 @@ package file
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -76,5 +78,42 @@ func TestSetFromTwoInstancesKeepsBoth(t *testing.T) {
 				t.Errorf("%s = %q err=%v, want %q", name, got, err, want)
 			}
 		}
+	}
+}
+
+type fakeKeychain struct {
+	value string
+	err   error
+}
+
+func (k fakeKeychain) Get(context.Context) (string, error) { return k.value, k.err }
+
+func TestKeyEnvWins(t *testing.T) {
+	env := func(k string) string {
+		if k == KeyEnv {
+			return "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE="
+		}
+		return ""
+	}
+	k, err := Key(context.Background(), env, fakeKeychain{value: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="})
+	if err != nil || !bytes.Equal(k, key(1)) {
+		t.Errorf("k=%v err=%v, want the env key", k, err)
+	}
+}
+
+func TestKeyFromKeychain(t *testing.T) {
+	k, err := Key(context.Background(), func(string) string { return "" }, fakeKeychain{value: "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI="})
+	if err != nil || !bytes.Equal(k, key(2)) {
+		t.Errorf("k=%v err=%v, want the keychain key", k, err)
+	}
+	if _, err := Key(context.Background(), func(string) string { return "" }, fakeKeychain{value: "c2hvcnQ="}); err == nil || strings.Contains(err.Error(), "c2hvcnQ=") {
+		t.Errorf("short keychain key: err = %v, want an error without the value", err)
+	}
+}
+
+func TestKeyMissingBoth(t *testing.T) {
+	_, err := Key(context.Background(), func(string) string { return "" }, fakeKeychain{err: errors.New("not found")})
+	if err == nil || !strings.Contains(err.Error(), KeyEnv) || !strings.Contains(err.Error(), "keychain") {
+		t.Errorf("err = %v, want one naming %s and the keychain", err, KeyEnv)
 	}
 }

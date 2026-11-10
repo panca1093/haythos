@@ -89,7 +89,7 @@ func (c *Client) handshake(ctx context.Context) error {
 	if _, err := c.request(ctx, "initialize", map[string]any{
 		"protocolVersion": protocolVersion,
 		"capabilities":    map[string]any{},
-		"clientInfo":      map[string]any{"name": "haythosd", "version": "0"},
+		"clientInfo":      map[string]any{"name": "haythos", "version": "0"},
 	}); err != nil {
 		return err
 	}

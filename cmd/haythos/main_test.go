@@ -90,7 +90,7 @@ func TestRunJobRefusesWhileAnotherInstanceHoldsTheDB(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer release()
-	if err := run(args); err == nil || !strings.Contains(err.Error(), "another haythosd") {
+	if err := run(args); err == nil || !strings.Contains(err.Error(), "another haythos") {
 		t.Errorf("err = %v, want another-instance error", err)
 	}
 }
@@ -227,8 +227,8 @@ func TestSetupFailuresStoreNothingMoreAndNeverLeakTheToken(t *testing.T) {
 		wantErr    string
 		wantStored bool
 	}{
-		{"no token in output", "1\n", []string{"Login ok\n"}, nil, "haythosd auth claude", false},
-		{"token wrapped across lines", "1\n", []string{"sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz\n0123456789_-AbCdEfGhIjKl\n"}, nil, "haythosd auth claude", false},
+		{"no token in output", "1\n", []string{"Login ok\n"}, nil, "haythos auth claude", false},
+		{"token wrapped across lines", "1\n", []string{"sk-ant-oat01-AbCdEfGhIjKlMnOpQrStUvWxYz\n0123456789_-AbCdEfGhIjKl\n"}, nil, "haythos auth claude", false},
 		{"cli fails", "1\n", happyChunks(), errors.New("exit status 1"), "claude setup-token", false},
 		{"no model chosen before EOF", "", happyChunks(), nil, "no model chosen", true},
 		{"out of range forever", "0\n9\nx\n", happyChunks(), nil, "no model chosen", true},
