@@ -120,6 +120,8 @@ type Created struct {
 	BrainSource string `json:"brain_source,omitempty"`
 	// Silent suppresses the final and failure notices of this task.
 	Silent bool `json:"silent,omitempty"`
+	// Workdir is the folder an interactive chat was opened in; read tools may only look inside it.
+	Workdir string `json:"workdir,omitempty"`
 }
 
 type StateChange struct {

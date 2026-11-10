@@ -392,3 +392,9 @@ func TestJobsText(t *testing.T) {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
+
+func TestToolActivityIsNotRenderedInDiscord(t *testing.T) {
+	if got := Render(app.Notice{Kind: app.NoticeTool, Text: "fs.read README.md"}); len(got) != 0 {
+		t.Fatalf("render = %+v, want nothing for tool activity", got)
+	}
+}

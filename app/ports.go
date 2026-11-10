@@ -60,6 +60,8 @@ const (
 	NoticeState    NoticeKind = "task.state"
 	NoticeAlert    NoticeKind = "alert"
 	NoticeDigest   NoticeKind = "brain.digest"
+	// NoticeTool is best-effort progress for interactive clients; channels may drop it.
+	NoticeTool NoticeKind = "tool.started"
 )
 
 type ApprovalRequest struct {
@@ -121,6 +123,8 @@ type Input struct {
 	ReplyTo string
 	// DM marks ReplyTo as a direct-message channel; conversation memory only looks back 24 h there.
 	DM bool
+	// Workdir is the folder the chat was opened in; empty when the channel has none.
+	Workdir string
 }
 
 type ModelChoice struct {

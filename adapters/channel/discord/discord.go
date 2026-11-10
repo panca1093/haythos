@@ -284,6 +284,9 @@ func (c *Channel) Publish(ctx context.Context, n app.Notice) error {
 		return errors.New("send discord message: owner DM unavailable")
 	}
 	msgs := render(n)
+	if len(msgs) == 0 {
+		return nil
+	}
 	msgs[0].Content = note + msgs[0].Content
 	for _, m := range msgs {
 		if _, err := c.s.ChannelMessageSendComplex(to, m, discordgo.WithContext(ctx)); err != nil {
@@ -309,6 +312,8 @@ func Render(n app.Notice) []*discordgo.MessageSend { return render(n) }
 
 func renderNotice(n app.Notice) []*discordgo.MessageSend {
 	switch n.Kind {
+	case app.NoticeTool:
+		return nil
 	case app.NoticeApproval:
 		a := n.Approval
 		text := fmt.Sprintf("**Approval needed** (tier %d)\n```\n%s\n```", a.Tier, clip(a.Preview, 1500))
