@@ -10,14 +10,29 @@ import (
 func TestContextSummaryStaysOutOfSystemPrompt(t *testing.T) {
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "the summary", Context: true},
+		{Role: task.RoleSystem, Text: "the summary", Context: true, Kind: task.KindSummary},
 		{Role: task.RoleUser, Text: "hi"},
 	}
 	if sys := systemPrompt(history); strings.Contains(sys, "the summary") || !strings.HasPrefix(sys, "goal") {
 		t.Errorf("system = %q", sys)
 	}
 	_, conv, _ := strings.Cut(renderPrompt(history, nil), "Conversation:\n")
-	if !strings.HasPrefix(conv, "[earlier conversation summary] the summary\n[user] hi") {
+	if !strings.HasPrefix(conv, "the summary\n[user] hi") {
+		t.Errorf("conversation = %q", conv)
+	}
+}
+
+func TestOtherContextSystemMessagesStayInSystemPrompt(t *testing.T) {
+	history := []task.Message{
+		{Role: task.RoleSystem, Text: "goal"},
+		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
+		{Role: task.RoleUser, Text: "hi"},
+	}
+	if sys := systemPrompt(history); !strings.HasPrefix(sys, "goal\n\nrecalled memory") {
+		t.Errorf("system = %q", sys)
+	}
+	_, conv, _ := strings.Cut(renderPrompt(history, nil), "Conversation:\n")
+	if strings.Contains(conv, "recalled memory") {
 		t.Errorf("conversation = %q", conv)
 	}
 }

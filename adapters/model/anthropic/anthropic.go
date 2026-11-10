@@ -77,8 +77,10 @@ type request struct {
 type response struct {
 	Content []block `json:"content"`
 	Usage   struct {
-		InputTokens  int `json:"input_tokens"`
-		OutputTokens int `json:"output_tokens"`
+		InputTokens   int `json:"input_tokens"`
+		CacheCreation int `json:"cache_creation_input_tokens"`
+		CacheRead     int `json:"cache_read_input_tokens"`
+		OutputTokens  int `json:"output_tokens"`
 	} `json:"usage"`
 }
 
@@ -92,8 +94,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Context {
-				summaries = append(summaries, "[earlier conversation summary] "+m.Text)
+			if m.Kind == task.KindSummary {
+				summaries = append(summaries, m.Text)
 			} else {
 				system = append(system, m.Text)
 			}
@@ -166,7 +168,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	if err := json.Unmarshal(raw, &out); err != nil {
 		return task.AssistantTurn{}, fmt.Errorf("decode response: %w", err)
 	}
-	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.InputTokens, OutputTokens: out.Usage.OutputTokens}}
+	u := out.Usage
+	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: u.InputTokens + u.CacheCreation + u.CacheRead, OutputTokens: u.OutputTokens, CacheReadTokens: u.CacheRead}}
 	for _, b := range out.Content {
 		switch b.Type {
 		case "text":

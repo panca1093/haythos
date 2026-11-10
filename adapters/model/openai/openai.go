@@ -70,8 +70,11 @@ type response struct {
 		Message message `json:"message"`
 	} `json:"choices"`
 	Usage struct {
-		PromptTokens     int `json:"prompt_tokens"`
-		CompletionTokens int `json:"completion_tokens"`
+		PromptTokens        int `json:"prompt_tokens"`
+		CompletionTokens    int `json:"completion_tokens"`
+		PromptTokensDetails struct {
+			CachedTokens int `json:"cached_tokens"`
+		} `json:"prompt_tokens_details"`
 	} `json:"usage"`
 }
 
@@ -87,8 +90,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Context {
-				summaries = append(summaries, message{Role: "user", Content: str("[earlier conversation summary] " + m.Text)})
+			if m.Kind == task.KindSummary {
+				summaries = append(summaries, message{Role: "user", Content: str(m.Text)})
 			} else {
 				req.Messages = append(req.Messages, message{Role: "system", Content: str(m.Text)})
 			}
@@ -156,7 +159,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		return task.AssistantTurn{}, fmt.Errorf("openai response has no choices")
 	}
 	msg := out.Choices[0].Message
-	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens}}
+	turn := task.AssistantTurn{Usage: task.Usage{InputTokens: out.Usage.PromptTokens, OutputTokens: out.Usage.CompletionTokens, CacheReadTokens: out.Usage.PromptTokensDetails.CachedTokens}}
 	if msg.Content != nil {
 		turn.Text = *msg.Content
 	}

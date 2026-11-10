@@ -109,8 +109,11 @@ type event struct {
 		Output []outputItem `json:"output"`
 		Error  *apiError    `json:"error"`
 		Usage  struct {
-			InputTokens  int `json:"input_tokens"`
-			OutputTokens int `json:"output_tokens"`
+			InputTokens        int `json:"input_tokens"`
+			OutputTokens       int `json:"output_tokens"`
+			InputTokensDetails struct {
+				CachedTokens int `json:"cached_tokens"`
+			} `json:"input_tokens_details"`
 		} `json:"usage"`
 		Incomplete struct {
 			Reason string `json:"reason"`
@@ -168,8 +171,8 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			if m.Context {
-				summaries = append(summaries, inputItem{Role: "user", Content: "[earlier conversation summary] " + m.Text})
+			if m.Kind == task.KindSummary {
+				summaries = append(summaries, inputItem{Role: "user", Content: m.Text})
 			} else {
 				system = append(system, m.Text)
 			}
@@ -249,7 +252,7 @@ func parseStream(body io.Reader, token string, names map[string]string) (task.As
 				items = e.Response.Output
 			}
 			turn, err := toTurn(items, names)
-			turn.Usage = task.Usage{InputTokens: e.Response.Usage.InputTokens, OutputTokens: e.Response.Usage.OutputTokens}
+			turn.Usage = task.Usage{InputTokens: e.Response.Usage.InputTokens, OutputTokens: e.Response.Usage.OutputTokens, CacheReadTokens: e.Response.Usage.InputTokensDetails.CachedTokens}
 			return turn, err
 		case "response.failed":
 			ae := apiError{Code: "unknown_error"}

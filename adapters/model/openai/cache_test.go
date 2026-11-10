@@ -23,7 +23,7 @@ func TestStepRendersSummaryAsUserMessageAndSortsTools(t *testing.T) {
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
 		{Role: task.RoleUser, Text: "hi"},
-		{Role: task.RoleSystem, Text: "the summary", Context: true},
+		{Role: task.RoleSystem, Text: "the summary", Context: true, Kind: task.KindSummary},
 	}
 	tools := []task.ToolSpec{{Name: "b.tool"}, {Name: "a.tool"}}
 	if _, err := New(Config{BaseURL: srv.URL, Model: "m"}).Step(context.Background(), history, tools); err != nil {
@@ -37,5 +37,30 @@ func TestStepRendersSummaryAsUserMessageAndSortsTools(t *testing.T) {
 	}
 	if *got.Messages[2].Content != "hi" || got.Tools[0].Function.Name != "a__tool" {
 		t.Errorf("request = %+v", got)
+	}
+}
+
+func TestStepReadsCachedTokensAndKeepsRecallAsSystem(t *testing.T) {
+	var got request
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(b, &got)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"role":"assistant","content":"ok"}}],"usage":{"prompt_tokens":500,"completion_tokens":5,"prompt_tokens_details":{"cached_tokens":400}}}`))
+	}))
+	defer srv.Close()
+	history := []task.Message{
+		{Role: task.RoleSystem, Text: "goal"},
+		{Role: task.RoleSystem, Text: "recalled memory", Context: true},
+		{Role: task.RoleUser, Text: "hi"},
+	}
+	turn, err := New(Config{BaseURL: srv.URL, Model: "m"}).Step(context.Background(), history, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := (task.Usage{InputTokens: 500, OutputTokens: 5, CacheReadTokens: 400}); turn.Usage != want {
+		t.Errorf("usage = %+v, want %+v", turn.Usage, want)
+	}
+	if len(got.Messages) != 3 || got.Messages[1].Role != "system" || *got.Messages[1].Content != "recalled memory" {
+		t.Errorf("messages = %+v", got.Messages)
 	}
 }

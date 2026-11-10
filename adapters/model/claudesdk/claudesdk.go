@@ -95,9 +95,8 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		if err != nil {
 			return task.AssistantTurn{}, fmt.Errorf("sidecar step: %w", err)
 		}
-		usage.InputTokens += resp.Usage.InputTokens
+		usage.InputTokens, usage.CacheReadTokens = resp.Usage.InputTokens, resp.Usage.CacheReadTokens
 		usage.OutputTokens += resp.Usage.OutputTokens
-		usage.CacheReadTokens = resp.Usage.CacheReadTokens
 		turn, err := parseOutput(resp.Text, tools, len(history))
 		if err == nil {
 			turn.Usage = usage
@@ -223,7 +222,7 @@ func typeMatches(t string, v any) bool {
 func systemPrompt(history []task.Message) string {
 	var parts []string
 	for _, m := range history {
-		if m.Role == task.RoleSystem && !m.Context {
+		if m.Role == task.RoleSystem && m.Kind != task.KindSummary {
 			parts = append(parts, m.Text)
 		}
 	}
@@ -249,8 +248,8 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	}
 	b.WriteString("\nConversation:\n")
 	for _, m := range history {
-		if m.Role == task.RoleSystem && m.Context {
-			fmt.Fprintf(&b, "[earlier conversation summary] %s\n", m.Text)
+		if m.Role == task.RoleSystem && m.Kind == task.KindSummary {
+			fmt.Fprintf(&b, "%s\n", m.Text)
 		}
 	}
 	for _, m := range history {
