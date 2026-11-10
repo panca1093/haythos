@@ -15,4 +15,4 @@ silent: true
 brain_source: auto/consolidate
 trigger:
   cron: "CRON_TZ=Asia/Jakarta 0 2 * * *"
-budget: { tokens: 50000, steps: 10 }
+budget: { tokens: 500000, steps: 10 }

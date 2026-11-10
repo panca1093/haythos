@@ -341,7 +341,7 @@ func (a *App) extract(ctx context.Context, replyTo string, c *convState, attempt
 	}
 	job := Job{
 		Name: extractJob, Goal: extractGoal, Tools: []string{"brain.recall", "brain.remember"},
-		Budget: task.Budget{Tokens: 20000, Steps: 6}, Silent: true, BrainSource: "auto/" + replyTo,
+		Budget: task.Budget{Tokens: 200000, Steps: 6}, Silent: true, BrainSource: "auto/" + replyTo,
 	}
 	if _, err := a.createTask(ctx, id, job, transcript(turns), "", ""); err != nil {
 		return err

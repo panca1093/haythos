@@ -23,7 +23,7 @@ const (
 	evJobDeleted  = task.EventType("job.deleted")
 
 	defaultCronTZ  = "Asia/Jakarta"
-	maxJobTokens   = 50000
+	maxJobTokens   = 1000000
 	maxJobSteps    = 10
 	kernelToolsPfx = "jobs."
 )
@@ -33,7 +33,7 @@ var (
 	ErrUnknownJob = errors.New("unknown job")
 
 	jobNameRe     = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{0,39}$`)
-	defaultBudget = task.Budget{Tokens: 20000, Steps: 5}
+	defaultBudget = task.Budget{Tokens: 200000, Steps: 5}
 )
 
 // JobDef is a job created at runtime from chat; YAML jobs never become one.
