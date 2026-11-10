@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 
 	"github.com/panca/haythos/core/task"
@@ -46,6 +47,12 @@ type block struct {
 	ToolUseID string          `json:"tool_use_id,omitempty"`
 	Content   string          `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
+
+	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type cacheControl struct {
+	Type string `json:"type"`
 }
 
 type message struct {
@@ -62,7 +69,7 @@ type toolDef struct {
 type request struct {
 	Model     string    `json:"model"`
 	MaxTokens int       `json:"max_tokens"`
-	System    string    `json:"system,omitempty"`
+	System    []block   `json:"system,omitempty"`
 	Messages  []message `json:"messages"`
 	Tools     []toolDef `json:"tools,omitempty"`
 }
@@ -81,11 +88,15 @@ func localName(n string) string { return strings.ReplaceAll(n, "__", ".") }
 
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	req := request{Model: a.c.Model, MaxTokens: a.c.MaxTokens}
-	var system []string
+	var system, summaries []string
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
-			system = append(system, m.Text)
+			if m.Context {
+				summaries = append(summaries, "[earlier conversation summary] "+m.Text)
+			} else {
+				system = append(system, m.Text)
+			}
 		case task.RoleUser:
 			req.Messages = append(req.Messages, message{Role: "user", Content: []block{{Type: "text", Text: m.Text}}})
 		case task.RoleAssistant:
@@ -109,8 +120,22 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 			}
 		}
 	}
-	req.System = strings.Join(system, "\n\n")
-	for _, t := range tools {
+	if len(summaries) > 0 {
+		head := message{Role: "user", Content: []block{{Type: "text", Text: strings.Join(summaries, "\n\n")}}}
+		req.Messages = append([]message{head}, req.Messages...)
+	}
+	if len(system) > 0 {
+		req.System = []block{{Type: "text", Text: strings.Join(system, "\n\n"), CacheControl: &cacheControl{Type: "ephemeral"}}}
+	}
+	if n := len(req.Messages); n > 0 {
+		c := req.Messages[n-1].Content
+		if len(c) > 0 {
+			c[len(c)-1].CacheControl = &cacheControl{Type: "ephemeral"}
+		}
+	}
+	sorted := slices.Clone(tools)
+	slices.SortFunc(sorted, func(a, b task.ToolSpec) int { return strings.Compare(a.Name, b.Name) })
+	for _, t := range sorted {
 		req.Tools = append(req.Tools, toolDef{Name: wireName(t.Name), Description: t.Description, InputSchema: t.InputSchema})
 	}
 
