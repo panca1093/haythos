@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -167,6 +169,71 @@ func TestStopNotRunning(t *testing.T) {
 	}
 	if out.String() != "not running\n" {
 		t.Fatalf("stop = %q, want not running", out.String())
+	}
+}
+
+type nopHandler struct{}
+
+func (nopHandler) HandleInput(context.Context, app.Input) (string, error)     { return "", nil }
+func (nopHandler) HandleApproval(context.Context, string, string, bool) error { return nil }
+func (nopHandler) ConversationView(context.Context, string) (app.ConversationView, error) {
+	return app.ConversationView{}, nil
+}
+func (nopHandler) Conversations(context.Context, string) ([]app.ConversationSummary, error) {
+	return nil, nil
+}
+func (nopHandler) TaskOrigin(context.Context, string) (string, error) { return "", nil }
+
+func TestStopIgnoresStalePIDFile(t *testing.T) {
+	t.Parallel()
+	p := shortHome(t)
+	if _, err := writePID(p); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	var signalled []int
+	var out bytes.Buffer
+	err := stopKernel(context.Background(), p, &out, func(pid int, _ syscall.Signal) error {
+		signalled = append(signalled, pid)
+		return nil
+	})
+	if err != nil || out.String() != "not running\n" {
+		t.Fatalf("stop = %q, %v; want not running", out.String(), err)
+	}
+	if len(signalled) != 0 {
+		t.Fatalf("signalled %v with no kernel on the socket", signalled)
+	}
+	if _, err := os.Stat(p.PID); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("stale pid file left behind: %v", err)
+	}
+}
+
+func TestStopSignalsThePIDFromWelcome(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	p := shortHome(t)
+	srv := ws.New(ws.Config{SocketPath: p.Socket, Version: "v-test", StartedAt: time.Now()}, nopHandler{})
+	serveCtx, stopServe := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(serveCtx) }()
+	defer func() { stopServe(); <-errc }()
+	waitFor(t, func() bool { _, err := os.Stat(p.Socket); return err == nil })
+	if err := os.MkdirAll(p.Run, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(p.PID, []byte("1\n"), 0o600); err != nil {
+		t.Fatalf("write pid: %v", err)
+	}
+	var signalled []int
+	var out bytes.Buffer
+	err := stopKernel(ctx, p, &out, func(pid int, sig syscall.Signal) error {
+		if sig == syscall.SIGTERM {
+			signalled = append(signalled, pid)
+			stopServe()
+		}
+		return nil
+	})
+	if err != nil || len(signalled) != 1 || signalled[0] != os.Getpid() {
+		t.Fatalf("signalled %v, err %v; want only own pid %d from welcome", signalled, err, os.Getpid())
 	}
 }
 

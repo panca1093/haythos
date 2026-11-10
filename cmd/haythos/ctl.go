@@ -41,21 +41,27 @@ func runStatus(ctx context.Context, p paths, out io.Writer) error {
 	return nil
 }
 
-// runStop sends SIGTERM to the kernel in the pid file and waits for its socket to go away.
+// runStop signals the pid the kernel itself reports on its socket; the pid file alone is never trusted.
 func runStop(ctx context.Context, p paths, out io.Writer) error {
-	b, err := os.ReadFile(p.PID)
-	if errors.Is(err, os.ErrNotExist) {
-		_, _ = fmt.Fprintln(out, "not running")
-		return nil
-	}
+	return stopKernel(ctx, p, out, func(pid int, sig syscall.Signal) error { return syscall.Kill(pid, sig) })
+}
+
+func stopKernel(ctx context.Context, p paths, out io.Writer, kill func(pid int, sig syscall.Signal) error) error {
+	dialCtx, cancel := context.WithTimeout(ctx, statusWait)
+	defer cancel()
+	c, err := ws.Dial(dialCtx, p.Socket)
 	if err != nil {
-		return fmt.Errorf("read pid file: %w", err)
+		_ = os.Remove(p.PID)
+		_, _ = fmt.Fprintln(out, "not running")
+		return nil //nolint:nilerr // an unreachable kernel is the "not running" answer, not a failure
 	}
-	pid, err := strconv.Atoi(strings.TrimSpace(string(b)))
-	if err != nil || pid <= 0 {
-		return fmt.Errorf("pid file %s is corrupt; remove it", p.PID)
+	w, err := c.Hello(dialCtx, "stop", "", binaryVersion())
+	_ = c.Close()
+	if err != nil {
+		return fmt.Errorf("ask kernel pid: %w", err)
 	}
-	if err := syscall.Kill(pid, syscall.SIGTERM); err != nil {
+	pid := w.PID
+	if err := kill(pid, syscall.SIGTERM); err != nil {
 		if errors.Is(err, syscall.ESRCH) {
 			_ = os.Remove(p.PID)
 			_, _ = fmt.Fprintln(out, "not running")
@@ -67,7 +73,7 @@ func runStop(ctx context.Context, p paths, out io.Writer) error {
 	for time.Now().Before(deadline) {
 		_, statErr := os.Stat(p.Socket)
 		// A service manager may restart the kernel at once, so a gone pid counts as stopped too.
-		if errors.Is(statErr, os.ErrNotExist) || errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
+		if errors.Is(statErr, os.ErrNotExist) || errors.Is(kill(pid, 0), syscall.ESRCH) {
 			_, _ = fmt.Fprintf(out, "stopped pid %d\n", pid)
 			return nil
 		}
