@@ -156,7 +156,7 @@ func newConvID() string {
 
 func printSessions(out io.Writer, items []ws.Session, loc *time.Location) {
 	for _, it := range items {
-		_, _ = fmt.Fprintf(out, "%s  %s  %s\n", it.Conv, it.LastAt.In(loc).Format("2006-01-02 15:04"), it.FirstUser)
+		_, _ = fmt.Fprintf(out, "%s  %s  %s\n", it.Conv, it.LastAt.In(loc).Format("2006-01-02 15:04"), tui.Clean(it.FirstUser))
 	}
 }
 
