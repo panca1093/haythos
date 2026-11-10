@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -442,6 +443,47 @@ func TestLiveSocketRefused(t *testing.T) {
 		t.Fatalf("serve over a live socket = %v, want already running", err)
 	}
 	waitListening(t, r.socket)
+}
+
+func TestSocketLockHeldRefusesSecondServer(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortDir(t), "run", "haythos.sock")
+	if err := os.MkdirAll(filepath.Dir(socket), 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, err := os.OpenFile(socket+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	err = ws.New(ws.Config{SocketPath: socket}, newFakeHandler()).Serve(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "already running") {
+		t.Fatalf("serve with the lock held = %v, want already running", err)
+	}
+}
+
+func TestRacingServersOneWins(t *testing.T) {
+	t.Parallel()
+	socket := filepath.Join(shortDir(t), "run", "haythos.sock")
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	errs := make(chan error, 6)
+	for range 6 {
+		go func() { errs <- ws.New(ws.Config{SocketPath: socket}, newFakeHandler()).Serve(ctx) }()
+	}
+	for range 5 {
+		if err := <-errs; err == nil || !strings.Contains(err.Error(), "already running") {
+			t.Fatalf("loser = %v, want already running", err)
+		}
+	}
+	waitListening(t, socket)
+	cancel()
+	if err := <-errs; err != nil {
+		t.Fatalf("winner: %v", err)
+	}
 }
 
 func TestSocketPathTooLong(t *testing.T) {

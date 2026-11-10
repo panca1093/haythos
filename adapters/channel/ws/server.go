@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/coder/websocket"
@@ -76,10 +77,11 @@ func (s *Server) Listening() <-chan struct{} { return s.up }
 
 // Serve listens until ctx is done, then closes every client and removes the socket.
 func (s *Server) Serve(ctx context.Context) error {
-	ln, err := s.listen(ctx)
+	ln, unlock, err := s.listen(ctx)
 	if err != nil {
 		return err
 	}
+	defer unlock()
 	close(s.up)
 	srv := &http.Server{
 		Handler:           http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { s.accept(ctx, w, r) }),
@@ -106,18 +108,40 @@ func (s *Server) Serve(ctx context.Context) error {
 }
 
 // listen replaces a socket file nobody answers on, and refuses one a live kernel holds.
-func (s *Server) listen(ctx context.Context) (net.Listener, error) {
+// The flock, held until unlock, makes probe, remove and bind atomic against another server on the same path.
+func (s *Server) listen(ctx context.Context) (net.Listener, func(), error) {
 	path := s.cfg.SocketPath
 	if len(path) > maxSocketPath {
-		return nil, fmt.Errorf("socket path %s is %d bytes, more than the %d a unix socket allows; set HAYTHOS_HOME to a shorter directory", path, len(path), maxSocketPath)
+		return nil, nil, fmt.Errorf("socket path %s is %d bytes, more than the %d a unix socket allows; set HAYTHOS_HOME to a shorter directory", path, len(path), maxSocketPath)
 	}
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
-		return nil, fmt.Errorf("create socket dir: %w", err)
+		return nil, nil, fmt.Errorf("create socket dir: %w", err)
 	}
 	if err := os.Chmod(dir, 0o700); err != nil { //nolint:gosec // G302: a directory needs its exec bit; 0700 is owner-only
-		return nil, fmt.Errorf("restrict socket dir: %w", err)
+		return nil, nil, fmt.Errorf("restrict socket dir: %w", err)
 	}
+	lock, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open socket lock: %w", err)
+	}
+	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
+		_ = lock.Close()
+		if errors.Is(err, syscall.EWOULDBLOCK) {
+			return nil, nil, fmt.Errorf("a kernel is already running on %s", path)
+		}
+		return nil, nil, fmt.Errorf("take socket lock: %w", err)
+	}
+	unlock := func() { _ = lock.Close() }
+	ln, err := s.bind(ctx, path)
+	if err != nil {
+		unlock()
+		return nil, nil, err
+	}
+	return ln, unlock, nil
+}
+
+func (s *Server) bind(ctx context.Context, path string) (net.Listener, error) {
 	if st, err := os.Lstat(path); err == nil {
 		if st.Mode()&os.ModeSocket == 0 {
 			return nil, fmt.Errorf("%s exists and is not a socket; remove it", path)
