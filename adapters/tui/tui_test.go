@@ -368,3 +368,67 @@ func TestControlSequencesAreStrippedFromUntrustedText(t *testing.T) {
 		t.Errorf("output contains a raw ESC not from styling")
 	}
 }
+
+func withClock(m tea.Model, now *time.Time) tea.Model {
+	m.(*model).now = func() time.Time { return *now }
+	return m
+}
+
+func TestWorkingIndicatorWhileWaiting(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	m, _ := start(t)
+	m = withClock(m, &now)
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator shown while idle:\n%s", m.View())
+	}
+	m, cmd := enter(typeText(m, "hi"))
+	if cmd == nil {
+		t.Fatal("sending a message must start the indicator ticker")
+	}
+	first := m.View()
+	if !strings.Contains(first, workVerbs[0]+"…") || !strings.Contains(first, "(0s)") {
+		t.Fatalf("indicator missing after send:\n%s", first)
+	}
+	now = now.Add(verbEvery + time.Second)
+	m, next := m.Update(tickMsg{})
+	if next == nil {
+		t.Fatal("ticker must keep running while waiting")
+	}
+	later := m.View()
+	if !strings.Contains(later, workVerbs[1]+"…") || !strings.Contains(later, "(5s)") || later == first {
+		t.Fatalf("indicator did not advance:\n%s", later)
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hello"})
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator still shown after the answer:\n%s", m.View())
+	}
+	if _, cmd := m.Update(tickMsg{}); cmd != nil {
+		t.Fatal("ticker must stop once idle")
+	}
+}
+
+func TestWorkingIndicatorPausesForApproval(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	m, _ := start(t)
+	m = withClock(m, &now)
+	m, _ = enter(typeText(m, "post it"))
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "a1", Tool: "discord.post", Target: "c", Tier: 2}})
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator shown while waiting for the owner:\n%s", m.View())
+	}
+	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if cmd == nil || !strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator must resume after approving:\n%s", m.View())
+	}
+}
+
+func TestElapsed(t *testing.T) {
+	t.Parallel()
+	for d, want := range map[time.Duration]string{0: "0s", 12 * time.Second: "12s", 65 * time.Second: "1m 05s"} {
+		if got := elapsed(d); got != want {
+			t.Errorf("elapsed(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
