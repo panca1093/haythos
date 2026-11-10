@@ -69,7 +69,8 @@ type model struct {
 	printed                 []string
 	carded                  bool
 	summary                 Summary
-	// busySince is when Alfred started working on the owner's message; zero when idle.
+	// inflight counts the owner's messages Alfred has not answered yet; busySince is when the first of them was sent.
+	inflight  int
 	busySince time.Time
 	ticking   bool
 	frame     int
@@ -175,9 +176,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.frame++
 		return m, m.tick()
 	case connErrMsg:
-		m.busySince = time.Time{}
+		m.inflight = 0
 		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
+		m.answered()
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
 		return m.onKey(msg)
@@ -214,6 +216,7 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	case ws.TypeNotice:
 		return m.onNotice(f)
 	case ws.TypeError:
+		m.answered()
 		return m.print(errStyle.Render(f.Message))
 	}
 	return nil
@@ -230,7 +233,8 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		m.summary.ToolCalls++
 		return m.print(dimStyle.Render("  ⎿ " + f.Text))
 	case "message.done":
-		m.state, m.busySince = "done", time.Time{}
+		m.state = "done"
+		m.answered()
 		if f.Window > 0 {
 			m.context, m.window, m.cached = f.Context, f.Window, f.Cached
 		}
@@ -239,8 +243,8 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		if f.State != "" {
 			m.state = f.State
 		}
-		if f.State == "failed" || f.State == "done" {
-			m.busySince = time.Time{}
+		if f.State == "failed" {
+			m.answered()
 		}
 		return m.print(dimStyle.Render("  " + f.Text))
 	default:
@@ -295,7 +299,7 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				m.print(dimStyle.Render(verdict+p.Approval.Tool+" → "+p.Approval.Target)),
 				m.sendCmd(ws.Decide{TaskID: p.TaskID, ApprovalID: p.Approval.ID, Approve: approve}),
-				m.work(),
+				m.startTicker(),
 			)
 		}
 		return m, nil
@@ -321,10 +325,19 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
-// work marks Alfred busy from now and starts the indicator ticker if it is not already running.
+// work counts a new message in flight and starts the indicator; the timer runs from the first unanswered message.
 func (m *model) work() tea.Cmd {
-	m.busySince, m.frame = m.now(), 0
-	if m.ticking {
+	if m.inflight == 0 {
+		m.busySince, m.frame = m.now(), 0
+	}
+	m.inflight++
+	return m.startTicker()
+}
+
+func (m *model) answered() { m.inflight = max(0, m.inflight-1) }
+
+func (m *model) startTicker() tea.Cmd {
+	if m.ticking || !m.busy() {
 		return nil
 	}
 	m.ticking = true
@@ -335,7 +348,7 @@ func (m *model) tick() tea.Cmd {
 	return tea.Tick(tickEvery, func(time.Time) tea.Msg { return tickMsg{} })
 }
 
-func (m *model) busy() bool { return !m.busySince.IsZero() && len(m.pending) == 0 }
+func (m *model) busy() bool { return m.inflight > 0 && len(m.pending) == 0 }
 
 func (m *model) working() string {
 	d := m.now().Sub(m.busySince)
