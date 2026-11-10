@@ -77,11 +77,7 @@ type Message struct {
 	Results []ToolResult `json:"results,omitempty"`
 	// Context marks replayed conversation memory: not a trusted instruction and not a step of this task.
 	Context bool `json:"context,omitempty"`
-	// Kind is KindSummary only on the compaction summary.
-	Kind string `json:"kind,omitempty"`
 }
-
-const KindSummary = "summary"
 
 // Usage is one model request; InputTokens is the whole prompt, cached parts included.
 type Usage struct {

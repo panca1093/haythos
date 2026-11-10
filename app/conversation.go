@@ -189,7 +189,7 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 	}
 	var out []task.Message
 	if summary.Text != "" {
-		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true, Kind: task.KindSummary})
+		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true})
 	}
 	for _, t := range recent {
 		out = append(out,

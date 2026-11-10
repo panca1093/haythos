@@ -22,7 +22,7 @@ func TestStepRendersSummaryAsUserMessageAndSortsTools(t *testing.T) {
 	defer srv.Close()
 	history := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "the summary", Context: true, Kind: task.KindSummary},
+		{Role: task.RoleSystem, Text: "the summary", Context: true},
 		{Role: task.RoleUser, Text: "hi"},
 	}
 	tools := []task.ToolSpec{{Name: "b.tool"}, {Name: "a.tool"}}

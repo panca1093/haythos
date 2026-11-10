@@ -10,7 +10,7 @@ import (
 func TestBuildRequestSummaryIsUserInputAndToolsSorted(t *testing.T) {
 	h := []task.Message{
 		{Role: task.RoleSystem, Text: "goal"},
-		{Role: task.RoleSystem, Text: "the summary", Context: true, Kind: task.KindSummary},
+		{Role: task.RoleSystem, Text: "the summary", Context: true},
 		{Role: task.RoleUser, Text: "hi"},
 	}
 	req, _, err := buildRequest("m", h, []task.ToolSpec{{Name: "b.tool"}, {Name: "a.tool"}})
