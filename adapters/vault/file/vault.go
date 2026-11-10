@@ -1,6 +1,7 @@
 package file
 
 import (
+	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
@@ -25,15 +26,32 @@ type Vault struct {
 }
 
 // KeyFromEnv reads a base64 32-byte key from KeyEnv.
-// TODO: uncertain — OS keyring is not implemented, only the env var; verify before prod
 func KeyFromEnv(getenv func(string) string) ([]byte, error) {
 	raw := getenv(KeyEnv)
 	if raw == "" {
 		return nil, fmt.Errorf("%s is not set (generate one with: openssl rand -base64 32)", KeyEnv)
 	}
-	key, err := base64.StdEncoding.DecodeString(raw)
+	return decodeKey(raw, KeyEnv)
+}
+
+// Key reads the vault key from KeyEnv when set, else from the OS keychain.
+func Key(ctx context.Context, getenv func(string) string, kc interface {
+	Get(ctx context.Context) (string, error)
+}) ([]byte, error) {
+	if getenv(KeyEnv) != "" {
+		return KeyFromEnv(getenv)
+	}
+	raw, err := kc.Get(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("no vault key: %s is not set and the OS keychain has none (%w); generate one with: openssl rand -base64 32", KeyEnv, err)
+	}
+	return decodeKey(raw, "the vault key in the OS keychain")
+}
+
+func decodeKey(raw, source string) ([]byte, error) {
+	key, err := base64.StdEncoding.DecodeString(strings.TrimSpace(raw))
 	if err != nil || len(key) != 32 {
-		return nil, fmt.Errorf("%s must be base64 of exactly 32 bytes", KeyEnv)
+		return nil, fmt.Errorf("%s must be base64 of exactly 32 bytes", source)
 	}
 	return key, nil
 }

@@ -38,6 +38,7 @@ import (
 	"github.com/panca/haythos/adapters/tools/local/vmhealth"
 	"github.com/panca/haythos/adapters/tools/mcp"
 	"github.com/panca/haythos/adapters/vault/file"
+	"github.com/panca/haythos/adapters/vault/keychain"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
 )
@@ -96,7 +97,7 @@ func run(args []string) error {
 	if cfg.Sidecar.Command != "" {
 		slog.Warn("the sidecar block is ignored since claude-sub runs the claude CLI directly; delete it from the config")
 	}
-	key, err := file.KeyFromEnv(os.Getenv)
+	key, err := file.Key(context.Background(), os.Getenv, keychain.New())
 	if err != nil {
 		return err
 	}
