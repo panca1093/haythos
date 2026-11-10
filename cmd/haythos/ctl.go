@@ -65,7 +65,9 @@ func runStop(ctx context.Context, p paths, out io.Writer) error {
 	}
 	deadline := time.Now().Add(stopWait)
 	for time.Now().Before(deadline) {
-		if _, err := os.Stat(p.Socket); errors.Is(err, os.ErrNotExist) {
+		_, statErr := os.Stat(p.Socket)
+		// A service manager may restart the kernel at once, so a gone pid counts as stopped too.
+		if errors.Is(statErr, os.ErrNotExist) || errors.Is(syscall.Kill(pid, 0), syscall.ESRCH) {
 			_, _ = fmt.Fprintf(out, "stopped pid %d\n", pid)
 			return nil
 		}

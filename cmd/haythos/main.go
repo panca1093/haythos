@@ -88,6 +88,21 @@ func run(args []string) error {
 			return runStatus(ctx, home, os.Stdout)
 		}
 		return runStop(ctx, home, os.Stdout)
+	case "service":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		args, err := serveArgs(*cfgPath, *policyPath, *jobsDir)
+		if err != nil {
+			return err
+		}
+		in, err := newInstaller(home, args)
+		if err != nil {
+			return err
+		}
+		return runService(ctx, rest, &serviceDeps{
+			kc: keychain.New(), getenv: os.Getenv, in: os.Stdin, out: os.Stdout, installer: in,
+			stop: func(ctx context.Context) error { return runStop(ctx, home, os.Stdout) },
+		})
 	}
 
 	cfg, err := config.LoadMain(*cfgPath)
@@ -259,7 +274,7 @@ func run(args []string) error {
 			}
 		}
 	}
-	return fmt.Errorf("unknown command %q (serve, status, stop, run-job, auth, setup)", cmd)
+	return fmt.Errorf("unknown command %q (serve, status, stop, service, run-job, auth, setup)", cmd)
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
