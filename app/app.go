@@ -30,7 +30,11 @@ const (
 )
 
 type Deps struct {
-	Models      map[string]Model
+	Models map[string]Model
+	// Windows maps a model name to its context size in tokens; missing means defaultWindow.
+	Windows map[string]int
+	// CompactAt is the share of the window at which a conversation is compacted; 0 means defaultCompactAt.
+	CompactAt   float64
 	DefaultJob  Job
 	Jobs        []Job
 	Tools       Tools
@@ -119,6 +123,9 @@ func New(d Deps) *App {
 	if d.StepTimeout == 0 {
 		d.StepTimeout = defaultStepTimeout
 	}
+	if d.CompactAt <= 0 || d.CompactAt > 1 {
+		d.CompactAt = defaultCompactAt
+	}
 	a := &App{d: d}
 	a.registerSettings()
 	a.gw = gateway.New(gateway.Deps{
@@ -126,6 +133,19 @@ func New(d Deps) *App {
 		Clock: d.Clock, ApprovalTTL: d.ApprovalTTL, Paused: a.paused.Load, Hook: a.hook,
 	})
 	return a
+}
+
+const (
+	defaultWindow    = 200_000
+	defaultCompactAt = 0.92
+)
+
+// window is the context size of model in tokens.
+func (a *App) window(model string) int {
+	if w := a.d.Windows[model]; w > 0 {
+		return w
+	}
+	return defaultWindow
 }
 
 func (a *App) hook(point string) error {
