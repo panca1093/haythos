@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,6 +12,7 @@ import (
 )
 
 const (
+	lockPoll  = 100 * time.Millisecond
 	spawnPoll = 200 * time.Millisecond
 	spawnWait = 15 * time.Second
 )
@@ -28,7 +30,7 @@ func ensureKernel(ctx context.Context, p paths, spawn func() error, dial func(co
 		return fmt.Errorf("open spawn lock: %w", err)
 	}
 	defer func() { _ = f.Close() }()
-	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+	if err := lockContext(ctx, f); err != nil {
 		return fmt.Errorf("take spawn lock: %w", err)
 	}
 	if dial(ctx) == nil {
@@ -50,6 +52,21 @@ func ensureKernel(ctx context.Context, p paths, spawn func() error, dial func(co
 			if dial(ctx) == nil {
 				return nil
 			}
+		}
+	}
+}
+
+// lockContext polls LOCK_NB because a blocking flock cannot be interrupted by ctx.
+func lockContext(ctx context.Context, f *os.File) error {
+	for {
+		err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		if !errors.Is(err, syscall.EWOULDBLOCK) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(lockPoll):
 		}
 	}
 }

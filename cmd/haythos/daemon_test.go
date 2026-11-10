@@ -73,6 +73,36 @@ func TestEnsureKernelTimeout(t *testing.T) {
 	}
 }
 
+func TestEnsureKernelLockWaitHonoursContext(t *testing.T) {
+	t.Parallel()
+	p := shortHome(t)
+	if err := os.MkdirAll(p.Run, 0o700); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	f, err := os.OpenFile(p.SpawnLock, os.O_CREATE|os.O_RDWR, 0o600)
+	if err != nil {
+		t.Fatalf("open lock: %v", err)
+	}
+	defer func() { _ = f.Close() }()
+	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX); err != nil {
+		t.Fatalf("flock: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(150*time.Millisecond, cancel)
+	done := make(chan error, 1)
+	go func() {
+		done <- ensureKernel(ctx, p, func() error { return nil }, func(context.Context) error { return errors.New("refused") })
+	}()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("err = %v, want context.Canceled", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatalf("ensureKernel still blocked on the lock after the context was cancelled")
+	}
+}
+
 func TestEnsureKernelSpawnFails(t *testing.T) {
 	t.Parallel()
 	err := ensureKernel(context.Background(), shortHome(t), func() error { return errors.New("exec failed") }, func(context.Context) error { return errors.New("refused") })
