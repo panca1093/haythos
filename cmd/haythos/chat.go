@@ -1,0 +1,130 @@
+package main
+
+import (
+	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"strings"
+	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/panca/haythos/adapters/channel/ws"
+	"github.com/panca/haythos/adapters/tui"
+)
+
+const dialProbe = time.Second
+
+// connect starts the kernel when nobody answers on the socket, then dials it.
+func connect(ctx context.Context, home paths, args []string) (*ws.Client, error) {
+	probe := func(ctx context.Context) error {
+		ctx, cancel := context.WithTimeout(ctx, dialProbe)
+		defer cancel()
+		c, err := ws.Dial(ctx, home.Socket)
+		if err != nil {
+			return err
+		}
+		return c.Close()
+	}
+	if err := ensureKernel(ctx, home, func() error { return spawnKernel(home, args) }, probe); err != nil {
+		return nil, err
+	}
+	return ws.Dial(ctx, home.Socket)
+}
+
+func runChat(ctx context.Context, home paths, serve []string, args []string) error {
+	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
+	resume := fs.Bool("resume", false, "continue the latest TUI conversation")
+	session := fs.String("session", "", "continue the given TUI conversation")
+	if err := fs.Parse(args); err != nil {
+		return fmt.Errorf("parse chat flags: %w", err)
+	}
+	c, err := connect(ctx, home, serve)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	var items []ws.Session
+	if *resume || *session != "" {
+		if items, err = listSessions(ctx, c); err != nil {
+			return err
+		}
+	}
+	conv, err := pickConv(items, *resume, *session, newConvID)
+	if err != nil {
+		return err
+	}
+	_, err = tea.NewProgram(tui.New(c, conv, binaryVersion()), tea.WithAltScreen(), tea.WithContext(ctx)).Run()
+	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
+		return fmt.Errorf("run chat: %w", err)
+	}
+	_, _ = fmt.Fprintf(os.Stdout, "left %s; the kernel keeps running (haythos chat --session %s)\n", conv, strings.TrimPrefix(conv, ws.Prefix))
+	return nil
+}
+
+func runSessions(ctx context.Context, home paths, serve []string, out io.Writer) error {
+	c, err := connect(ctx, home, serve)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = c.Close() }()
+	items, err := listSessions(ctx, c)
+	if err != nil {
+		return err
+	}
+	printSessions(out, items, time.Local)
+	return nil
+}
+
+func listSessions(ctx context.Context, c *ws.Client) ([]ws.Session, error) {
+	if err := c.Send(ctx, ws.Sessions{}); err != nil {
+		return nil, err
+	}
+	f, err := c.Next(ctx)
+	if err != nil {
+		return nil, err
+	}
+	if f.Type != ws.TypeSessionsList {
+		return nil, fmt.Errorf("kernel answered sessions with %q: %s", f.Type, f.Message)
+	}
+	return f.Items, nil
+}
+
+// pickConv: a new conversation by default; items are newest first.
+func pickConv(items []ws.Session, resume bool, session string, fresh func() string) (string, error) {
+	switch {
+	case resume && session != "":
+		return "", errors.New("use either --resume or --session, not both")
+	case resume:
+		if len(items) == 0 {
+			return "", errors.New("no TUI conversation to resume; run `haythos chat` to start one")
+		}
+		return items[0].Conv, nil
+	case session != "":
+		want := ws.Prefix + strings.TrimPrefix(session, ws.Prefix)
+		for _, it := range items {
+			if it.Conv == want {
+				return want, nil
+			}
+		}
+		return "", fmt.Errorf("unknown session %q; `haythos sessions` lists them", session)
+	}
+	return fresh(), nil
+}
+
+func newConvID() string {
+	b := make([]byte, 6)
+	_, _ = rand.Read(b)
+	return ws.Prefix + hex.EncodeToString(b)
+}
+
+func printSessions(out io.Writer, items []ws.Session, loc *time.Location) {
+	for _, it := range items {
+		_, _ = fmt.Fprintf(out, "%s  %s  %s\n", it.Conv, it.LastAt.In(loc).Format("2006-01-02 15:04"), it.FirstUser)
+	}
+}

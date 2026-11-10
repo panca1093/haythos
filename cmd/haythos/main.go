@@ -88,6 +88,17 @@ func run(args []string) error {
 			return runStatus(ctx, home, os.Stdout)
 		}
 		return runStop(ctx, home, os.Stdout)
+	case "chat", "sessions":
+		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		defer stop()
+		args, err := serveArgs(*cfgPath, *policyPath, *jobsDir)
+		if err != nil {
+			return err
+		}
+		if cmd == "chat" {
+			return runChat(ctx, home, args, rest)
+		}
+		return runSessions(ctx, home, args, os.Stdout)
 	case "service":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
@@ -274,7 +285,7 @@ func run(args []string) error {
 			}
 		}
 	}
-	return fmt.Errorf("unknown command %q (serve, status, stop, service, run-job, auth, setup)", cmd)
+	return fmt.Errorf("unknown command %q (serve, chat, sessions, status, stop, service, run-job, auth, setup)", cmd)
 }
 
 // buildModels constructs only the models that the default and the jobs actually use.
