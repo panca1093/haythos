@@ -33,7 +33,7 @@ const (
 	vaultName     = "chatgpt"
 )
 
-var ErrSignInRequired = errors.New("chatgpt sign-in required, run `haythosd auth chatgpt`")
+var ErrSignInRequired = errors.New("chatgpt sign-in required, run `haythos auth chatgpt`")
 
 // Store is the vault; *file.Vault satisfies it.
 type Store interface {
@@ -155,7 +155,7 @@ func (s *Session) AccessToken(ctx context.Context) (string, error) {
 	return r.AccessToken, nil
 }
 
-// replacedBy reports whether a concurrent `haythosd auth chatgpt` stored a newer grant, which then wins over ours.
+// replacedBy reports whether a concurrent `haythos auth chatgpt` stored a newer grant, which then wins over ours.
 func (s *Session) replacedBy(ours string) (string, bool, error) {
 	cur, ok := s.load()
 	if !ok || cur.RefreshToken == ours {

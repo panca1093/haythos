@@ -57,13 +57,13 @@ var brainChatTools = []string{"brain.recall", "brain.remember", "brain.forget"}
 
 func main() {
 	if err := run(os.Args[1:]); err != nil {
-		slog.Error("haythosd failed", "err", err)
+		slog.Error("haythos failed", "err", err)
 		os.Exit(1)
 	}
 }
 
 func run(args []string) error {
-	fs := flag.NewFlagSet("haythosd", flag.ContinueOnError)
+	fs := flag.NewFlagSet("haythos", flag.ContinueOnError)
 	cfgPath := fs.String("config", "config/haythos.yaml", "main config")
 	policyPath := fs.String("policy", "config/policy.yaml", "policy config")
 	jobsDir := fs.String("jobs", "jobs", "jobs directory")
@@ -158,7 +158,7 @@ func run(args []string) error {
 	if cmd == "serve" {
 		token, err := vault.Resolve("secret://discord")
 		if err != nil {
-			return fmt.Errorf("discord token missing, run `haythosd auth discord`: %w", err)
+			return fmt.Errorf("discord token missing, run `haythos auth discord`: %w", err)
 		}
 		if cfg.Discord.OwnerID == "" {
 			return errors.New("discord.owner_id must be set in the config")
@@ -192,7 +192,7 @@ func run(args []string) error {
 	switch cmd {
 	case "run-job":
 		if len(rest) != 1 {
-			return errors.New("usage: haythosd run-job <name>")
+			return errors.New("usage: haythos run-job <name>")
 		}
 		// Other tasks are left for serve: resuming them here would deliver their notices to stdout.
 		if err := a.RestorePause(ctx); err != nil {
@@ -212,7 +212,7 @@ func run(args []string) error {
 			return err
 		}
 		defer func() { _ = channel.Close() }()
-		slog.Info("haythosd running", "jobs", len(jobs))
+		slog.Info("haythos running", "jobs", len(jobs))
 		t := time.NewTicker(tickEvery)
 		defer t.Stop()
 		for {
@@ -250,7 +250,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "anthropic", "openai":
 			secret, err := vault.Resolve("secret://" + m.Secret)
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythosd auth`", "model", name)
+				slog.Warn("model skipped: credential missing, run `haythos auth`", "model", name)
 				continue
 			}
 			if m.Kind == "anthropic" {
@@ -261,7 +261,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "claudesdk":
 			token, err := vault.Resolve("secret://claude")
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythosd auth claude`", "model", name)
+				slog.Warn("model skipped: credential missing, run `haythos auth claude`", "model", name)
 				continue
 			}
 			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token))
@@ -272,7 +272,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 			}
 		case "chatgpt":
 			if !vault.Has("chatgpt") {
-				slog.Warn("model skipped: not signed in, run `haythosd auth chatgpt`", "model", name)
+				slog.Warn("model skipped: not signed in, run `haythos auth chatgpt`", "model", name)
 				continue
 			}
 			// One session for all chatgpt models, so refreshes of the rotating token stay serialized.
@@ -347,7 +347,7 @@ var authTargets = map[string]authTarget{
 // runAuth stores one secret in the vault. The kernel never does OAuth; it only stores what the user pastes.
 func runAuth(args []string, v *file.Vault, out io.Writer, readSecret func() (string, error)) error {
 	if len(args) != 1 {
-		return fmt.Errorf("usage: haythosd auth <claude|chatgpt|anthropic|openai|discord>")
+		return fmt.Errorf("usage: haythos auth <claude|chatgpt|anthropic|openai|discord>")
 	}
 	t, ok := authTargets[args[0]]
 	if !ok {
@@ -414,7 +414,7 @@ func lockInstance(dbPath string) (func(), error) {
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		_ = f.Close()
 		if errors.Is(err, syscall.EWOULDBLOCK) {
-			return nil, fmt.Errorf("another haythosd is using %s; stop it first", dbPath)
+			return nil, fmt.Errorf("another haythos is using %s; stop it first", dbPath)
 		}
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
@@ -459,7 +459,7 @@ func runSetup(ctx context.Context, d setupDeps) error {
 	}
 	token := extractToken(raw.String())
 	if token == "" {
-		return errors.New("no token found in the `claude setup-token` output (it may be wrapped across lines); run `haythosd auth claude` and paste the token instead")
+		return errors.New("no token found in the `claude setup-token` output (it may be wrapped across lines); run `haythos auth claude` and paste the token instead")
 	}
 	if err := d.vault.Set("claude", token); err != nil {
 		return fmt.Errorf("store token: %w", err)

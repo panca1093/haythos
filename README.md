@@ -10,12 +10,12 @@ Requirements: Go (version in `go.mod`), the official `claude` CLI for the Claude
 export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it the vault cannot be read
 ```
 
-### `haythosd setup` (Claude subscription, recommended)
+### `haythos setup` (Claude subscription, recommended)
 
 One command onboards `claude-sub` (kind `claudesdk`). Needs the official `claude` CLI on `PATH` (or `claude_cli.command` in the config) and `HAYTHOS_VAULT_KEY` set.
 
 ```bash
-go run ./cmd/haythosd setup
+go run ./cmd/haythos setup
 ```
 
 1. Runs `claude setup-token` (browser login). The long-lived token it prints is stored in the vault as `secret://claude`; the console shows `[stored in vault]` instead of the token.
@@ -25,25 +25,25 @@ go run ./cmd/haythosd setup
 
 If the token cannot be found in the CLI output, use the manual route below. If only the model list fails, the token stays stored; re-run `setup`.
 
-### `haythosd auth` (manual fallback)
+### `haythos auth` (manual fallback)
 
 Secrets go into an encrypted file vault (`data/vault.enc`, AES-256-GCM, key from `HAYTHOS_VAULT_KEY`). Apart from `auth chatgpt` (below), the kernel never does OAuth; you paste what each provider gives you. Input is hidden.
 
 ```bash
-go run ./cmd/haythosd auth claude      # paste the token printed by `claude setup-token` (same secret `setup` fills)
-go run ./cmd/haythosd auth anthropic   # Anthropic API key (Messages API)
-go run ./cmd/haythosd auth openai      # key for an OpenAI-compatible endpoint
-go run ./cmd/haythosd auth discord     # Discord bot token
+go run ./cmd/haythos auth claude      # paste the token printed by `claude setup-token` (same secret `setup` fills)
+go run ./cmd/haythos auth anthropic   # Anthropic API key (Messages API)
+go run ./cmd/haythos auth openai      # key for an OpenAI-compatible endpoint
+go run ./cmd/haythos auth discord     # Discord bot token
 ```
 
 Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`. (`discord.channel_id` is gone; if your file still has it, Alfred ignores it with a warning, so delete it.)
 
-### `haythosd auth chatgpt` (ChatGPT plan)
+### `haythos auth chatgpt` (ChatGPT plan)
 
 Runs Alfred on your ChatGPT plan through OpenAI's official [Sign in with ChatGPT token sharing](https://developers.openai.com/siwc/token-sharing-open-source) for open-source apps. HaythOS registers as its own app ("HaythOS"); it does not reuse Codex credentials.
 
 ```bash
-go run ./cmd/haythosd auth chatgpt
+go run ./cmd/haythos auth chatgpt
 ```
 
 1. Prints a `http://127.0.0.1:<port>/login/...` link and tries to open your browser. Sign in and allow ChatGPT plan usage.
@@ -57,11 +57,11 @@ Headless server (VPS): the login callback goes to `127.0.0.1` on the machine wit
 ### Start
 
 ```bash
-go run ./cmd/haythosd              # serve: Discord + scheduler
-go run ./cmd/haythosd run-job vm-health   # one-shot manual trigger, prints the report to stdout
+go run ./cmd/haythos              # serve: Discord + scheduler
+go run ./cmd/haythos run-job vm-health   # one-shot manual trigger, prints the report to stdout
 ```
 
-Only one `haythosd` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
+Only one `haythos` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
 
 Discord: only `discord.owner_id` is obeyed, everywhere; everyone else is ignored. Alfred answers like this:
 
@@ -75,7 +75,7 @@ Alfred replies (and asks for approval) where you wrote. `/pause` stops every wri
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythosd setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
+Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythos setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
 
 ### Runtime settings
 
@@ -134,7 +134,7 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 
 | Folder | What it is |
 | --- | --- |
-| `cmd/haythosd/` | The `haythosd` binary: CLI subcommands (`serve`, `run-job`, `auth`, `setup`) and wiring of everything below |
+| `cmd/haythos/` | The `haythos` binary: CLI subcommands (`serve`, `run-job`, `auth`, `setup`) and wiring of everything below |
 | `core/` | Pure rules with no I/O: task state machine, policy tiers, output contract |
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |

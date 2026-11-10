@@ -17,7 +17,7 @@ The model decides; the kernel executes, guards, and remembers.
 
 ```
 haythos/
-  cmd/haythosd/        # wiring only: build adapters, inject into app
+  cmd/haythos/        # wiring only: build adapters, inject into app
   core/                # pure domain, imports nothing outside core and stdlib
     task/              # task state machine + transitions
     policy/            # tiers, taint rules, approval validation
@@ -118,7 +118,7 @@ Exception (M3, not now): coding tasks via `Builder` may auto-write inside the sa
 - `gofmt` + `goimports`; `golangci-lint run` must pass with the repo's `.golangci.yml`. Do not disable a linter inline without a one-line reason.
 - `context.Context` is the first parameter of anything that does I/O or can block. Never store a context in a struct.
 - Errors: wrap with `fmt.Errorf("verb noun: %w", err)`; sentinel errors in the package that owns them (`var ErrInvalidTransition = errors.New(...)`); compare with `errors.Is/As`. No `panic` outside `main` and impossible-state assertions.
-- No package-level mutable state. Dependencies arrive through constructors (`New(...)`), wired in `cmd/haythosd`.
+- No package-level mutable state. Dependencies arrive through constructors (`New(...)`), wired in `cmd/haythos`.
 - Small interfaces defined where they are consumed (`app/ports.go`), not where they are implemented.
 - Logging with `log/slog`, structured key-value pairs. Never log secrets, tokens, tool arguments for write tools, or message bodies.
 - Time comes from an injected clock (`func() time.Time` or a tiny `Clock` interface) so scheduler, expiry, and budgets are testable.
