@@ -96,6 +96,7 @@ func (r *m2bRig) boot() {
 		Tools: tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{"vm.read": policy.TierRead}},
 		Clock:  r.clock.Now, ApprovalTTL: time.Hour,
+		Windows: map[string]int{"default": 70000}, CompactAt: 0.12,
 	})
 	if err := r.app.Start(context.Background()); err != nil {
 		r.t.Fatalf("start: %v", err)
@@ -164,7 +165,7 @@ func TestDMLooksBack24HoursThreadsDoNot(t *testing.T) {
 	m2bSees(t, r.send("thread-1", false, "thread later"), "thread old")
 }
 
-// M2B-4. Past 7,000 estimated tokens the oldest turns become a summary that survives a restart and is not recomputed.
+// M2B-4. Past CompactAt of the model window (8,400 tokens in this rig) the oldest turns become a summary that survives a restart and is not recomputed.
 func TestOverflowFoldsIntoSummaryThatSurvivesRestart(t *testing.T) {
 	r := newM2bRig(t)
 	for _, q := range []string{"big one", "big two", "big three"} {
