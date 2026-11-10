@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -366,5 +367,130 @@ func TestControlSequencesAreStrippedFromUntrustedText(t *testing.T) {
 	}
 	if strings.Contains(strings.ReplaceAll(out, "\x1b[", ""), "\x1b") {
 		t.Errorf("output contains a raw ESC not from styling")
+	}
+}
+
+func withClock(m tea.Model, now *time.Time) tea.Model {
+	m.(*model).now = func() time.Time { return *now }
+	return m
+}
+
+func TestWorkingIndicatorWhileWaiting(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	m, _ := start(t)
+	m = withClock(m, &now)
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator shown while idle:\n%s", m.View())
+	}
+	m, _ = enter(typeText(m, "hi"))
+	if !m.(*model).ticking {
+		t.Fatal("sending a message must start the indicator ticker")
+	}
+	first := m.View()
+	if !strings.Contains(first, workVerbs[0]+"…") || !strings.Contains(first, "(0s)") {
+		t.Fatalf("indicator missing after send:\n%s", first)
+	}
+	now = now.Add(verbEvery + time.Second)
+	m, next := m.Update(tickMsg{})
+	if next == nil {
+		t.Fatal("ticker must keep running while waiting")
+	}
+	later := m.View()
+	if !strings.Contains(later, workVerbs[1]+"…") || !strings.Contains(later, "(5s)") || later == first {
+		t.Fatalf("indicator did not advance:\n%s", later)
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hello"})
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator still shown after the answer:\n%s", m.View())
+	}
+	if _, cmd := m.Update(tickMsg{}); cmd != nil {
+		t.Fatal("ticker must stop once idle")
+	}
+}
+
+func TestWorkingIndicatorPausesForApproval(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	m, _ := start(t)
+	m = withClock(m, &now)
+	m, _ = enter(typeText(m, "post it"))
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "a1", Tool: "discord.post", Target: "c", Tier: 2}})
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator shown while waiting for the owner:\n%s", m.View())
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	if !m.(*model).ticking || !strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator must resume after approving:\n%s", m.View())
+	}
+}
+
+func TestElapsed(t *testing.T) {
+	t.Parallel()
+	for d, want := range map[time.Duration]string{0: "0s", 12 * time.Second: "12s", 65 * time.Second: "1m 05s"} {
+		if got := elapsed(d); got != want {
+			t.Errorf("elapsed(%v) = %q, want %q", d, got, want)
+		}
+	}
+}
+
+func TestWorkingIndicatorStopsOnEveryOutcome(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		msg  tea.Msg
+	}{
+		{"answer", frameMsg(ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "ok"})},
+		{"failed task", frameMsg(ws.Frame{Type: ws.TypeNotice, Kind: "task.state", State: "failed", Text: "Task failed: budget"})},
+		{"kernel error", frameMsg(ws.Frame{Type: ws.TypeError, Message: "input failed"})},
+		{"send error", sendErrMsg{err: errors.New("timeout"), input: true}},
+		{"disconnect", connErrMsg{err: errors.New("eof")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m, _ := start(t)
+			m, _ = enter(typeText(m, "hi"))
+			m, _ = m.Update(tc.msg)
+			if strings.Contains(m.View(), "…  (") {
+				t.Fatalf("indicator still shown after %s:\n%s", tc.name, m.View())
+			}
+		})
+	}
+}
+
+func TestWorkingIndicatorWaitsForEveryMessageInFlight(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
+	m, _ := start(t)
+	m = withClock(m, &now)
+	m, _ = enter(typeText(m, "one"))
+	now = now.Add(3 * time.Second)
+	m, _ = enter(typeText(m, "two"))
+	if !strings.Contains(m.View(), "(3s)") {
+		t.Fatalf("a second message must not reset the timer:\n%s", m.View())
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "answer one"})
+	if !strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator gone while the second message is still running:\n%s", m.View())
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "answer two"})
+	if strings.Contains(m.View(), "…  (") {
+		t.Fatalf("indicator still shown after both answers:\n%s", m.View())
+	}
+}
+
+func TestErrorsNotAboutAMessageKeepTheIndicator(t *testing.T) {
+	t.Parallel()
+	for _, msg := range []tea.Msg{
+		frameMsg(ws.Frame{Type: ws.TypeError, Message: "approval refused: it can only be decided from the conversation that asked for it"}),
+		frameMsg(ws.Frame{Type: ws.TypeError, Message: "decide failed"}),
+		sendErrMsg{err: errors.New("timeout")},
+	} {
+		m, _ := start(t)
+		m, _ = enter(typeText(m, "hi"))
+		m, _ = m.Update(msg)
+		if !strings.Contains(m.View(), "…  (") {
+			t.Fatalf("indicator hidden by %+v:\n%s", msg, m.View())
+		}
 	}
 }

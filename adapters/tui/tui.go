@@ -41,7 +41,22 @@ type frameMsg ws.Frame
 
 type connErrMsg struct{ err error }
 
-type sendErrMsg struct{ err error }
+type sendErrMsg struct {
+	err   error
+	input bool
+}
+
+type tickMsg struct{}
+
+const (
+	tickEvery = 120 * time.Millisecond
+	verbEvery = 4 * time.Second
+)
+
+var (
+	spinFrames = []string{"·", "✢", "✳", "✶", "✻", "✽", "✻", "✶", "✳", "✢"}
+	workVerbs  = []string{"Menimbang", "Menelusuri", "Merangkai", "Mencermati", "Menyusun", "Meracik", "Menata", "Merenungkan"}
+)
 
 type model struct {
 	conn    Conn
@@ -57,6 +72,12 @@ type model struct {
 	printed                 []string
 	carded                  bool
 	summary                 Summary
+	// inflight counts the owner's messages Alfred has not answered yet; busySince is when the first of them was sent.
+	inflight  int
+	busySince time.Time
+	ticking   bool
+	frame     int
+	now       func() time.Time
 }
 
 var (
@@ -77,7 +98,7 @@ var (
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
 func New(c Conn, opts Options) tea.Model {
-	return &model{conn: c, opts: opts, state: "idle", width: 80, summary: Summary{Conv: opts.Conv, Started: time.Now()}}
+	return &model{conn: c, opts: opts, state: "idle", width: 80, now: time.Now, summary: Summary{Conv: opts.Conv, Started: time.Now()}}
 }
 
 // SummaryOf returns the exit summary of a model New returned.
@@ -103,7 +124,7 @@ func (m *model) handshake() tea.Cmd {
 		}
 		for _, f := range frames {
 			if err := m.send(f); err != nil {
-				return sendErrMsg{err}
+				return sendErrMsg{err: err}
 			}
 		}
 		return nil
@@ -129,7 +150,8 @@ func (m *model) send(f any) error {
 func (m *model) sendCmd(f any) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.send(f); err != nil {
-			return sendErrMsg{err}
+			_, input := f.(ws.Input)
+			return sendErrMsg{err: err, input: input}
 		}
 		return nil
 	}
@@ -150,9 +172,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width = msg.Width
 	case frameMsg:
 		return m, tea.Batch(m.onFrame(ws.Frame(msg)), m.read())
+	case tickMsg:
+		if !m.busy() {
+			m.ticking = false
+			return m, nil
+		}
+		m.frame++
+		return m, m.tick()
 	case connErrMsg:
+		m.inflight = 0
 		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
+		if msg.input {
+			m.answered()
+		}
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
 		return m.onKey(msg)
@@ -189,6 +222,9 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	case ws.TypeNotice:
 		return m.onNotice(f)
 	case ws.TypeError:
+		if inputError(f.Message) {
+			m.answered()
+		}
 		return m.print(errStyle.Render(f.Message))
 	}
 	return nil
@@ -206,6 +242,7 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		return m.print(dimStyle.Render("  ⎿ " + f.Text))
 	case "message.done":
 		m.state = "done"
+		m.answered()
 		if f.Window > 0 {
 			m.context, m.window, m.cached = f.Context, f.Window, f.Cached
 		}
@@ -213,6 +250,9 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 	case "task.state":
 		if f.State != "" {
 			m.state = f.State
+		}
+		if f.State == "failed" {
+			m.answered()
 		}
 		return m.print(dimStyle.Render("  " + f.Text))
 	default:
@@ -267,6 +307,7 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(
 				m.print(dimStyle.Render(verdict+p.Approval.Tool+" → "+p.Approval.Target)),
 				m.sendCmd(ws.Decide{TaskID: p.TaskID, ApprovalID: p.Approval.ID, Approve: approve}),
+				m.startTicker(),
 			)
 		}
 		return m, nil
@@ -287,9 +328,53 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.title(text)
 		m.summary.UserMessages++
 		m.state = "running"
-		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}))
+		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}), m.work())
 	}
 	return m, nil
+}
+
+// work counts a new message in flight and starts the indicator; the timer runs from the first unanswered message.
+func (m *model) work() tea.Cmd {
+	if m.inflight == 0 {
+		m.busySince, m.frame = m.now(), 0
+	}
+	m.inflight++
+	return m.startTicker()
+}
+
+// inputError reports whether an error frame answers a sent message; the strings mirror adapters/channel/ws/server.go.
+func inputError(msg string) bool {
+	return strings.HasPrefix(msg, "input ") || msg == "empty input" || msg == "subscribe to a conversation first"
+}
+
+func (m *model) answered() { m.inflight = max(0, m.inflight-1) }
+
+func (m *model) startTicker() tea.Cmd {
+	if m.ticking || !m.busy() {
+		return nil
+	}
+	m.ticking = true
+	return m.tick()
+}
+
+func (m *model) tick() tea.Cmd {
+	return tea.Tick(tickEvery, func(time.Time) tea.Msg { return tickMsg{} })
+}
+
+func (m *model) busy() bool { return m.inflight > 0 && len(m.pending) == 0 }
+
+func (m *model) working() string {
+	d := m.now().Sub(m.busySince)
+	verb := workVerbs[int(d/verbEvery)%len(workVerbs)]
+	return dotStyle.Render(spinFrames[m.frame%len(spinFrames)]) + " " + nameStyle.Render(verb+"…") + dimStyle.Render("  ("+elapsed(d)+")")
+}
+
+func elapsed(d time.Duration) string {
+	s := int(d / time.Second)
+	if s < 60 {
+		return fmt.Sprintf("%ds", s)
+	}
+	return fmt.Sprintf("%dm %02ds", s/60, s%60)
 }
 
 // edit applies line-editing keys the way a shell prompt does; Cmd+Backspace arrives as Ctrl+U.
@@ -452,6 +537,9 @@ func (m *model) View() string {
 		}
 		body = append(body, okStyle.Render("[y] izinkan")+"   "+dimStyle.Render("[n] tolak"))
 		parts = append(parts, askStyle.Width(w-2).Render(strings.Join(body, "\n")))
+	}
+	if m.busy() {
+		parts = append(parts, m.working())
 	}
 	prompt := userStyle.Render("› ") + m.inputView()
 	if len(m.pending) > 0 {
