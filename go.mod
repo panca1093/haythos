@@ -4,6 +4,7 @@ go 1.26.3
 
 require (
 	github.com/bwmarrin/discordgo v0.29.0
+	github.com/coder/websocket v1.8.15
 	github.com/google/go-cmp v0.7.0
 	github.com/robfig/cron/v3 v3.0.1
 	golang.org/x/term v0.47.0
