@@ -485,7 +485,11 @@ func (a *App) finish(ctx context.Context, id, text string) error {
 	if err := a.setState(ctx, id, task.Done, ""); err != nil {
 		return err
 	}
-	return a.notify(ctx, id, "final", Notice{Kind: NoticeMessage, Text: text})
+	n := Notice{Kind: NoticeMessage, Text: text}
+	if s, err := a.Snapshot(ctx, id); err == nil {
+		n.Tokens, n.Budget = s.Tokens, s.Created.Budget.Tokens
+	}
+	return a.notify(ctx, id, "final", n)
 }
 
 func (a *App) fail(ctx context.Context, id, reason string) error {

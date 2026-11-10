@@ -49,10 +49,14 @@ type model struct {
 	state   string
 	pending []ws.Pending
 	input   []rune
+	cursor  int
 	width   int
-	printed []string
-	carded  bool
-	summary Summary
+	// modelName, tokens and budget feed the status line.
+	modelName      string
+	tokens, budget int
+	printed        []string
+	carded         bool
+	summary        Summary
 }
 
 var (
@@ -65,6 +69,7 @@ var (
 	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6c07b"))
 	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7fbf7f"))
 	ruleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4a525c"))
+	curStyle  = lipgloss.NewStyle().Reverse(true)
 	cardStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#4a525c")).Padding(0, 1)
 	askStyle  = lipgloss.NewStyle().Border(lipgloss.ThickBorder(), false, false, false, true).BorderForeground(lipgloss.Color("#e6c07b")).PaddingLeft(1)
 )
@@ -158,6 +163,7 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	switch f.Type {
 	case ws.TypeWelcome:
 		var cmds []tea.Cmd
+		m.modelName = modelLabel(f)
 		if !m.carded {
 			m.carded = true
 			cmds = append(cmds, m.print(m.card(f)))
@@ -198,6 +204,9 @@ func (m *model) onNotice(f ws.Frame) tea.Cmd {
 		return m.print(dimStyle.Render("  ⎿ " + f.Text))
 	case "message.done":
 		m.state = "done"
+		if f.Budget > 0 {
+			m.tokens, m.budget = f.Tokens, f.Budget
+		}
 		return m.print(alfredLine(f.Text))
 	case "task.state":
 		if f.State != "" {
@@ -260,10 +269,13 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if m.edit(k) {
+		return m, nil
+	}
 	switch k.Type {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(string(m.input))
-		m.input = nil
+		m.input, m.cursor = nil, 0
 		switch {
 		case text == "":
 			return m, nil
@@ -274,16 +286,74 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.summary.UserMessages++
 		m.state = "running"
 		return m, tea.Batch(m.print(userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}))
-	case tea.KeyBackspace:
-		if len(m.input) > 0 {
-			m.input = m.input[:len(m.input)-1]
-		}
-	case tea.KeySpace:
-		m.input = append(m.input, ' ')
-	case tea.KeyRunes:
-		m.input = append(m.input, k.Runes...)
 	}
 	return m, nil
+}
+
+// edit applies line-editing keys the way a shell prompt does; Cmd+Backspace arrives as Ctrl+U.
+func (m *model) edit(k tea.KeyMsg) bool {
+	in, c := m.input, m.cursor
+	switch {
+	case k.Type == tea.KeyRunes && k.Alt && len(k.Runes) == 1 && k.Runes[0] == 'b', k.Type == tea.KeyLeft && k.Alt, k.Type == tea.KeyCtrlLeft:
+		m.cursor = wordStart(in, c)
+	case k.Type == tea.KeyRunes && k.Alt && len(k.Runes) == 1 && k.Runes[0] == 'f', k.Type == tea.KeyRight && k.Alt, k.Type == tea.KeyCtrlRight:
+		m.cursor = wordEnd(in, c)
+	case k.Type == tea.KeyRunes:
+		m.insert(k.Runes)
+	case k.Type == tea.KeySpace:
+		m.insert([]rune{' '})
+	case k.Type == tea.KeyLeft:
+		m.cursor = max(0, c-1)
+	case k.Type == tea.KeyRight:
+		m.cursor = min(len(in), c+1)
+	case k.Type == tea.KeyHome, k.Type == tea.KeyCtrlA:
+		m.cursor = 0
+	case k.Type == tea.KeyEnd, k.Type == tea.KeyCtrlE:
+		m.cursor = len(in)
+	case k.Type == tea.KeyBackspace && k.Alt, k.Type == tea.KeyCtrlW:
+		m.cut(wordStart(in, c), c)
+	case k.Type == tea.KeyBackspace:
+		m.cut(max(0, c-1), c)
+	case k.Type == tea.KeyDelete:
+		m.cut(c, min(len(in), c+1))
+	case k.Type == tea.KeyCtrlU:
+		m.cut(0, c)
+	case k.Type == tea.KeyCtrlK:
+		m.cut(c, len(in))
+	default:
+		return false
+	}
+	return true
+}
+
+func (m *model) insert(r []rune) {
+	m.input = append(m.input[:m.cursor], append(r, m.input[m.cursor:]...)...)
+	m.cursor += len(r)
+}
+
+func (m *model) cut(from, to int) {
+	m.input = append(m.input[:from:from], m.input[to:]...)
+	m.cursor = from
+}
+
+func wordStart(in []rune, c int) int {
+	for c > 0 && in[c-1] == ' ' {
+		c--
+	}
+	for c > 0 && in[c-1] != ' ' {
+		c--
+	}
+	return c
+}
+
+func wordEnd(in []rune, c int) int {
+	for c < len(in) && in[c] == ' ' {
+		c++
+	}
+	for c < len(in) && in[c] != ' ' {
+		c++
+	}
+	return c
 }
 
 func userLine(text string) string {
@@ -300,15 +370,19 @@ func alfredLine(text string) string {
 	return dotStyle.Render("●") + " " + text
 }
 
-func (m *model) card(f ws.Frame) string {
-	model := f.Model
-	if model == "" {
-		model = "default"
+func modelLabel(f ws.Frame) string {
+	label := f.Model
+	if label == "" {
+		label = "default"
 	}
 	if f.DefaultModel != "" {
-		model += " · " + f.DefaultModel
+		label += " · " + f.DefaultModel
 	}
-	lines := []string{nameStyle.Render("◆ Alfred") + "  " + dimStyle.Render("v"+m.opts.Display), dimStyle.Render(model)}
+	return label
+}
+
+func (m *model) card(f ws.Frame) string {
+	lines := []string{nameStyle.Render("◆ Alfred") + "  " + dimStyle.Render("v"+m.opts.Display), dimStyle.Render(modelLabel(f))}
 	if dir := shortPath(m.opts.Workdir, m.opts.Home); dir != "" {
 		lines = append(lines, dimStyle.Render(dir))
 	}
@@ -339,13 +413,49 @@ func (m *model) View() string {
 		body = append(body, okStyle.Render("[y] izinkan")+"   "+dimStyle.Render("[n] tolak"))
 		parts = append(parts, askStyle.Width(w-2).Render(strings.Join(body, "\n")))
 	}
-	prompt := userStyle.Render("› ") + string(m.input)
-	switch {
-	case len(m.pending) > 0:
+	prompt := userStyle.Render("› ") + m.inputView()
+	if len(m.pending) > 0 {
 		prompt = userStyle.Render("› ") + dimStyle.Render("(menunggu izin…)")
-	case len(m.input) == 0:
-		prompt = userStyle.Render("› ") + dimStyle.Render("tanya Alfred…")
 	}
-	parts = append(parts, rule, prompt, rule, dimStyle.Render("  ● "+m.state+" · exit / /exit / /quit untuk keluar"))
+	parts = append(parts, rule, prompt, rule, m.status())
 	return strings.Join(parts, "\n")
+}
+
+// inputView draws the text with a block cursor; an empty input shows the cursor over the placeholder.
+func (m *model) inputView() string {
+	if len(m.input) == 0 {
+		ph := []rune("tanya Alfred…")
+		return curStyle.Render(string(ph[0])) + dimStyle.Render(string(ph[1:]))
+	}
+	before, at, after := string(m.input[:m.cursor]), " ", ""
+	if m.cursor < len(m.input) {
+		at, after = string(m.input[m.cursor]), string(m.input[m.cursor+1:])
+	}
+	return before + curStyle.Render(at) + after
+}
+
+func (m *model) status() string {
+	parts := []string{"● " + m.state}
+	if m.modelName != "" {
+		parts = append(parts, nameStyle.Render(m.modelName))
+	}
+	ctx := "ctx --"
+	if m.budget > 0 {
+		ctx = fmt.Sprintf("ctx %s/%s %s", kilo(m.tokens), kilo(m.budget), bar(m.tokens, m.budget, 10))
+	}
+	parts = append(parts, ctx)
+	return dimStyle.Render("  ") + strings.Join(parts, dimStyle.Render(" · "))
+}
+
+func kilo(n int) string {
+	if n < 1000 {
+		return fmt.Sprint(n)
+	}
+	s := fmt.Sprintf("%.1f", float64(n)/1000)
+	return strings.TrimSuffix(s, ".0") + "k"
+}
+
+func bar(used, total, cells int) string {
+	filled := min(cells, max(0, (used*cells+total/2)/total))
+	return strings.Repeat("▰", filled) + strings.Repeat("▱", cells-filled)
 }

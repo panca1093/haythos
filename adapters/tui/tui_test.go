@@ -219,17 +219,73 @@ func TestApprovalBlock(t *testing.T) {
 	}
 }
 
-func TestViewIsInputAndHintOnly(t *testing.T) {
+func TestViewIsInputAndStatusOnly(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
 	view := m.View()
-	for _, want := range []string{"›", "tanya Alfred…", "exit / /exit / /quit"} {
+	for _, want := range []string{"›", "anya Alfred…", "ctx --"} {
 		if !strings.Contains(view, want) {
 			t.Errorf("view lacks %q:\n%s", want, view)
 		}
 	}
+	if strings.Contains(view, "exit") {
+		t.Errorf("view still explains how to exit:\n%s", view)
+	}
 	if lines := strings.Count(view, "\n") + 1; lines > 6 {
 		t.Fatalf("idle view is %d lines; the transcript belongs in the scrollback:\n%s", lines, view)
+	}
+}
+
+func TestStatusShowsModelAndContextUse(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, Model: "opus", DefaultModel: "claude-sub"})
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Tokens: 12400, Budget: 50000})
+	view := m.View()
+	for _, want := range []string{"opus", "ctx 12.4k/50k", "▰▰▱▱▱▱▱▱▱▱"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("status lacks %q:\n%s", want, view)
+		}
+	}
+}
+
+func key(m tea.Model, k tea.KeyMsg) tea.Model {
+	m, _ = m.Update(k)
+	return m
+}
+
+func TestLineEditing(t *testing.T) {
+	t.Parallel()
+	left := tea.KeyMsg{Type: tea.KeyLeft}
+	for _, tc := range []struct {
+		name       string
+		keys       []tea.KeyMsg
+		want       string
+		wantCursor int
+	}{
+		{"typing", nil, "halo dunia", 10},
+		{"left then insert", []tea.KeyMsg{left, left, left, left, left, {Type: tea.KeyRunes, Runes: []rune("x")}}, "halo xdunia", 6},
+		{"home and end", []tea.KeyMsg{{Type: tea.KeyHome}, {Type: tea.KeyRunes, Runes: []rune(">")}, {Type: tea.KeyEnd}}, ">halo dunia", 11},
+		{"ctrl+a ctrl+e", []tea.KeyMsg{{Type: tea.KeyCtrlA}, {Type: tea.KeyDelete}, {Type: tea.KeyCtrlE}}, "alo dunia", 9},
+		{"cmd+backspace clears to start", []tea.KeyMsg{left, left, {Type: tea.KeyCtrlU}}, "ia", 0},
+		{"ctrl+k clears to end", []tea.KeyMsg{{Type: tea.KeyCtrlA}, {Type: tea.KeyCtrlK}}, "", 0},
+		{"option+backspace deletes a word", []tea.KeyMsg{{Type: tea.KeyBackspace, Alt: true}}, "halo ", 5},
+		{"ctrl+w deletes a word", []tea.KeyMsg{{Type: tea.KeyCtrlW}}, "halo ", 5},
+		{"option+left moves a word", []tea.KeyMsg{{Type: tea.KeyLeft, Alt: true}, {Type: tea.KeyRunes, Runes: []rune("_")}}, "halo _dunia", 6},
+		{"backspace at cursor", []tea.KeyMsg{left, {Type: tea.KeyBackspace}}, "halo duna", 8},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			m, _ := start(t)
+			m = typeText(m, "halo dunia")
+			for _, k := range tc.keys {
+				m = key(m, k)
+			}
+			mm := m.(*model)
+			if string(mm.input) != tc.want || mm.cursor != tc.wantCursor {
+				t.Fatalf("input = %q cursor %d, want %q cursor %d", string(mm.input), mm.cursor, tc.want, tc.wantCursor)
+			}
+		})
 	}
 }
 

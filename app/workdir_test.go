@@ -33,7 +33,7 @@ func workdirApp(t *testing.T, n *testfakes.Notifier, tools *workdirTools, turns 
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
 		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"fs.read"}},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"fs.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
 		Tools:      tools,
 		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{"fs.read": policy.TierRead}},
@@ -103,5 +103,18 @@ func TestConversationViewCountsMessagesAndToolCalls(t *testing.T) {
 	}
 	if v.UserMessages != 2 || v.ToolCalls != 1 {
 		t.Fatalf("counts = %d user, %d tool, want 2 and 1", v.UserMessages, v.ToolCalls)
+	}
+}
+
+func TestFinalMessageCarriesTokensAndBudget(t *testing.T) {
+	n := &testfakes.Notifier{}
+	tools := &workdirTools{Tools: testfakes.NewTools()}
+	a := workdirApp(t, n, tools, task.AssistantTurn{Text: "hi", Usage: task.Usage{InputTokens: 1200, OutputTokens: 34}})
+	if _, err := a.HandleInput(context.Background(), app.Input{Text: "hello", ReplyTo: "tui:abc"}); err != nil {
+		t.Fatal(err)
+	}
+	got := n.Of(app.NoticeMessage)
+	if len(got) != 1 || got[0].Tokens != 1234 || got[0].Budget != 50000 {
+		t.Fatalf("message notice = %+v, want tokens 1234 of budget 50000", got)
 	}
 }
