@@ -21,6 +21,7 @@ import (
 
 const (
 	writeTimeout = 5 * time.Second
+	outboundCap  = 64
 	readLimit    = 1 << 20
 	probeTimeout = time.Second
 	// maxSocketPath is the macOS sun_path limit (104 with the NUL); Linux allows 108.
@@ -53,11 +54,17 @@ type Server struct {
 	up    chan struct{}
 }
 
+// conn queues frames for its own writer goroutine, so a stalled client can only ever fill its own queue.
 type conn struct {
-	ws *websocket.Conn
-	// wmu serializes writes and guards conv.
-	wmu  sync.Mutex
-	conv string
+	ws   *websocket.Conn
+	out  chan []byte
+	done chan struct{}
+	once sync.Once
+	// mu guards conv, loading and held; held collects notices that arrive while history is being loaded.
+	mu      sync.Mutex
+	conv    string
+	loading bool
+	held    [][]byte
 }
 
 func New(cfg Config, h Handler) *Server {
@@ -144,13 +151,14 @@ func (s *Server) accept(kernel context.Context, w http.ResponseWriter, r *http.R
 		return
 	}
 	wsc.SetReadLimit(readLimit)
-	c := &conn{ws: wsc}
+	c := &conn{ws: wsc, out: make(chan []byte, outboundCap), done: make(chan struct{})}
 	s.mu.Lock()
 	s.conns[c] = struct{}{}
 	s.mu.Unlock()
-	defer s.drop(c)
 	ctx, cancel := context.WithCancel(kernel)
-	defer cancel()
+	writerDone := make(chan struct{})
+	go func() { defer close(writerDone); s.writer(ctx, c) }()
+	defer func() { s.drop(c); cancel(); <-writerDone }()
 	for {
 		_, b, err := wsc.Read(ctx)
 		if err != nil {
@@ -158,7 +166,7 @@ func (s *Server) accept(kernel context.Context, w http.ResponseWriter, r *http.R
 		}
 		var f clientFrame
 		if err := json.Unmarshal(b, &f); err != nil {
-			s.reply(ctx, c, errorFrame("frame is not a JSON object"))
+			s.reply(c, errorFrame("frame is not a JSON object"))
 			continue
 		}
 		s.dispatch(ctx, kernel, c, f)
@@ -168,18 +176,18 @@ func (s *Server) accept(kernel context.Context, w http.ResponseWriter, r *http.R
 func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 	switch f.Type {
 	case TypeHello:
-		s.reply(ctx, c, Frame{Type: TypeWelcome, Version: s.cfg.Version, PID: os.Getpid(), StartedAt: s.cfg.StartedAt, Channels: s.cfg.Channels})
+		s.reply(c, Frame{Type: TypeWelcome, Version: s.cfg.Version, PID: os.Getpid(), StartedAt: s.cfg.StartedAt, Channels: s.cfg.Channels})
 	case TypeSubscribe:
 		s.subscribe(ctx, c, f.Conv)
 	case TypeInput:
 		conv := s.convOf(c)
 		switch {
 		case conv == "":
-			s.reply(ctx, c, errorFrame("subscribe to a conversation first"))
+			s.reply(c, errorFrame("subscribe to a conversation first"))
 		case f.Conv != conv:
-			s.reply(ctx, c, errorFrame("input refused: this connection may only write to "+conv))
+			s.reply(c, errorFrame("input refused: this connection may only write to "+conv))
 		case strings.TrimSpace(f.Text) == "":
-			s.reply(ctx, c, errorFrame("empty input"))
+			s.reply(c, errorFrame("empty input"))
 		default:
 			s.background(kernel, c, "input", func(ctx context.Context) error {
 				_, err := s.h.HandleInput(ctx, app.Input{Text: f.Text, ReplyTo: conv})
@@ -190,7 +198,7 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		conv := s.convOf(c)
 		origin, err := s.h.TaskOrigin(ctx, f.TaskID)
 		if conv == "" || err != nil || origin != conv {
-			s.reply(ctx, c, errorFrame("approval refused: it can only be decided from the conversation that asked for it"))
+			s.reply(c, errorFrame("approval refused: it can only be decided from the conversation that asked for it"))
 			return
 		}
 		s.background(kernel, c, "approval", func(ctx context.Context) error {
@@ -200,35 +208,47 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		convs, err := s.h.Conversations(ctx, Prefix)
 		if err != nil {
 			slog.Warn("ws list sessions failed", "err", err)
-			s.reply(ctx, c, errorFrame("could not list sessions"))
+			s.reply(c, errorFrame("could not list sessions"))
 			return
 		}
 		out := Frame{Type: TypeSessionsList, Items: []Session{}}
 		for _, cv := range convs {
 			out.Items = append(out.Items, Session{Conv: cv.ReplyTo, FirstUser: cv.FirstUser, LastAt: cv.LastAt})
 		}
-		s.reply(ctx, c, out)
+		s.reply(c, out)
 	default:
-		s.reply(ctx, c, errorFrame(fmt.Sprintf("unknown frame type %q", f.Type)))
+		s.reply(c, errorFrame(fmt.Sprintf("unknown frame type %q", f.Type)))
 	}
 }
 
-// subscribe holds the write lock from switching conv to sending history, so no notice can arrive before the history.
+// subscribe sets conv first and holds back notices until the history is queued, so none arrives before it.
 func (s *Server) subscribe(ctx context.Context, c *conn, conv string) {
 	if !strings.HasPrefix(conv, Prefix) || len(conv) == len(Prefix) {
-		s.reply(ctx, c, errorFrame("subscribe refused: clients may only open "+Prefix+" conversations"))
+		s.reply(c, errorFrame("subscribe refused: clients may only open "+Prefix+" conversations"))
 		return
 	}
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	c.conv = conv
+	c.mu.Lock()
+	c.conv, c.loading, c.held = conv, true, nil
+	c.mu.Unlock()
 	v, err := s.h.ConversationView(ctx, conv)
+	first := historyFrame(conv, v)
 	if err != nil {
 		slog.Warn("ws conversation view failed", "conv", conv, "err", err)
-		_ = s.write(ctx, c, errorFrame("could not load the conversation"))
+		first = errorFrame("could not load the conversation")
+	}
+	b, merr := json.Marshal(first)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.loading = false
+	held := c.held
+	c.held = nil
+	if merr != nil {
+		slog.Warn("ws history encode failed", "conv", conv)
 		return
 	}
-	_ = s.write(ctx, c, historyFrame(conv, v))
+	for _, b := range append([][]byte{b}, held...) {
+		s.enqueue(c, b)
+	}
 }
 
 // background runs kernel work under the kernel context: closing the TUI never cancels a task.
@@ -238,63 +258,85 @@ func (s *Server) background(kernel context.Context, c *conn, what string, fn fun
 		defer s.work.Done()
 		if err := fn(kernel); err != nil && kernel.Err() == nil {
 			slog.Warn("ws "+what+" failed", "err", err)
-			s.reply(kernel, c, errorFrame(what+" failed: "+err.Error()))
+			s.reply(c, errorFrame(what+" failed: "+err.Error()))
 		}
 	}()
 }
 
-// Publish sends a notice to every connection on its conversation; no subscriber is not an error.
-func (s *Server) Publish(ctx context.Context, n app.Notice) error {
+// Publish queues a notice for every connection on its conversation and never waits on a client; no subscriber is not an error.
+func (s *Server) Publish(_ context.Context, n app.Notice) error {
 	s.mu.Lock()
-	var targets []*conn
+	targets := make([]*conn, 0, len(s.conns))
 	for c := range s.conns {
 		targets = append(targets, c)
 	}
 	s.mu.Unlock()
-	f := noticeFrame(n)
+	b, err := json.Marshal(noticeFrame(n))
+	if err != nil {
+		return fmt.Errorf("encode notice frame: %w", err)
+	}
 	for _, c := range targets {
-		c.wmu.Lock()
-		match := c.conv != "" && c.conv == n.ReplyTo
-		var err error
-		if match {
-			err = s.write(ctx, c, f)
+		c.mu.Lock()
+		switch {
+		case c.conv == "" || c.conv != n.ReplyTo:
+		case c.loading:
+			if len(c.held) >= outboundCap {
+				s.drop(c)
+			} else {
+				c.held = append(c.held, b)
+			}
+		default:
+			s.enqueue(c, b)
 		}
-		c.wmu.Unlock()
-		if err != nil {
-			slog.Warn("ws publish failed; closing client", "err", err)
-			s.drop(c)
-		}
+		c.mu.Unlock()
 	}
 	return nil
 }
 
 func (s *Server) convOf(c *conn) string {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	return c.conv
 }
 
-func (s *Server) reply(ctx context.Context, c *conn, f Frame) {
-	c.wmu.Lock()
-	defer c.wmu.Unlock()
-	_ = s.write(ctx, c, f)
-}
-
-// write requires c.wmu.
-func (s *Server) write(ctx context.Context, c *conn, f Frame) error {
+func (s *Server) reply(c *conn, f Frame) {
 	b, err := json.Marshal(f)
 	if err != nil {
-		return fmt.Errorf("encode %s frame: %w", f.Type, err)
+		slog.Warn("ws frame encode failed", "type", f.Type)
+		return
 	}
-	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
-	defer cancel()
-	if err := c.ws.Write(ctx, websocket.MessageText, b); err != nil {
-		return fmt.Errorf("write %s frame: %w", f.Type, err)
+	s.enqueue(c, b)
+}
+
+// enqueue never blocks; a client that cannot keep up is closed and gets the history again when it reattaches.
+func (s *Server) enqueue(c *conn, b []byte) {
+	select {
+	case c.out <- b:
+	default:
+		slog.Warn("ws client too slow; closing it")
+		s.drop(c)
 	}
-	return nil
+}
+
+func (s *Server) writer(ctx context.Context, c *conn) {
+	for {
+		select {
+		case <-c.done:
+			return
+		case b := <-c.out:
+			wctx, cancel := context.WithTimeout(ctx, writeTimeout)
+			err := c.ws.Write(wctx, websocket.MessageText, b)
+			cancel()
+			if err != nil {
+				s.drop(c)
+				return
+			}
+		}
+	}
 }
 
 func (s *Server) drop(c *conn) {
+	c.once.Do(func() { close(c.done) })
 	s.mu.Lock()
 	delete(s.conns, c)
 	s.mu.Unlock()

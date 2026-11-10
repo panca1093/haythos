@@ -329,6 +329,46 @@ func TestPublishOnlyToSubscribers(t *testing.T) {
 	}
 }
 
+func TestStalledClientDoesNotBlockPublish(t *testing.T) {
+	t.Parallel()
+	r := startServer(t, newFakeHandler())
+	stalled := dialRaw(t, r.socket)
+	stalled.subscribe("tui:stalled")
+	healthy := dialRaw(t, r.socket)
+	healthy.subscribe("tui:healthy")
+
+	big := strings.Repeat("x", 32<<10)
+	for i := range 400 {
+		start := time.Now()
+		if err := r.srv.Publish(context.Background(), app.Notice{Kind: app.NoticeMessage, TaskID: "t", Text: big, ReplyTo: "tui:stalled"}); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+		if d := time.Since(start); d > 100*time.Millisecond {
+			t.Fatalf("publish %d took %s with a client that never reads", i, d)
+		}
+	}
+	start := time.Now()
+	if err := r.srv.Publish(context.Background(), app.Notice{Kind: app.NoticeMessage, TaskID: "t", Text: "hi", ReplyTo: "tui:healthy"}); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if d := time.Since(start); d > 100*time.Millisecond {
+		t.Fatalf("publish to the healthy client took %s", d)
+	}
+	if f := healthy.expect(ws.TypeNotice); f.Text != "hi" {
+		t.Fatalf("healthy client got %+v", f)
+	}
+
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		if _, err := stalled.next(time.Until(deadline)); err != nil {
+			if time.Now().After(deadline) {
+				t.Fatalf("stalled client was never dropped: %v", err)
+			}
+			return
+		}
+	}
+}
+
 func TestSessionsList(t *testing.T) {
 	t.Parallel()
 	h := newFakeHandler()
