@@ -74,7 +74,7 @@ func (a *App) Tick(ctx context.Context) error {
 			continue
 		}
 		if in.run {
-			if _, err := a.createTask(ctx, id, j, in.text, ""); err != nil {
+			if _, err := a.createTask(ctx, id, j, in.text, "", ""); err != nil {
 				errs = append(errs, err)
 				continue
 			}

@@ -32,6 +32,8 @@ type Hello struct {
 
 type Subscribe struct {
 	Conv string `json:"conv"`
+	// Workdir is the absolute folder the chat was opened in; read tools are confined to it.
+	Workdir string `json:"workdir,omitempty"`
 }
 
 type Input struct {
@@ -92,6 +94,7 @@ type clientFrame struct {
 	Instance   string `json:"instance"`
 	Version    string `json:"version"`
 	Conv       string `json:"conv"`
+	Workdir    string `json:"workdir"`
 	Text       string `json:"text"`
 	TaskID     string `json:"task_id"`
 	ApprovalID string `json:"approval_id"`
@@ -133,10 +136,16 @@ type Frame struct {
 	PID       int       `json:"pid,omitempty"`
 	StartedAt time.Time `json:"started_at,omitzero"`
 	Channels  []string  `json:"channels,omitempty"`
+	// Model is the model value in use ("" = the provider default); DefaultModel is its config name.
+	Model        string `json:"model,omitempty"`
+	DefaultModel string `json:"default_model,omitempty"`
 
 	Conv    string    `json:"conv,omitempty"`
 	Turns   []Turn    `json:"turns,omitempty"`
 	Pending []Pending `json:"pending,omitempty"`
+
+	UserMessages int `json:"user_messages,omitempty"`
+	ToolCalls    int `json:"tool_calls,omitempty"`
 
 	Kind     string    `json:"kind,omitempty"`
 	TaskID   string    `json:"task_id,omitempty"`
@@ -144,6 +153,9 @@ type Frame struct {
 	State    string    `json:"state,omitempty"`
 	Reason   string    `json:"reason,omitempty"`
 	Approval *Approval `json:"approval,omitempty"`
+	Tokens   int       `json:"tokens,omitempty"`
+	Budget   int       `json:"budget,omitempty"`
+	Cached   int       `json:"cached,omitempty"`
 
 	Items []Session `json:"items,omitempty"`
 
@@ -158,7 +170,7 @@ func approvalOf(r app.ApprovalRequest) Approval {
 }
 
 func historyFrame(conv string, v app.ConversationView) Frame {
-	f := Frame{Type: TypeHistory, Conv: conv}
+	f := Frame{Type: TypeHistory, Conv: conv, UserMessages: v.UserMessages, ToolCalls: v.ToolCalls}
 	for _, t := range v.Turns {
 		f.Turns = append(f.Turns, Turn{User: t.User, Answer: t.Answer, At: t.At})
 	}
@@ -169,7 +181,7 @@ func historyFrame(conv string, v app.ConversationView) Frame {
 }
 
 func noticeFrame(n app.Notice) Frame {
-	f := Frame{Type: TypeNotice, Kind: string(n.Kind), TaskID: n.TaskID, Text: n.Text, State: string(n.State), Reason: n.Reason}
+	f := Frame{Type: TypeNotice, Kind: string(n.Kind), TaskID: n.TaskID, Text: n.Text, State: string(n.State), Reason: n.Reason, Tokens: n.Tokens, Budget: n.Budget, Cached: n.Cached}
 	if n.Approval != nil {
 		a := approvalOf(*n.Approval)
 		f.Approval = &a

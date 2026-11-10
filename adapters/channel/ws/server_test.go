@@ -62,6 +62,8 @@ func (h *fakeHandler) Conversations(_ context.Context, prefix string) ([]app.Con
 	return h.convs, nil
 }
 
+func (h *fakeHandler) CurrentModel() string { return "opus" }
+
 func (h *fakeHandler) TaskOrigin(_ context.Context, taskID string) (string, error) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -99,7 +101,7 @@ type rig struct {
 func startServer(t *testing.T, h *fakeHandler) *rig {
 	t.Helper()
 	socket := filepath.Join(shortDir(t), "run", "haythos.sock")
-	srv := ws.New(ws.Config{SocketPath: socket, Version: "v1", StartedAt: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC), Channels: []string{"discord", "ws"}}, h)
+	srv := ws.New(ws.Config{SocketPath: socket, Version: "v1", DefaultModel: "claude-sub", StartedAt: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC), Channels: []string{"discord", "ws"}}, h)
 	ctx, cancel := context.WithCancel(context.Background())
 	r := &rig{srv: srv, h: h, socket: socket, errc: make(chan error, 1)}
 	go func() { r.errc <- srv.Serve(ctx) }()
@@ -522,5 +524,58 @@ func TestSocketPathTooLong(t *testing.T) {
 	err := ws.New(ws.Config{SocketPath: socket}, newFakeHandler()).Serve(context.Background())
 	if err == nil || !strings.Contains(err.Error(), "HAYTHOS_HOME") {
 		t.Fatalf("serve on a %d-byte path = %v, want a hint to shorten HAYTHOS_HOME", len(socket), err)
+	}
+}
+
+func TestWelcomeNamesTheModel(t *testing.T) {
+	t.Parallel()
+	r := startServer(t, newFakeHandler())
+	c := dialRaw(t, r.socket)
+	c.send(ws.Hello{Client: "tui", Instance: "i1", Version: "v1"})
+	if w := c.expect(ws.TypeWelcome); w.Model != "opus" || w.DefaultModel != "claude-sub" {
+		t.Fatalf("welcome model = %q/%q, want opus/claude-sub", w.Model, w.DefaultModel)
+	}
+}
+
+func TestInputCarriesTheChatFolder(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct{ name, sent, want string }{
+		{"absolute folder", "/home/me/project", "/home/me/project"},
+		{"relative folder is ignored", "project", ""},
+		{"no folder", "", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			r := startServer(t, newFakeHandler())
+			c := dialRaw(t, r.socket)
+			c.send(ws.Subscribe{Conv: "tui:x", Workdir: tc.sent})
+			c.expect(ws.TypeHistory)
+			c.send(ws.Input{Conv: "tui:x", Text: "hello"})
+			deadline := time.Now().Add(5 * time.Second)
+			for time.Now().Before(deadline) {
+				r.h.mu.Lock()
+				got := append([]app.Input(nil), r.h.inputs...)
+				r.h.mu.Unlock()
+				if len(got) == 1 {
+					if got[0].Workdir != tc.want {
+						t.Fatalf("workdir = %q, want %q", got[0].Workdir, tc.want)
+					}
+					return
+				}
+				time.Sleep(10 * time.Millisecond)
+			}
+			t.Fatalf("handler never got the input")
+		})
+	}
+}
+
+func TestHistoryCarriesCounts(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	h.views["tui:a"] = app.ConversationView{UserMessages: 3, ToolCalls: 2}
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	if got := c.subscribe("tui:a"); got.UserMessages != 3 || got.ToolCalls != 2 {
+		t.Fatalf("history counts = %d/%d, want 3/2", got.UserMessages, got.ToolCalls)
 	}
 }

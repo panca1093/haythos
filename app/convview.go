@@ -26,6 +26,8 @@ type PendingApproval struct {
 type ConversationView struct {
 	Turns   []TurnView
 	Pending []PendingApproval
+	// UserMessages and ToolCalls count the whole conversation, for the chat's exit summary.
+	UserMessages, ToolCalls int
 }
 
 type ConversationSummary struct {
@@ -38,6 +40,7 @@ type taskScan struct {
 	state     task.State
 	firstUser string
 	request   *approvalRequested
+	calls     int
 }
 
 // scanLog reads the whole event log once.
@@ -69,8 +72,14 @@ func (a *App) scanLog(ctx context.Context) ([]task.Event, map[string]*taskScan, 
 			}
 		case task.EvMessage:
 			var m task.Message
-			if t.firstUser == "" && json.Unmarshal(e.Payload, &m) == nil && m.Role == task.RoleUser && !m.Context {
+			if json.Unmarshal(e.Payload, &m) != nil {
+				continue
+			}
+			if t.firstUser == "" && m.Role == task.RoleUser && !m.Context {
 				t.firstUser = m.Text
+			}
+			if m.Role == task.RoleAssistant {
+				t.calls += len(m.Calls)
 			}
 		case task.EvApprovalRequested:
 			var r approvalRequested
@@ -104,6 +113,10 @@ func (a *App) ConversationView(ctx context.Context, replyTo string) (Conversatio
 			}
 		case e.Type == task.EvCreated:
 			t := tasks[e.TaskID]
+			if t.replyTo == replyTo && t.firstUser != "" {
+				v.UserMessages++
+				v.ToolCalls += t.calls
+			}
 			if t.replyTo == replyTo && t.state == task.WaitingApproval && t.request != nil {
 				r := t.request
 				v.Pending = append(v.Pending, PendingApproval{TaskID: e.TaskID, Approval: ApprovalRequest{

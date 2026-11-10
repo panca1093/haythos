@@ -88,6 +88,19 @@ func originFrom(ctx context.Context) string {
 	return origin
 }
 
+type workdirKey struct{}
+
+// WithWorkdir sets the chat folder tools see; the kernel sets it from the task, tests set it directly.
+func WithWorkdir(ctx context.Context, dir string) context.Context {
+	return context.WithValue(ctx, workdirKey{}, dir)
+}
+
+// WorkdirFrom is the folder of the chat whose tool call is running; empty when the task has none.
+func WorkdirFrom(ctx context.Context) string {
+	dir, _ := ctx.Value(workdirKey{}).(string)
+	return dir
+}
+
 type brainSourceKey struct{}
 
 // BrainSourceFrom is the provenance of the task whose tool call is running.
@@ -221,11 +234,11 @@ func newID(prefix string) string {
 }
 
 func (a *App) CreateTask(ctx context.Context, job Job, input string) (string, error) {
-	return a.createTask(ctx, newID(job.Name), job, input, "")
+	return a.createTask(ctx, newID(job.Name), job, input, "", "")
 }
 
 // createTask is idempotent per id so the scheduler can retry after a crash.
-func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo string, prior ...task.Message) (string, error) {
+func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo, workdir string, prior ...task.Message) (string, error) {
 	existing, err := a.d.Events.Load(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("check task %s: %w", id, err)
@@ -244,7 +257,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -288,7 +301,7 @@ func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo, prior...)
+	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo, in.Workdir, prior...)
 	if err != nil {
 		return "", err
 	}
@@ -373,9 +386,11 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
-	out, err := a.gw.Execute(context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource), gateway.Request{
+	tctx := context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource)
+	out, err := a.gw.Execute(WithWorkdir(tctx, s.Created.Workdir), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
+		OnExecute: func() { a.publishToolActivity(ctx, id, s.Created.ReplyTo, call) },
 	})
 	switch {
 	case errors.Is(err, policy.ErrApprovalVoid):
@@ -470,7 +485,11 @@ func (a *App) finish(ctx context.Context, id, text string) error {
 	if err := a.setState(ctx, id, task.Done, ""); err != nil {
 		return err
 	}
-	return a.notify(ctx, id, "final", Notice{Kind: NoticeMessage, Text: text})
+	n := Notice{Kind: NoticeMessage, Text: text}
+	if s, err := a.Snapshot(ctx, id); err == nil {
+		n.Tokens, n.Budget, n.Cached = s.Tokens, s.Created.Budget.Tokens, s.Cached
+	}
+	return a.notify(ctx, id, "final", n)
 }
 
 func (a *App) fail(ctx context.Context, id, reason string) error {
@@ -642,4 +661,37 @@ func (a *App) RunJob(ctx context.Context, name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("job %q not found", name)
+}
+
+// publishToolActivity tells the chat a tool is starting; it is progress only, so it is not recorded or retried.
+func (a *App) publishToolActivity(ctx context.Context, id, replyTo string, call task.ToolCall) {
+	if replyTo == "" {
+		return
+	}
+	text := call.Name
+	if target := toolTarget(a.d.Tools.List([]string{call.Name}), call); target != "" {
+		text += " " + target
+	}
+	if err := a.d.Notifier.Publish(ctx, Notice{Kind: NoticeTool, TaskID: id, Text: text, ReplyTo: replyTo}); err != nil {
+		slog.Debug("publish tool activity failed", "task", id, "err", err)
+	}
+}
+
+// toolTarget is what a tool acts on: the declared target for writes, the path for reads; never other arguments.
+func toolTarget(specs []task.ToolSpec, call task.ToolCall) string {
+	var args map[string]any
+	if json.Unmarshal(call.Args, &args) != nil {
+		return ""
+	}
+	key := "path"
+	for _, s := range specs {
+		if s.Name == call.Name && s.Write {
+			key = s.TargetArg
+		}
+	}
+	v, _ := args[key].(string)
+	if r := []rune(v); len(r) > 80 {
+		v = string(r[:80]) + "…"
+	}
+	return v
 }

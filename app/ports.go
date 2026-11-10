@@ -60,6 +60,8 @@ const (
 	NoticeState    NoticeKind = "task.state"
 	NoticeAlert    NoticeKind = "alert"
 	NoticeDigest   NoticeKind = "brain.digest"
+	// NoticeTool is best-effort progress for interactive clients; channels may drop it.
+	NoticeTool NoticeKind = "tool.started"
 )
 
 type ApprovalRequest struct {
@@ -85,6 +87,8 @@ type Notice struct {
 	ReplyTo  string
 	// Tainted marks a notice from a task that read untrusted content; channels must not unfurl links in it.
 	Tainted bool
+	// Tokens is what the task has used of its Budget, and Cached its last step's cache reads; set on the final message.
+	Tokens, Budget, Cached int
 	// Undo are the per-item Undo buttons of a digest; the channel passes the chosen ID to App.UndoBrain.
 	Undo []UndoAction
 }
@@ -121,6 +125,8 @@ type Input struct {
 	ReplyTo string
 	// DM marks ReplyTo as a direct-message channel; conversation memory only looks back 24 h there.
 	DM bool
+	// Workdir is the folder the chat was opened in; empty when the channel has none.
+	Workdir string
 }
 
 type ModelChoice struct {

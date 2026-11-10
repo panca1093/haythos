@@ -96,6 +96,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		}
 		usage.InputTokens += resp.Usage.InputTokens
 		usage.OutputTokens += resp.Usage.OutputTokens
+		usage.CacheReadTokens = resp.Usage.CacheReadTokens
 		turn, err := parseOutput(resp.Text, tools, len(history))
 		if err == nil {
 			turn.Usage = usage

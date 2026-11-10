@@ -58,6 +58,9 @@ func dialKernel(t *testing.T, ctx context.Context, socket, conv string) *ws.Clie
 func nextOf(t *testing.T, ctx context.Context, c *ws.Client, typ string) ws.Frame {
 	t.Helper()
 	f, err := c.Next(ctx)
+	for err == nil && f.Type == ws.TypeNotice && f.Kind == string(app.NoticeTool) {
+		f, err = c.Next(ctx)
+	}
 	if err != nil {
 		t.Fatalf("waiting for %s: %v", typ, err)
 	}
@@ -243,6 +246,7 @@ func (nopHandler) Conversations(context.Context, string) ([]app.ConversationSumm
 	return nil, nil
 }
 func (nopHandler) TaskOrigin(context.Context, string) (string, error) { return "", nil }
+func (nopHandler) CurrentModel() string                               { return "" }
 
 func TestStopIgnoresStalePIDFile(t *testing.T) {
 	t.Parallel()

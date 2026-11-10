@@ -130,7 +130,7 @@ Ask Alfred in Discord, for example "every Monday 09:00 check the disk and report
 
 Where a job reports: `deliver_to` is a list of Discord channel or thread IDs, or `dm`. When you create a job from chat without saying where, it reports where you asked for it (that thread or your DM); say "report in #infra" and Alfred looks the channel up with the `discord.channels` tool. `jobs/*.yaml` jobs accept `deliver_to` too. With no target a job reports in your DM. A target that is not a channel or thread the bot can see in a server falls back to your DM with a note. `/jobs` shows each job's targets.
 
-Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 20k tokens / 5 steps (max 50k / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
+Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 200k tokens / 5 steps (max 1M / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
 
 ### Brain (gbrain)
 

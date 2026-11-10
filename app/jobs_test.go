@@ -42,7 +42,7 @@ func TestDefineJobValidation(t *testing.T) {
 		{name: "empty goal", mutate: func(d *app.JobDef) { d.Goal = " " }, wantErr: "goal is empty"},
 		{name: "unknown model", mutate: func(d *app.JobDef) { d.Model = "gpt-9" }, wantErr: "not configured"},
 		{name: "tool in policy but not registered", mutate: func(d *app.JobDef) { d.Tools = []string{"ghost"} }, wantErr: "does not exist"},
-		{name: "budget over cap", mutate: func(d *app.JobDef) { d.Budget = task.Budget{Tokens: 60000, Steps: 5} }, wantErr: "budget"},
+		{name: "budget over cap", mutate: func(d *app.JobDef) { d.Budget = task.Budget{Tokens: 1000001, Steps: 5} }, wantErr: "budget"},
 		{name: "partial budget", mutate: func(d *app.JobDef) { d.Budget = task.Budget{Tokens: 1000} }, wantErr: "budget"},
 	}
 	for _, tt := range tests {

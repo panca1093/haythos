@@ -75,3 +75,19 @@ func TestReplayRejectsInvalidTransition(t *testing.T) {
 		t.Errorf("err = %v", err)
 	}
 }
+
+func TestReplaySumsTokensAndKeepsLastCacheReads(t *testing.T) {
+	t.Parallel()
+	s, err := Replay([]Event{
+		ev(1, EvCreated, Created{Job: "j", Model: "m", Budget: Budget{Tokens: 100, Steps: 5}}),
+		ev(2, EvUsage, Usage{InputTokens: 30, OutputTokens: 5, CacheReadTokens: 20}),
+		ev(3, EvUsage, Usage{InputTokens: 50, OutputTokens: 10, CacheReadTokens: 40}),
+		ev(4, EvUsage, Usage{InputTokens: 20, OutputTokens: 1}),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s.Tokens != 116 || s.Cached != 0 {
+		t.Errorf("tokens = %d cached = %d, want the sum of all steps (116) and the last step's cache reads (0)", s.Tokens, s.Cached)
+	}
+}

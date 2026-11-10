@@ -138,3 +138,20 @@ func TestSetModelIsSafeAgainstConcurrentSteps(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+type usageTransport struct{}
+
+func (usageTransport) Step(_ context.Context, _ StepRequest) (StepResponse, error) {
+	return StepResponse{Text: `{"text":"ok"}`, Usage: task.Usage{InputTokens: 950, OutputTokens: 5, CacheReadTokens: 900}}, nil
+}
+
+func TestStepKeepsCacheReads(t *testing.T) {
+	t.Parallel()
+	turn, err := New(usageTransport{}).Step(context.Background(), []task.Message{{Role: task.RoleUser, Text: "hi"}}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if turn.Usage.CacheReadTokens != 900 {
+		t.Errorf("usage = %+v, want cache reads passed through", turn.Usage)
+	}
+}

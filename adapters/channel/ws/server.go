@@ -36,13 +36,15 @@ type Handler interface {
 	ConversationView(ctx context.Context, replyTo string) (app.ConversationView, error)
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
 	TaskOrigin(ctx context.Context, taskID string) (string, error)
+	CurrentModel() string
 }
 
 type Config struct {
-	SocketPath string
-	Version    string
-	StartedAt  time.Time
-	Channels   []string
+	SocketPath   string
+	Version      string
+	DefaultModel string
+	StartedAt    time.Time
+	Channels     []string
 }
 
 // Server is the one WebSocket door for every interactive client, on a unix socket.
@@ -64,6 +66,7 @@ type conn struct {
 	// mu guards conv, loading and held; held collects notices that arrive while history is being loaded.
 	mu      sync.Mutex
 	conv    string
+	workdir string
 	loading bool
 	held    [][]byte
 }
@@ -201,11 +204,11 @@ func (s *Server) accept(kernel context.Context, w http.ResponseWriter, r *http.R
 func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 	switch f.Type {
 	case TypeHello:
-		s.reply(c, Frame{Type: TypeWelcome, Version: s.cfg.Version, PID: os.Getpid(), StartedAt: s.cfg.StartedAt, Channels: s.cfg.Channels})
+		s.reply(c, Frame{Type: TypeWelcome, Version: s.cfg.Version, PID: os.Getpid(), StartedAt: s.cfg.StartedAt, Channels: s.cfg.Channels, Model: s.h.CurrentModel(), DefaultModel: s.cfg.DefaultModel})
 	case TypeSubscribe:
-		s.subscribe(ctx, c, f.Conv)
+		s.subscribe(ctx, c, f.Conv, f.Workdir)
 	case TypeInput:
-		conv := s.convOf(c)
+		conv, workdir := s.attachmentOf(c)
 		switch {
 		case conv == "":
 			s.reply(c, errorFrame("subscribe to a conversation first"))
@@ -215,7 +218,7 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 			s.reply(c, errorFrame("empty input"))
 		default:
 			s.background(kernel, c, "input", func(ctx context.Context) error {
-				_, err := s.h.HandleInput(ctx, app.Input{Text: f.Text, ReplyTo: conv})
+				_, err := s.h.HandleInput(ctx, app.Input{Text: f.Text, ReplyTo: conv, Workdir: workdir})
 				return err
 			})
 		}
@@ -247,13 +250,18 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 }
 
 // subscribe sets conv first and holds back notices until the history is queued, so none arrives before it.
-func (s *Server) subscribe(ctx context.Context, c *conn, conv string) {
+func (s *Server) subscribe(ctx context.Context, c *conn, conv, workdir string) {
 	if !strings.HasPrefix(conv, Prefix) || len(conv) == len(Prefix) {
 		s.reply(c, errorFrame("subscribe refused: clients may only open "+Prefix+" conversations"))
 		return
 	}
 	c.mu.Lock()
-	c.conv, c.loading, c.held = conv, true, nil
+	if filepath.IsAbs(workdir) {
+		workdir = filepath.Clean(workdir)
+	} else {
+		workdir = ""
+	}
+	c.conv, c.workdir, c.loading, c.held = conv, workdir, true, nil
 	c.mu.Unlock()
 	v, err := s.h.ConversationView(ctx, conv)
 	first := historyFrame(conv, v)
@@ -316,6 +324,12 @@ func (s *Server) Publish(_ context.Context, n app.Notice) error {
 		c.mu.Unlock()
 	}
 	return nil
+}
+
+func (s *Server) attachmentOf(c *conn) (conv, workdir string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.conv, c.workdir
 }
 
 func (s *Server) convOf(c *conn) string {

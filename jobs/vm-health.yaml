@@ -9,6 +9,6 @@ mode: background
 trigger:
   cron: "CRON_TZ=Asia/Jakarta 0 7,15 * * *"
   manual: true
-budget: { tokens: 20000, steps: 5 }
+budget: { tokens: 200000, steps: 5 }
 collect: vmhealth.read
 contract: report-short

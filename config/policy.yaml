@@ -1,6 +1,8 @@
 version: "1"
 tiers:
   vmhealth.read: 0
+  fs.list: 0
+  fs.read: 0
   jobs.list: 0
   discord.channels: 0
   discord.post: 2
