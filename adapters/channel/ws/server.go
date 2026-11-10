@@ -283,7 +283,7 @@ func (s *Server) background(kernel context.Context, c *conn, what string, fn fun
 		defer s.work.Done()
 		if err := fn(kernel); err != nil && kernel.Err() == nil {
 			slog.Warn("ws "+what+" failed", "err", err)
-			s.reply(c, errorFrame(what+" failed: "+err.Error()))
+			s.reply(c, errorFrame(what+" failed"))
 		}
 	}()
 }

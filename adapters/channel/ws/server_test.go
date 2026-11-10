@@ -29,6 +29,7 @@ type fakeHandler struct {
 	views     map[string]app.ConversationView
 	convs     []app.ConversationSummary
 	origins   map[string]string
+	failWith  error
 }
 
 func newFakeHandler() *fakeHandler {
@@ -39,14 +40,14 @@ func (h *fakeHandler) HandleInput(_ context.Context, in app.Input) (string, erro
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.inputs = append(h.inputs, in)
-	return "task-1", nil
+	return "task-1", h.failWith
 }
 
 func (h *fakeHandler) HandleApproval(_ context.Context, taskID, approvalID string, approve bool) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.decisions = append(h.decisions, taskID+"/"+approvalID)
-	return nil
+	return h.failWith
 }
 
 func (h *fakeHandler) ConversationView(_ context.Context, replyTo string) (app.ConversationView, error) {
@@ -367,6 +368,35 @@ func TestStalledClientDoesNotBlockPublish(t *testing.T) {
 			}
 			return
 		}
+	}
+}
+
+func TestHandlerErrorsAreNotSentToClients(t *testing.T) {
+	t.Parallel()
+	const secret = "dial tcp 10.0.0.7: token sk-leak refused"
+	tests := []struct {
+		name  string
+		frame any
+		want  string
+	}{
+		{"input", ws.Input{Conv: "tui:me", Text: "hi"}, "input failed"},
+		{"approval", ws.Decide{TaskID: "t-mine", ApprovalID: "ap", Approve: true}, "approval failed"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			h := newFakeHandler()
+			h.origins["t-mine"] = "tui:me"
+			h.failWith = errors.New(secret)
+			r := startServer(t, h)
+			c := dialRaw(t, r.socket)
+			c.subscribe("tui:me")
+			c.send(tt.frame)
+			f := c.expect(ws.TypeError)
+			if f.Message != tt.want || strings.Contains(f.Message, "sk-leak") {
+				t.Fatalf("error message = %q, want %q", f.Message, tt.want)
+			}
+		})
 	}
 }
 
