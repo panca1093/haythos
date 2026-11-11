@@ -69,4 +69,3 @@ The user asked for M2 unattended. Same overrides as M1:
 - No real credentials and no live calls to Discord or model providers. Live checks become items for the user in `docs/REPORT.md`.
 - Any decision you would normally ask about: pick the simplest option consistent with `CLAUDE.md`, record it under "M2 decisions made without me" in `docs/REPORT.md`, and keep going.
 - Never weaken a `CLAUDE.md` non-negotiable rule or a frozen contract test.
-- Never commit the user's local edits to `config/haythos.yaml`.
