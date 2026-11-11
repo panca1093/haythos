@@ -49,9 +49,13 @@ func TestCLIHelper(t *testing.T) {
 		_ = os.MkdirAll(filepath.Dir(p), 0o700)
 		_ = os.WriteFile(p, []byte("{}\n"), 0o600)
 	}
-	if flag, _ := sessionFlag(args); mode == "resume-fails" {
+	if flag, id := sessionFlag(args); mode == "resume-fails" || mode == "resume-overloaded" {
 		if flag == "--resume" {
-			fmt.Fprintln(os.Stderr, "No conversation found with session ID")
+			if mode == "resume-fails" {
+				fmt.Fprintln(os.Stderr, "No conversation found with session ID: "+id)
+			} else {
+				fmt.Fprintln(os.Stderr, "API Error: 529 overloaded")
+			}
 			os.Exit(1)
 		}
 		mode = "structured"
@@ -282,6 +286,48 @@ func TestCLIStepResumeFailureStartsFresh(t *testing.T) {
 	}
 	if exists(fakeTranscript(state, first)) {
 		t.Error("transcript of the session that could not be resumed was kept")
+	}
+}
+
+func TestCLIStepResumeErrorOtherThanMissingSessionIsNotRetried(t *testing.T) {
+	t.Parallel()
+	state := t.TempDir()
+	c, record := fakeCLIIn(t, "resume-overloaded", state)
+	req := StepRequest{Prompt: "one\n", Tools: []string{}}
+	step(t, c, req)
+	req.Prompt += "two\n"
+	if _, err := c.Step(context.Background(), req); err == nil {
+		t.Fatal("want the overload error, not a second full-price call")
+	}
+	recs := readRecords(t, record)
+	if len(recs) != 2 {
+		t.Fatalf("CLI ran %d times, want 2 (new, failed resume)", len(recs))
+	}
+	_, first := sessionFlag(recs[0].Args)
+	if exists(fakeTranscript(state, first)) {
+		t.Error("transcript of a session whose resume failed was kept")
+	}
+}
+
+func TestCLIStepMakesARelativeStateDirAbsolute(t *testing.T) {
+	t.Parallel()
+	abs, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	wd, _ := os.Getwd()
+	rel, err := filepath.Rel(wd, abs)
+	if err != nil || filepath.IsAbs(rel) {
+		t.Skipf("no relative form of %s from %s", abs, wd)
+	}
+	c, record := fakeCLIIn(t, "structured", rel)
+	step(t, c, StepRequest{Prompt: "one\n", Tools: []string{}})
+	rec := readRecord(t, record)
+	if rec.Dir != filepath.Join(abs, "work") {
+		t.Errorf("cwd = %s, want %s", rec.Dir, filepath.Join(abs, "work"))
+	}
+	if !slices.Contains(rec.Env, "CLAUDE_CONFIG_DIR="+filepath.Join(abs, "config")) {
+		t.Errorf("config dir is not the absolute state dir; the CLI resolves a relative one against its own cwd: %q", rec.Env)
 	}
 }
 

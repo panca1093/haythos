@@ -48,6 +48,35 @@ func TestParseOutputAcceptsFencedJSONAndAssignsStableIDs(t *testing.T) {
 	}
 }
 
+func TestStepCallIDsDoNotCollideWithReplayedOnes(t *testing.T) {
+	old := task.ToolCall{ID: "sdk-4-0", Name: "vm.read", Args: json.RawMessage(`{}`)}
+	history := []task.Message{
+		{Role: task.RoleSystem, Text: "goal"},
+		{Role: task.RoleAssistant, Calls: []task.ToolCall{old}, Context: true},
+		{Role: task.RoleTool, Results: []task.ToolResult{{CallID: old.ID, Content: "ok"}}, Context: true},
+		{Role: task.RoleUser, Text: "again"},
+	}
+	tr := &replyTransport{text: `{"text":"","tool_calls":[{"name":"vm.read","args":{}}]}`}
+	a := New(tr)
+	turn, err := a.Step(context.Background(), history, []task.ToolSpec{{Name: "vm.read", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+	if err != nil || len(turn.Calls) != 1 {
+		t.Fatalf("turn = %+v err = %v", turn, err)
+	}
+	if turn.Calls[0].ID == old.ID {
+		t.Errorf("new call reuses the replayed id %q", old.ID)
+	}
+	again, _ := a.Step(context.Background(), history, []task.ToolSpec{{Name: "vm.read", InputSchema: json.RawMessage(`{"type":"object"}`)}})
+	if again.Calls[0].ID != turn.Calls[0].ID {
+		t.Errorf("ids differ for the same history: %q vs %q", turn.Calls[0].ID, again.Calls[0].ID)
+	}
+}
+
+type replyTransport struct{ text string }
+
+func (r *replyTransport) Step(context.Context, StepRequest) (StepResponse, error) {
+	return StepResponse{Text: r.text}, nil
+}
+
 type captureTransport struct{ reqs []StepRequest }
 
 func (c *captureTransport) Step(_ context.Context, req StepRequest) (StepResponse, error) {

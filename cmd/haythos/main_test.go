@@ -399,9 +399,14 @@ func TestDiscordPostIsTierTwoAndOnlyForDiscordChat(t *testing.T) {
 	}
 }
 
-func TestClaudeCLIKeepsItsStateNextToTheDatabase(t *testing.T) {
-	got := claudeCLIConfig(config.Main{DB: filepath.Join("var", "haythos.db")}, "tok").StateDir
-	if want := filepath.Join("var", "claude-cli"); got != want {
-		t.Errorf("StateDir = %q, want %q", got, want)
+func TestClaudeCLIKeepsItsStateNextToTheDatabaseOnePerModel(t *testing.T) {
+	cfg := config.Main{DB: filepath.Join("var", "haythos.db")}
+	a := claudeCLIConfig(cfg, "tok", "claude-sub").StateDir
+	b := claudeCLIConfig(cfg, "tok", "claude-other").StateDir
+	if want := filepath.Join("var", "claude-cli", "claude-sub"); a != want {
+		t.Errorf("StateDir = %q, want %q", a, want)
+	}
+	if a == b {
+		t.Errorf("two model entries share the state dir %q; the second one's start-up cleanup would delete the first one's transcripts", a)
 	}
 }
