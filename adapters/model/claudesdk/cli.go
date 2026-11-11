@@ -33,6 +33,8 @@ type CLIConfig struct {
 
 const maxSessions = 8
 
+var errSessionMissing = errors.New("claude cli session not found")
+
 // CLI spawns one `claude -p` process per call; a prompt that extends an earlier one resumes that CLI session, the only shape its prompt cache hits.
 type CLI struct {
 	cfg CLIConfig
@@ -101,10 +103,10 @@ func (c *CLI) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 			return resp, nil
 		}
 		c.forget(s.id)
-		if ctx.Err() != nil {
+		if !errors.Is(err, errSessionMissing) {
 			return StepResponse{}, err
 		}
-		slog.WarnContext(ctx, "claude cli session could not be resumed; starting a new one", "err", err)
+		slog.WarnContext(ctx, "claude cli session is gone; starting a new one", "err", err)
 	}
 	id := newSessionID()
 	resp, err := c.run(ctx, req, "--session-id", id, req.Prompt)
@@ -131,6 +133,11 @@ func (c *CLI) prepareState() {
 			return
 		}
 	}
+	if root, c.prepErr = filepath.Abs(root); c.prepErr != nil {
+		c.prepErr = fmt.Errorf("claude cli state dir: %w", c.prepErr)
+		return
+	}
+	// The CLI resolves a relative CLAUDE_CONFIG_DIR against its own working directory, which is inside the state dir.
 	c.work, c.config = filepath.Join(root, "work"), filepath.Join(root, "config")
 	if err := os.RemoveAll(filepath.Join(c.config, "projects")); err != nil {
 		c.prepErr = fmt.Errorf("clear claude cli transcripts: %w", err)
@@ -202,6 +209,9 @@ func (c *CLI) run(ctx context.Context, req StepRequest, sessionFlag, id, stdin s
 	if err := json.Unmarshal(bytes.TrimSpace(out), &res); err != nil {
 		if runErr != nil {
 			slog.DebugContext(ctx, "claude cli stderr", "tail", tail(stderr.String()))
+			if strings.Contains(stderr.String(), "No conversation found") {
+				return StepResponse{}, fmt.Errorf("run %s: %w", c.cfg.Command, errSessionMissing)
+			}
 			return StepResponse{}, fmt.Errorf("run %s: %w", c.cfg.Command, runErr)
 		}
 		return StepResponse{}, fmt.Errorf("decode claude cli output: %w", err)

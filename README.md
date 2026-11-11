@@ -124,7 +124,7 @@ Alfred replies (and asks for approval) where you wrote. `/pause` stops every wri
 
 ### Prompt cache on `claude-sub`
 
-Within one task, each step resumes the same `claude` CLI session and sends only the new text, so the CLI's prompt cache covers everything the earlier steps already sent. The CLI keeps those session transcripts (conversation text) in `claude-cli/` next to the database (`data/claude-cli/` by default); at most 8 are kept, and all are cleared when the kernel starts. A new chat message starts a new session.
+Within one task, each step resumes the same `claude` CLI session and sends only the new text, so the CLI's prompt cache covers everything the earlier steps already sent. The CLI keeps those session transcripts (conversation text) in `claude-cli/<model name>/` next to the database (`data/claude-cli/claude-sub/` by default); at most 8 per model are kept, and all are cleared when the kernel starts. A new chat message starts a new session.
 
 ### Switching the model
 

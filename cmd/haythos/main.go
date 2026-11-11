@@ -325,7 +325,7 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 				slog.Warn("model skipped: credential missing, run `haythos auth claude`", "model", name)
 				continue
 			}
-			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token))
+			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token, name))
 			adapter := claudesdk.New(cli, claudesdk.WithModel(m.Model))
 			models[name] = adapter
 			if name == cfg.DefaultModel {
@@ -379,11 +379,12 @@ func (s claudeSubSelector) Select(_ context.Context, value string) error {
 	return nil
 }
 
-func claudeCLIConfig(cfg config.Main, token string) claudesdk.CLIConfig {
+// claudeCLIConfig gives each model entry its own state dir: a CLI clears its transcripts when it starts, so two sharing one would delete each other's.
+func claudeCLIConfig(cfg config.Main, token, model string) claudesdk.CLIConfig {
 	return claudesdk.CLIConfig{
 		Command:  cfg.ClaudeCLI.Command,
 		Env:      []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
-		StateDir: filepath.Join(filepath.Dir(cfg.DB), "claude-cli"),
+		StateDir: filepath.Join(filepath.Dir(cfg.DB), "claude-cli", model),
 	}
 }
 
@@ -647,7 +648,7 @@ func cliModels(cfg config.Main) func(context.Context, string) ([]claudesdk.Model
 	return func(ctx context.Context, token string) ([]claudesdk.ModelInfo, error) {
 		ctx, cancel := context.WithTimeout(ctx, modelListWait)
 		defer cancel()
-		return claudesdk.NewCLI(claudeCLIConfig(cfg, token)).Models(ctx)
+		return claudesdk.NewCLI(claudeCLIConfig(cfg, token, "models")).Models(ctx)
 	}
 }
 

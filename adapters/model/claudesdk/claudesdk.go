@@ -97,7 +97,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		}
 		usage.InputTokens, usage.CacheReadTokens = resp.Usage.InputTokens, resp.Usage.CacheReadTokens
 		usage.OutputTokens += resp.Usage.OutputTokens
-		turn, err := parseOutput(resp.Text, tools, len(history))
+		turn, err := parseOutput(resp.Text, tools, idBase(history))
 		if err == nil {
 			turn.Usage = usage
 			return turn, nil
@@ -106,6 +106,20 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		req.Prompt += fmt.Sprintf("\n\nYour previous reply was rejected: %v.\nReply again with ONLY valid JSON matching the output format.", err)
 	}
 	return task.AssistantTurn{}, fmt.Errorf("%w: %w", ErrInvalidOutput, lastErr)
+}
+
+// idBase is the history length, raised above any "sdk-<n>-<i>" id the history already carries, so replayed calls never share an id with a new one.
+func idBase(history []task.Message) int {
+	base := len(history)
+	for _, m := range history {
+		for _, c := range m.Calls {
+			var n, i int
+			if _, err := fmt.Sscanf(c.ID, "sdk-%d-%d", &n, &i); err == nil && n >= base {
+				base = n + 1
+			}
+		}
+	}
+	return base
 }
 
 func parseOutput(raw string, tools []task.ToolSpec, historyLen int) (task.AssistantTurn, error) {
