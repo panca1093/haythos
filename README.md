@@ -122,6 +122,10 @@ Posting: ask Alfred to "post X in #infra" (or in a thread, or to your DM). He lo
 
 Alfred replies (and asks for approval) where you wrote. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
 
+### Prompt cache on `claude-sub`
+
+Within one task, each step resumes the same `claude` CLI session and sends only the new text, so the CLI's prompt cache covers everything the earlier steps already sent. The CLI keeps those session transcripts (conversation text) in `claude-cli/` next to the database (`data/claude-cli/` by default); at most 8 are kept, and all are cleared when the kernel starts. A new chat message starts a new session.
+
 ### Switching the model
 
 Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythos setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
