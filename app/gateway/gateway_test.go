@@ -69,6 +69,25 @@ func TestReadRunsWithoutLedger(t *testing.T) {
 	}
 }
 
+func TestToolCanMarkItsOwnResultUntrusted(t *testing.T) {
+	gw, tools, _ := newGW(t)
+	tools.Handlers["read"] = func(task.ToolCall) (task.ToolResult, error) {
+		return task.ToolResult{Content: "a\u200bb", Untrusted: true}, nil
+	}
+	out, err := gw.Execute(context.Background(), req("read", `{}`, nil))
+	if err != nil || !out.Result.Untrusted || out.Result.Content != "ab" {
+		t.Errorf("out = %+v err = %v, want an untrusted result with invisible characters removed", out.Result, err)
+	}
+}
+
+func TestResultOfATrustedToolStaysTrusted(t *testing.T) {
+	gw, _, _ := newGW(t)
+	out, err := gw.Execute(context.Background(), req("read", `{}`, nil))
+	if err != nil || out.Result.Untrusted {
+		t.Errorf("out = %+v err = %v, want a trusted result", out.Result, err)
+	}
+}
+
 func TestNotAllowlistedAndForbiddenNeverExecute(t *testing.T) {
 	gw, tools, _ := newGW(t)
 	r := req("write", `{}`, nil)

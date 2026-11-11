@@ -62,16 +62,62 @@ func (f fixture) call(t *testing.T, workdir, tool, args string) task.ToolResult 
 	return res
 }
 
-func TestSpecsAreReadOnlyAndUntrusted(t *testing.T) {
+func TestSpecsAreReadOnlyAndLeaveTrustToTheResult(t *testing.T) {
 	f := newFixture(t)
 	specs := f.reg.List([]string{"fs.list", "fs.read"})
 	if len(specs) != 2 {
 		t.Fatalf("specs = %+v", specs)
 	}
 	for _, s := range specs {
-		if s.Write || !s.Untrusted {
-			t.Errorf("%s: write=%v untrusted=%v, want read-only and untrusted", s.Name, s.Write, s.Untrusted)
+		if s.Write || s.Untrusted {
+			t.Errorf("%s: write=%v untrusted=%v, want read-only with trust decided per result", s.Name, s.Write, s.Untrusted)
 		}
+	}
+}
+
+func TestReadMarksOnlyNonCodeAsUntrusted(t *testing.T) {
+	f := newFixture(t)
+	files := map[string]string{
+		"a.go": "package a", "B.PY": "x = 1", "c.ts": "export {}", "d.sh": "echo", "q.sql": "select 1",
+		"e.md": "# e", "f.txt": "t", "g.json": "{}", "h.yaml": "a: 1", "Makefile": "all:", "noext": "x", "notes.go.md": "x", "page.html": "<p>",
+	}
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(f.root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Symlink("e.md", filepath.Join(f.root, "link.go")); err != nil {
+		t.Fatal(err)
+	}
+	for path, untrusted := range map[string]bool{
+		"a.go": false, "B.PY": false, "c.ts": false, "d.sh": false, "q.sql": false, "src/main.go": false,
+		"e.md": true, "f.txt": true, "g.json": true, "h.yaml": true, "Makefile": true, "noext": true, "notes.go.md": true, "page.html": true,
+		"link.go": true,
+	} {
+		t.Run(path, func(t *testing.T) {
+			b, _ := json.Marshal(map[string]string{"path": path})
+			res := f.call(t, f.root, "fs.read", string(b))
+			if res.IsError || res.Untrusted != untrusted {
+				t.Fatalf("result = %+v, want untrusted=%v: only source code is a trusted source, and a link is judged by what it points to", res, untrusted)
+			}
+		})
+	}
+}
+
+func TestReadAndListHideInvisibleCharacters(t *testing.T) {
+	f := newFixture(t)
+	if err := os.WriteFile(filepath.Join(f.root, "x.go"), []byte("package main // \u202eevil\u200b"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(f.root, "y\u200bz.go"), []byte("package y"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := f.call(t, f.root, "fs.read", `{"path":"x.go"}`); res.Content != "package main // evil" {
+		t.Errorf("read = %q, want the invisible characters removed from trusted code", res.Content)
+	}
+	res := f.call(t, f.root, "fs.list", `{}`)
+	if res.Untrusted || strings.ContainsAny(res.Content, "\u200b\u202e") || !strings.Contains(res.Content, "yz.go") {
+		t.Errorf("list = %+v, want a trusted listing without invisible characters", res)
 	}
 }
 
