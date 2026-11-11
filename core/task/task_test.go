@@ -92,7 +92,7 @@ func TestReplaySumsTokensAndKeepsLastCacheReads(t *testing.T) {
 	}
 }
 
-func TestReplayFirstInputIsTheFirstStepsPrompt(t *testing.T) {
+func TestReplayLastInputIsTheLastStepsPrompt(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
 		name   string
@@ -101,10 +101,10 @@ func TestReplayFirstInputIsTheFirstStepsPrompt(t *testing.T) {
 	}{
 		{"no usage", []Event{ev(1, EvCreated, Created{Job: "j"})}, 0},
 		{"one step", []Event{ev(1, EvUsage, Usage{InputTokens: 30, OutputTokens: 5})}, 30},
-		{"later steps do not move it", []Event{
+		{"later steps move it", []Event{
 			ev(1, EvUsage, Usage{InputTokens: 30, OutputTokens: 5}),
 			ev(2, EvUsage, Usage{InputTokens: 90, OutputTokens: 5}),
-		}, 30},
+		}, 90},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -113,8 +113,35 @@ func TestReplayFirstInputIsTheFirstStepsPrompt(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if s.FirstInput != tc.want {
-				t.Errorf("FirstInput = %d, want %d", s.FirstInput, tc.want)
+			if s.LastInput != tc.want {
+				t.Errorf("LastInput = %d, want %d", s.LastInput, tc.want)
+			}
+		})
+	}
+}
+
+func TestReplayedUntrustedResultTaints(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		untrusted bool
+		want      bool
+	}{
+		{"untrusted replayed result taints", true, true},
+		{"trusted replayed result does not", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			s, err := Replay([]Event{
+				ev(1, EvMessage, Message{Role: RoleTool, Results: []ToolResult{{CallID: "c", Untrusted: tc.untrusted}}, Context: true}),
+				ev(2, EvMessage, Message{Role: RoleUser, Text: "next"}),
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if s.Tainted != tc.want || s.Steps != 0 {
+				t.Errorf("Tainted = %v, Steps = %d; want %v, 0", s.Tainted, s.Steps, tc.want)
 			}
 		})
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -269,31 +270,105 @@ func TestSingleHugeTurnIsTruncatedInReplay(t *testing.T) {
 	}
 }
 
-func TestAnchorIgnoresInTaskToolTraffic(t *testing.T) {
-	t.Parallel()
+// toolRig is a chat app with one read tool, note.read, whose result is result.
+func toolRig(t *testing.T, result task.ToolResult, turns ...task.AssistantTurn) (*app.App, *testfakes.Model, *sqlite.Store) {
+	t.Helper()
 	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { _ = st.Close() })
-	read := task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "note.read", Args: json.RawMessage(`{}`)}}, Usage: task.Usage{InputTokens: 100}}
-	model := testfakes.NewModel(used(answerOf(75, "A1"), 100), read, used(answerOf(75, "A2"), 1500), used("A3", 100))
+	model := testfakes.NewModel(turns...)
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	tools.Handlers["note.read"] = func(task.ToolCall) (task.ToolResult, error) { return result, nil }
 	a := app.New(app.Deps{
 		Models:     map[string]app.Model{"default": model},
 		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
-		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)}),
-		Events:     st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy:  policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}},
 		Clock:   time.Now,
 		Windows: map[string]int{"default": 1000},
 	})
-	for _, q := range []string{"Q1", "Q2", "Q3"} {
-		if _, err := a.HandleInput(context.Background(), app.Input{Text: q, ReplyTo: "c1"}); err != nil {
-			t.Fatalf("handle %q: %v", q, err)
+	return a, model, st
+}
+
+func readNote(input int) task.AssistantTurn {
+	return task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "note.read", Args: json.RawMessage(`{}`)}}, Usage: task.Usage{InputTokens: input}}
+}
+
+func ask(t *testing.T, a *app.App, text string) string {
+	t.Helper()
+	id, err := a.HandleInput(context.Background(), app.Input{Text: text, ReplyTo: "c1"})
+	if err != nil {
+		t.Fatalf("handle %q: %v", text, err)
+	}
+	return id
+}
+
+// same compares what a model adapter renders: role, text, calls and results, not the Context mark.
+func same(a, b task.Message) bool {
+	a.Context, b.Context = false, false
+	ja, _ := json.Marshal(a)
+	jb, _ := json.Marshal(b)
+	return string(ja) == string(jb)
+}
+
+func TestFollowUpExtendsTheLastPromptExactly(t *testing.T) {
+	t.Parallel()
+	a, model, _ := toolRig(t, task.ToolResult{Content: "note body"}, readNote(100), used("A1", 120), used("A2", 150))
+	ask(t, a, "Q1")
+	ask(t, a, "Q2")
+	last, next := model.Histories[1], model.Histories[2]
+	want := append(slices.Clone(last), task.Message{Role: task.RoleAssistant, Text: "A1"}, task.Message{Role: task.RoleUser, Text: "Q2"})
+	if len(next) != len(want) {
+		t.Fatalf("follow-up history has %d messages, want %d:\n%s", len(next), len(want), texts(next))
+	}
+	for i := range want {
+		if !same(next[i], want[i]) {
+			t.Fatalf("message %d = %+v, want %+v", i, next[i], want[i])
 		}
 	}
-	if got := texts(model.Histories[len(model.Histories)-1]); strings.Contains(got, "Summary") || !strings.Contains(got, "Q1") {
-		t.Fatalf("history = %.300q, want Q1 replayed and no summary: the 1500-token tool step is never replayed", got)
+	for i, m := range next[1 : len(next)-1] {
+		if !m.Context {
+			t.Errorf("replayed message %d is not marked as context: %+v", i+1, m)
+		}
+	}
+}
+
+func TestReplayedUntrustedToolResultTaintsTheFollowUp(t *testing.T) {
+	t.Parallel()
+	a, _, _ := toolRig(t, task.ToolResult{Content: "page text", Untrusted: true}, readNote(100), used("A1", 120), used("A2", 150))
+	ask(t, a, "Q1")
+	id := ask(t, a, "Q2")
+	s, err := a.Snapshot(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !s.Tainted {
+		t.Error("follow-up task is not tainted although its replay carries an untrusted tool result")
+	}
+}
+
+func TestAnchorCountsInTaskToolTraffic(t *testing.T) {
+	t.Parallel()
+	a, model, _ := toolRig(t, task.ToolResult{Content: "note body"}, used(answerOf(75, "A1"), 100), readNote(100), used(answerOf(75, "A2"), 1500), used("SUM", 0), used("A3", 100))
+	for _, q := range []string{"Q1", "Q2", "Q3"} {
+		ask(t, a, q)
+	}
+	got := texts(model.Histories[len(model.Histories)-1])
+	if !strings.Contains(got, "SUM") || strings.Contains(got, "A1") || !strings.Contains(got, "A2") {
+		t.Fatalf("history = %.300q, want A1 folded into the summary: the 1500-token last step of Q2 is replayed now", got)
+	}
+}
+
+func TestOversizedToolTurnFallsBackToQuestionAndAnswer(t *testing.T) {
+	t.Parallel()
+	a, model, _ := toolRig(t, task.ToolResult{Content: strings.Repeat("n", 8000)}, readNote(100), used("A1", 120), used("A2", 150))
+	ask(t, a, "Q1")
+	ask(t, a, "Q2")
+	got := texts(model.Histories[2])
+	if strings.Contains(got, "nnnn") || !strings.Contains(got, "user:Q1|assistant:A1|user:Q2|") {
+		t.Fatalf("history = %.300q, want the 2000-token turn replayed as question and answer only", got)
 	}
 }
 
