@@ -23,7 +23,11 @@ type CLIConfig struct {
 	// Args are prepended to every invocation (used by tests to re-exec a fake).
 	Args []string
 	Env  []string
+	// StateDir holds the CLI's own config, session transcripts and working directory; empty means a temp dir.
+	StateDir string
 }
+
+const maxSessions = 32
 
 // CLI spawns one `claude -p` process per call; it holds no state between calls.
 type CLI struct{ cfg CLIConfig }
