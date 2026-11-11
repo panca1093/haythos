@@ -136,13 +136,12 @@ func m2bLacks(t *testing.T, h []task.Message, nope ...string) {
 	}
 }
 
-// M2B-1. A later message to the same reply_to sees the earlier user text and answer, never tool calls or results.
-func TestSecondMessageSeesFirstTurnWithoutToolTraffic(t *testing.T) {
+// M2B-1. A later message to the same reply_to sees the earlier turn whole: user text, tool calls and results, and answer (amended 2026-11-11 with the owner's approval, so the prompt cache carries across messages).
+func TestSecondMessageSeesFirstTurnWithToolTraffic(t *testing.T) {
 	r := newM2bRig(t)
 	r.send("thread-1", false, "first question")
 	h := r.send("thread-1", false, "second question")
-	m2bSees(t, h, "user: first question", "assistant: answer to first question", "user: second question")
-	m2bLacks(t, h, "call vm.read", m2bToolOutput)
+	m2bSees(t, h, "user: first question\nassistant: \ncall vm.read\ntool: \nresult "+m2bToolOutput+"\nassistant: answer to first question\nuser: second question")
 }
 
 // M2B-2. A different reply_to sees nothing of the first conversation.
