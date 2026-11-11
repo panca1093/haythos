@@ -2,6 +2,7 @@
 
 Personal agentic OS. Kernel in Go, persona "Alfred". Single user (the repo owner).
 The model decides; the kernel executes, guards, and remembers.
+HaythOS is a kernel, not an agent runtime: it owns jobs, memory, guardrails and observability, and delegates heavy work to runtimes (Claude Code, Codex, OpenCode, …) that it runs as processes.
 
 ## How to work in this repo
 
@@ -24,7 +25,7 @@ haythos/
     contract/          # output contract checks (M2)
   app/                 # use cases: RunTask, HandleApproval, HandleInput, Tick
     ports.go           # every interface the app consumes
-    gateway/           # tool gateway: the only path to execute a tool
+    gateway/           # tool gateway: the only path for the kernel's loop to execute a tool
   adapters/
     model/anthropic    # Messages API, API key
     model/openai       # OpenAI-compatible base URL + key
@@ -39,8 +40,7 @@ haythos/
     vault/file
     config             # YAML config loader
     testfakes          # in-memory fakes of the ports, tests only
-    sandbox/docker     # M3
-    builder/acp        # M3, client to claude-agent-acp
+    runtime/<name>     # planned: one adapter per runtime, Claude Code first, then Codex
   sidecar/claude-sdk/  # TypeScript, one Step per call, stdio JSON-RPC
   jobs/                # job definitions (YAML)
   skills/              # SKILL.md files (agentskills.io format)
@@ -61,14 +61,14 @@ Dependency rule: `core` imports nothing from `app` or `adapters`. `app` imports 
 | `Vault` | `Resolve(handle) (secret, error)` | file |
 | `Brain` | `Search`, `Think`, `Put` (M2) | gbrain |
 | `Decider` | `Decide` -> answer + confidence (M2) | jev, model fallback |
-| `Builder` | `Run(task)` -> progress stream + permission requests (M3) | acp |
+| `Runtime` | `Name`, `Capabilities`, `Start` -> `Session` with `Send`, `Approve`, `Events`, `Stop` (planned) | claudecode, codex |
 
 Not interfaces: scheduler, policy, contract, task state machine (single implementation each). User input enters by adapters calling `app.HandleInput` directly.
 
 ## Non-negotiable rules
 
-1. **One agent loop, in Go.** Every provider only implements `Step`. No provider runs its own tool loop for Alfred.
-2. **Every tool call goes through the tool gateway.** Gateway order: allowlist → tier → taint → approval (if needed) → ledger `dispatching` → resolve secrets → execute → ledger result → event.
+1. **Two execution paths, nothing in between.** Alfred's own chat runs on the kernel's loop in Go: every provider only implements `Step`, and no provider runs its own tool loop for Alfred. Heavy work is delegated to a runtime through the `Runtime` port. The kernel does not rebuild a runtime's tools or loop, and the kernel's loop does not grow tools to compete with one.
+2. **Every tool call on the kernel's loop goes through the tool gateway.** Gateway order: allowlist → tier → taint → approval (if needed) → ledger `dispatching` → resolve secrets → execute → ledger result → event. A runtime session is not gated per tool call: it runs full auto in a local terminal session with the user's own permissions, except for the guarded actions listed in config (deletes, ssh, …), which the runtime must ask for. The kernel records the session's events, relays those requests to the user and answers them through `Session.Approve`, never by typing into the session. There is no sandbox; isolation is out of scope until the user asks for it.
 3. **Secrets never enter model context, logs, events, or brain.** The model only sees handles like `secret://github`.
 4. **Tool output is data, not instructions.** Content from Slack, Jira, PRs, web, or files marks the task as tainted.
 5. **No OAuth impersonation.** Claude subscription use goes only through the official Agent SDK (sidecar). Never send requests pretending to be Claude Code.
@@ -104,13 +104,15 @@ Tiers per tool, from `config/policy.yaml`:
 | 1 | Internal, reversible write | Ask in M1–M2 |
 | 2 | External write to an allowlisted target | Ask in M1–M2 (allowlist empty) |
 | 3 | High impact or irreversible | Always ask |
-| 4 | Forbidden (secret exfiltration, shell outside sandbox) | Always deny |
+| 4 | Forbidden (secret exfiltration, shell from the kernel's loop) | Always deny |
 
 Taint: once untrusted content enters a task's context, any write whose target did not appear in a trusted instruction (user message or job definition) is escalated to tier 3.
 
 Approval binding: an approval stores tool, target, args hash, expiry, and policy version. The gateway revalidates all of them at execution time; any mismatch voids the approval.
 
-Exception (M3, not now): coding tasks via `Builder` may auto-write inside the sandbox and push to a new branch + draft PR.
+Tiers, taint, approval binding and the action ledger cover the kernel's loop only. A runtime session runs full auto. The guarded-action list comes from config; each adapter translates it into that runtime's own permission rules, and a guarded action is relayed to the user on the task's origin channel. The runtime enforces this, not the kernel, so it is a guard rail and not a guarantee.
+
+Starter guarded list: deletes (`rm`, `git clean`, `git reset --hard`, dropping a table or database), remote access (`ssh`, `scp`, `rsync` to another host), `sudo`, force push and push to the default branch, and reading credentials (the vault, `~/.ssh`, `.env` files).
 
 ## Coding standards
 
@@ -142,7 +144,7 @@ Exception (M3, not now): coding tasks via `Builder` may auto-write inside the sa
 ## Jobs, skills, triggers
 
 - **Skill** = how. Markdown read by the model. No permissions, schedule, or budget.
-- **Job** = what and with what: goal, skills, tool allowlist, mode (`background` max tier 0–1, `foreground`), budget, output contract.
+- **Job** = what and with what: goal, skills, tool allowlist, mode (`background` max tier 0–1, `foreground`), budget, output contract, and optionally the runtime that does the work.
 - **Trigger** = when. A field on the job: `cron`, `event`, or `manual`. A chat message is an ad-hoc manual job.
 
 ## Reports (output contract)
