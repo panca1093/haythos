@@ -15,7 +15,7 @@ Agreed with the user on 2026-10-28. Today every chat message is a new task with 
 | # | Decision |
 |---|---|
 | 1 | A conversation is keyed by the task's `reply_to` (thread or DM channel id). A thread has no time limit. A DM only looks back 24 h. Tasks without `reply_to` (scheduled jobs) have no conversation. |
-| 2 | One turn = the user message + Alfred's final answer. Tool calls and results are not replayed. Recent turns are kept verbatim up to **7,000 tokens** (estimated as bytes ÷ 4). Older turns are folded into a rolling summary made by the kernel's model and stored as an event. |
+| 2 | One turn = the user message + Alfred's final answer. Tool calls and results are not replayed (superseded 2026-11-11: a turn now replays the task's own messages, tool calls and results included, unchanged, so the prompt cache carries across messages; replayed untrusted results taint the new task; a turn that alone passes the threshold falls back to user message + answer). Recent turns are kept verbatim up to **7,000 tokens** (estimated as bytes ÷ 4). Older turns are folded into a rolling summary made by the kernel's model and stored as an event. |
 | 3 | gbrain is pinned to one commit, installed with `bun`, initialised keyless: `gbrain init --pglite --no-embedding`. No Voyage, no embedding key, nothing leaves the machine except the prompt to the model. |
 | 4 | gbrain runs as an MCP stdio child: `gbrain serve --surface verbs`. |
 | 5 | First content: the MyBook wiki at `~/Documents/MyBook/wiki/`: only `entities/`, `concepts/`, `tickets/`, `learnings/`, `index.md`. Never `personal/`. Loose top-level pages are skipped (some are personal). |
@@ -51,7 +51,7 @@ Each phase starts by writing its contract tests in `tests/acceptance/` (historic
 ### Phase 1: conversation memory
 
 Contract tests:
-1. A second message to the same `reply_to` sees the first turn (user text and Alfred's answer) in the history passed to the model; tool calls are not replayed.
+1. A second message to the same `reply_to` sees the first turn (user text, tool calls and results, and Alfred's answer) in the history passed to the model (amended 2026-11-11 with the owner's approval; it used to forbid tool traffic).
 2. A message to a different `reply_to` sees nothing from the first.
 3. A DM turn older than 24 h is not replayed; a thread turn older than 24 h is.
 4. When turns exceed 7,000 tokens, the oldest are replaced by a summary event; the summary survives a restart and is not recomputed for the same turns.
