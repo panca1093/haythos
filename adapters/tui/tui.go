@@ -27,6 +27,7 @@ type Conn interface {
 type Options struct {
 	Conv, Version, Display string
 	Workdir, Home          string
+	Model                  string
 }
 
 // Summary is what the chat prints after the TUI closes.
@@ -42,8 +43,9 @@ type frameMsg ws.Frame
 type connErrMsg struct{ err error }
 
 type sendErrMsg struct {
-	err   error
-	input bool
+	err       error
+	input     bool
+	selection bool
 }
 
 type tickMsg struct{}
@@ -67,7 +69,10 @@ type model struct {
 	cursor  int
 	width   int
 	// modelName, context and window feed the status line.
-	modelName               string
+	modelName, modelAlias   string
+	selectingModel          bool
+	startingModel           bool
+	startupErr              error
 	context, window, cached int
 	printed                 []string
 	carded                  bool
@@ -98,7 +103,8 @@ var (
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
 func New(c Conn, opts Options) tea.Model {
-	return &model{conn: c, opts: opts, state: "idle", width: 80, now: time.Now, summary: Summary{Conv: opts.Conv, Started: time.Now()}}
+	return &model{conn: c, opts: opts, state: "idle", width: 80, now: time.Now,
+		startingModel: opts.Model != "", summary: Summary{Conv: opts.Conv, Started: time.Now()}}
 }
 
 // SummaryOf returns the exit summary of a model New returned.
@@ -112,6 +118,13 @@ func SummaryOf(m tea.Model) (Summary, bool) {
 	return s, true
 }
 
+func StartupError(m tea.Model) error {
+	if mm, ok := m.(*model); ok {
+		return mm.startupErr
+	}
+	return nil
+}
+
 func (m *model) Init() tea.Cmd {
 	return tea.Batch(m.handshake(), m.read())
 }
@@ -120,7 +133,7 @@ func (m *model) handshake() tea.Cmd {
 	return func() tea.Msg {
 		frames := []any{
 			ws.Hello{Client: "tui", Instance: m.opts.Conv, Version: m.opts.Version},
-			ws.Subscribe{Conv: m.opts.Conv, Workdir: m.opts.Workdir},
+			ws.Subscribe{Conv: m.opts.Conv, Workdir: m.opts.Workdir, Model: m.opts.Model},
 		}
 		for _, f := range frames {
 			if err := m.send(f); err != nil {
@@ -151,7 +164,8 @@ func (m *model) sendCmd(f any) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.send(f); err != nil {
 			_, input := f.(ws.Input)
-			return sendErrMsg{err: err, input: input}
+			_, selection := f.(ws.SelectModel)
+			return sendErrMsg{err: err, input: input, selection: selection}
 		}
 		return nil
 	}
@@ -183,8 +197,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inflight = 0
 		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
+		if m.startingModel {
+			return m, m.failModelStartup(msg.err.Error())
+		}
 		if msg.input {
 			m.answered()
+		}
+		if msg.selection {
+			m.selectingModel = false
 		}
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
@@ -199,6 +219,7 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	case ws.TypeWelcome:
 		var cmds []tea.Cmd
 		m.modelName = modelLabel(f)
+		m.modelAlias = f.DefaultModel
 		if !m.carded {
 			m.carded = true
 			cmds = append(cmds, m.print(m.card(f)))
@@ -208,6 +229,14 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	case ws.TypeHistory:
+		if m.startingModel && f.Model != m.opts.Model {
+			return m.failModelStartup("Alfred belum mengonfirmasi pilihan model. Mulai ulang Alfred dan buka chat lagi.")
+		}
+		m.startingModel = false
+		if f.Model != "" {
+			m.modelName = clean(f.Model)
+			m.modelAlias = f.Model
+		}
 		m.summary.UserMessages, m.summary.ToolCalls = f.UserMessages, f.ToolCalls
 		var cmds []tea.Cmd
 		for _, t := range f.Turns {
@@ -219,15 +248,40 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 			m.addPending(p)
 		}
 		return tea.Batch(cmds...)
+	case ws.TypeModel:
+		m.selectingModel = false
+		if f.Model != "" && f.Model != m.modelAlias {
+			m.modelAlias, m.modelName = f.Model, clean(f.Model)
+			m.context, m.window, m.cached = 0, 0, 0
+		}
+		if len(f.Models) > 0 || f.Message != "" || f.Model == "" {
+			lines := []string{"Pilihan model", clean(strings.Join(f.Models, "\n")), "Pilih dengan /model <nama>"}
+			if f.Message != "" {
+				lines = append(lines, f.Message)
+			}
+			return m.print(dimStyle.Render(strings.Join(lines, "\n")))
+		}
+		return m.print(dimStyle.Render("Model aktif  " + m.modelName))
 	case ws.TypeNotice:
 		return m.onNotice(f)
 	case ws.TypeError:
+		if m.startingModel {
+			return m.failModelStartup(f.Message)
+		}
 		if inputError(f.Message) {
 			m.answered()
+		}
+		if f.Model != "" || f.Message == `unknown frame type "model"` || f.Message == "subscribe to a conversation first" {
+			m.selectingModel = false
 		}
 		return m.print(errStyle.Render(f.Message))
 	}
 	return nil
+}
+
+func (m *model) failModelStartup(message string) tea.Cmd {
+	m.startupErr = fmt.Errorf("pilih model %q: %s", m.opts.Model, message)
+	return tea.Quit
 }
 
 func (m *model) onNotice(f ws.Frame) tea.Cmd {
@@ -318,17 +372,24 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch k.Type {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(string(m.input))
+		if (m.selectingModel || m.startingModel) && !isExit(text) {
+			return m, nil
+		}
 		m.input, m.cursor = nil, 0
 		switch {
 		case text == "":
 			return m, nil
 		case isExit(text):
 			return m, tea.Quit
+		case strings.Fields(text)[0] == "/model":
+			name := strings.TrimSpace(strings.TrimPrefix(text, "/model"))
+			m.selectingModel = true
+			return m, m.sendCmd(ws.SelectModel{Model: name})
 		}
 		m.title(text)
 		m.summary.UserMessages++
 		m.state = "running"
-		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}), m.work())
+		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text, Model: m.modelAlias}), m.work())
 	}
 	return m, nil
 }

@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/panca/haythos/adapters/config"
+	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/testfakes"
@@ -371,6 +372,28 @@ func TestBuildModelsChatGPTNeedsSignIn(t *testing.T) {
 	models, _, err = buildModels(cfg, v, nil)
 	if err != nil || models["gpt-sub"] == nil {
 		t.Fatalf("signed in: models=%v err=%v", models, err)
+	}
+}
+
+func TestBuildModelsOffersChatGPTWithoutYAML(t *testing.T) {
+	v, err := file.Open(filepath.Join(t.TempDir(), "v.enc"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Main{
+		DefaultModel: "claude-sub",
+		Models:       map[string]config.Model{"claude-sub": {Kind: "claudesdk"}},
+	}
+	models, _, err := buildModels(cfg, v, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := models["chatgpt-sub"].(*chatgpt.Adapter)
+	if !ok {
+		t.Fatalf("chatgpt-sub = %T, want ChatGPT subscription adapter", models["chatgpt-sub"])
+	}
+	if _, err := m.Step(context.Background(), nil, nil); !errors.Is(err, chatgpt.ErrSignInRequired) {
+		t.Fatalf("unsigned-in ChatGPT error = %v, want sign-in instructions", err)
 	}
 }
 

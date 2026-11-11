@@ -41,6 +41,7 @@ func runChat(ctx context.Context, home paths, serve []string, args []string) err
 	fs := flag.NewFlagSet("chat", flag.ContinueOnError)
 	resume := fs.Bool("resume", false, "continue the latest TUI conversation")
 	session := fs.String("session", "", "continue the given TUI conversation")
+	model := fs.String("model", "", "select a model for this conversation")
 	if err := fs.Parse(args); err != nil {
 		return fmt.Errorf("parse chat flags: %w", err)
 	}
@@ -62,10 +63,13 @@ func runChat(ctx context.Context, home paths, serve []string, args []string) err
 	wd, _ := os.Getwd()
 	userHome, _ := os.UserHomeDir()
 	version := binaryVersion()
-	opts := tui.Options{Conv: conv, Version: version, Display: displayOf(version), Workdir: wd, Home: userHome}
+	opts := tui.Options{Conv: conv, Version: version, Display: displayOf(version), Workdir: wd, Home: userHome, Model: *model}
 	final, err := tea.NewProgram(tui.New(c, opts), tea.WithContext(ctx)).Run()
 	if err != nil && !errors.Is(err, tea.ErrProgramKilled) {
 		return fmt.Errorf("run chat: %w", err)
+	}
+	if err := tui.StartupError(final); err != nil {
+		return err
 	}
 	if s, ok := tui.SummaryOf(final); ok {
 		printSummary(os.Stdout, s, time.Now())

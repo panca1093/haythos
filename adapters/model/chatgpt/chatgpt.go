@@ -14,6 +14,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
 )
 
@@ -361,6 +362,24 @@ func (a *Adapter) Models(ctx context.Context) ([]ModelInfo, error) {
 	return a.models(ctx, token)
 }
 
+func (a *Adapter) ModelNames(ctx context.Context) ([]string, error) {
+	list, err := a.Models(ctx)
+	if err != nil {
+		return nil, err
+	}
+	names := make([]string, 0, len(list))
+	for _, m := range list {
+		names = append(names, m.Slug)
+	}
+	return names, nil
+}
+
+func (a *Adapter) WithModel(name string) app.Model {
+	cfg := a.c
+	cfg.Model = name
+	return New(cfg)
+}
+
 func (a *Adapter) models(ctx context.Context, token string) ([]ModelInfo, error) {
 	resp, err := a.do(ctx, http.MethodGet, "/models", nil, token)
 	if err != nil {
@@ -394,7 +413,7 @@ func (a *Adapter) modelName(ctx context.Context, token string) (string, error) {
 		return "", fmt.Errorf("pick default chatgpt model: %w", err)
 	}
 	if len(list) == 0 {
-		return "", errors.New("this ChatGPT account lists no models; set model: in config/haythos.yaml")
+		return "", errors.New("this ChatGPT account lists no models available for plan usage")
 	}
 	a.model = list[0].Slug
 	return a.model, nil

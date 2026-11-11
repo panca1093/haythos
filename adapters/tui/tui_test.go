@@ -100,6 +100,73 @@ func TestInitSendsHelloAndSubscribeWithFolder(t *testing.T) {
 	}
 }
 
+func TestModelCommandSendsSelectionWithoutCreatingChatMessage(t *testing.T) {
+	t.Parallel()
+	m, conn := start(t)
+	m, cmd := enter(typeText(m, "/model chatgpt-sub"))
+	drain(cmd)
+	got := conn.frames()
+	if len(got) != 1 || got[0] != (ws.SelectModel{Model: "chatgpt-sub"}) {
+		t.Fatalf("frames = %+v, want model selection", got)
+	}
+	if summary, _ := SummaryOf(m); summary.UserMessages != 0 {
+		t.Errorf("model command counted as a chat message")
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeModel, Model: "chatgpt-sub"})
+	if !strings.Contains(m.View(), "chatgpt-sub") {
+		t.Errorf("selected model missing from status: %s", m.View())
+	}
+}
+
+func TestInitAppliesModelFlagOnSubscribe(t *testing.T) {
+	t.Parallel()
+	conn := &fakeConn{}
+	options := opts
+	options.Model = "chatgpt-sub"
+	drain(New(conn, options).Init())
+	got := conn.frames()
+	if len(got) != 2 || got[1] != (ws.Subscribe{Conv: opts.Conv, Workdir: opts.Workdir, Model: "chatgpt-sub"}) {
+		t.Fatalf("frames = %+v, want subscribe with model override", got)
+	}
+}
+
+func TestModelFlagRequiresKernelConfirmationBeforeSending(t *testing.T) {
+	t.Parallel()
+	conn := &fakeConn{}
+	options := opts
+	options.Model = "chatgpt-sub"
+	m := feed(New(conn, options), ws.Frame{Type: ws.TypeHistory, Conv: opts.Conv})
+	m, cmd := enter(typeText(m, "hello"))
+	drain(cmd)
+	if len(conn.frames()) != 0 {
+		t.Fatal("sent a message after the kernel ignored the requested model")
+	}
+	if StartupError(m) == nil {
+		t.Fatal("ignored model flag did not fail startup")
+	}
+	m = feed(New(conn, options), ws.Frame{Type: ws.TypeHistory, Conv: opts.Conv, Model: "chatgpt-sub"})
+	m = typeText(m, "hello")
+	_, cmd = enter(m)
+	drain(cmd)
+	if got := conn.frames(); len(got) != 1 || got[0] != (ws.Input{Conv: opts.Conv, Text: "hello", Model: "chatgpt-sub"}) {
+		t.Fatalf("frames = %+v, want message after model confirmation", got)
+	}
+}
+
+func TestOldKernelRejectingModelCommandKeepsChatUsable(t *testing.T) {
+	t.Parallel()
+	m, conn := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: "old", DefaultModel: "claude-sub"})
+	m, cmd := enter(typeText(m, "/model chatgpt-sub"))
+	drain(cmd)
+	m = feed(m, ws.Frame{Type: ws.TypeError, Message: `unknown frame type "model"`})
+	_, cmd = enter(typeText(m, "hello"))
+	drain(cmd)
+	if got := conn.frames(); len(got) != 2 || got[1] != (ws.Input{Conv: opts.Conv, Text: "hello", Model: "claude-sub"}) {
+		t.Fatalf("frames = %+v, want chat to remain usable after explicit rejection", got)
+	}
+}
+
 func TestWelcomePrintsTheCard(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)

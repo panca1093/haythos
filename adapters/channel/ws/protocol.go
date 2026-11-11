@@ -17,6 +17,7 @@ const (
 	TypeInput        = "input"
 	TypeDecide       = "approval.decide"
 	TypeSessions     = "sessions"
+	TypeModel        = "model"
 	TypeWelcome      = "welcome"
 	TypeHistory      = "history"
 	TypeNotice       = "notice"
@@ -34,11 +35,13 @@ type Subscribe struct {
 	Conv string `json:"conv"`
 	// Workdir is the absolute folder the chat was opened in; read tools are confined to it.
 	Workdir string `json:"workdir,omitempty"`
+	Model   string `json:"model,omitempty"`
 }
 
 type Input struct {
-	Conv string `json:"conv"`
-	Text string `json:"text"`
+	Conv  string `json:"conv"`
+	Text  string `json:"text"`
+	Model string `json:"model,omitempty"`
 }
 
 type Decide struct {
@@ -48,6 +51,10 @@ type Decide struct {
 }
 
 type Sessions struct{}
+
+type SelectModel struct {
+	Model string `json:"model,omitempty"`
+}
 
 func (f Hello) MarshalJSON() ([]byte, error) {
 	type plain Hello
@@ -70,6 +77,11 @@ func (f Decide) MarshalJSON() ([]byte, error) {
 }
 
 func (Sessions) MarshalJSON() ([]byte, error) { return typed(TypeSessions, struct{}{}) }
+
+func (f SelectModel) MarshalJSON() ([]byte, error) {
+	type plain SelectModel
+	return typed(TypeModel, plain(f))
+}
 
 // typed splices the frame type into the JSON object of body.
 func typed(typ string, body any) ([]byte, error) {
@@ -95,6 +107,7 @@ type clientFrame struct {
 	Version    string `json:"version"`
 	Conv       string `json:"conv"`
 	Workdir    string `json:"workdir"`
+	Model      string `json:"model"`
 	Text       string `json:"text"`
 	TaskID     string `json:"task_id"`
 	ApprovalID string `json:"approval_id"`
@@ -136,9 +149,10 @@ type Frame struct {
 	PID       int       `json:"pid,omitempty"`
 	StartedAt time.Time `json:"started_at,omitzero"`
 	Channels  []string  `json:"channels,omitempty"`
-	// Model is the model value in use ("" = the provider default); DefaultModel is its config name.
-	Model        string `json:"model,omitempty"`
-	DefaultModel string `json:"default_model,omitempty"`
+	// Welcome carries the provider's model value and config name. History and model replies carry the conversation's model name.
+	Model        string   `json:"model,omitempty"`
+	DefaultModel string   `json:"default_model,omitempty"`
+	Models       []string `json:"models,omitempty"`
 
 	Conv    string    `json:"conv,omitempty"`
 	Turns   []Turn    `json:"turns,omitempty"`
@@ -170,7 +184,7 @@ func approvalOf(r app.ApprovalRequest) Approval {
 }
 
 func historyFrame(conv string, v app.ConversationView) Frame {
-	f := Frame{Type: TypeHistory, Conv: conv, UserMessages: v.UserMessages, ToolCalls: v.ToolCalls}
+	f := Frame{Type: TypeHistory, Conv: conv, Model: v.Model, UserMessages: v.UserMessages, ToolCalls: v.ToolCalls}
 	for _, t := range v.Turns {
 		f.Turns = append(f.Turns, Turn{User: t.User, Answer: t.Answer, At: t.At})
 	}

@@ -46,6 +46,7 @@ import (
 )
 
 const tickEvery = 30 * time.Second
+const chatGPTSubModel = "chatgpt-sub"
 
 var defaultJob = app.Job{
 	Name: "chat",
@@ -228,10 +229,15 @@ func run(args []string) error {
 	if brain != nil {
 		dj.Tools = append(slices.Clone(dj.Tools), brainChatTools...)
 	}
+	var blockedChatModel string
+	if m, ok := cfg.Models[chatGPTSubModel]; ok && m.Kind != "chatgpt" {
+		blockedChatModel = chatGPTSubModel
+		slog.Warn("subscription chat alias conflicts with a configured model", "model", chatGPTSubModel)
+	}
 	a := app.New(app.Deps{
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: allTools, Events: store, Ledger: store, Brain: brain,
 		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,
-		Windows: windows(cfg), CompactAt: cfg.CompactAt,
+		Windows: windows(cfg), CompactAt: cfg.CompactAt, BlockedChatModel: blockedChatModel,
 	})
 	jobtools.Register(tools, a)
 	switch cmd {
@@ -290,20 +296,26 @@ func windows(cfg config.Main) map[string]int {
 	return out
 }
 
-// buildModels constructs only the models that the default and the jobs actually use.
-// The selector is nil unless the default model is a claudesdk model, the only kind /model can switch for now.
 func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string]app.Model, app.ModelSelector, error) {
-	need := map[string]bool{cfg.DefaultModel: true}
+	need := map[string]bool{cfg.DefaultModel: true, chatGPTSubModel: true}
 	for _, j := range jobs {
 		if j.Model != "" {
 			need[j.Model] = true
 		}
 	}
+	for name := range cfg.Models {
+		if !need[name] {
+			need[name] = false
+		}
+	}
 	models := map[string]app.Model{}
 	var selector app.ModelSelector
 	var gptSession *chatgpt.Session
-	for name := range need {
+	for name, required := range need {
 		m, ok := cfg.Models[name]
+		if !ok && name == chatGPTSubModel {
+			m, ok = config.Model{Kind: "chatgpt"}, true
+		}
 		if !ok {
 			return nil, nil, fmt.Errorf("model %q is not defined in the config", name)
 		}
@@ -311,7 +323,9 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "anthropic", "openai":
 			secret, err := vault.Resolve("secret://" + m.Secret)
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythos auth`", "model", name)
+				if required {
+					slog.Warn("model skipped: credential missing, run `haythos auth`", "model", name)
+				}
 				continue
 			}
 			if m.Kind == "anthropic" {
@@ -322,7 +336,9 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 		case "claudesdk":
 			token, err := vault.Resolve("secret://claude")
 			if err != nil {
-				slog.Warn("model skipped: credential missing, run `haythos auth claude`", "model", name)
+				if required {
+					slog.Warn("model skipped: credential missing, run `haythos auth claude`", "model", name)
+				}
 				continue
 			}
 			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token, name))
@@ -332,8 +348,10 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 				selector = claudeSubSelector{adapter: adapter, lister: cli}
 			}
 		case "chatgpt":
-			if !vault.Has("chatgpt") {
-				slog.Warn("model skipped: not signed in, run `haythos auth chatgpt`", "model", name)
+			if name != chatGPTSubModel && !vault.Has("chatgpt") {
+				if required {
+					slog.Warn("model skipped: not signed in, run `haythos auth chatgpt`", "model", name)
+				}
 				continue
 			}
 			// One session for all chatgpt models, so refreshes of the rotating token stay serialized.
