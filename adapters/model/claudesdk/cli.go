@@ -4,6 +4,8 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,8 +13,10 @@ import (
 	"log/slog"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/panca/haythos/core/task"
 )
@@ -27,10 +31,25 @@ type CLIConfig struct {
 	StateDir string
 }
 
-const maxSessions = 32
+const maxSessions = 8
 
-// CLI spawns one `claude -p` process per call; it holds no state between calls.
-type CLI struct{ cfg CLIConfig }
+// CLI spawns one `claude -p` process per call; a prompt that extends an earlier one resumes that CLI session, the only shape its prompt cache hits.
+type CLI struct {
+	cfg CLIConfig
+
+	prepare  sync.Once
+	prepErr  error
+	work     string
+	config   string
+	mu       sync.Mutex
+	sessions []session
+}
+
+type session struct {
+	id, key string
+	covered [sha256.Size]byte
+	n       int
+}
 
 func NewCLI(cfg CLIConfig) *CLI {
 	if cfg.Command == "" {
@@ -43,6 +62,8 @@ func NewCLI(cfg CLIConfig) *CLI {
 var isolationEnv = []string{"CLAUDE_CODE_DISABLE_AUTO_MEMORY=1", "CLAUDE_CODE_DISABLE_CLAUDE_MDS=1", "CLAUDE_CODE_MAX_RETRIES=0"}
 
 var isolationArgs = []string{"--tools", "", "--setting-sources", "", "--no-session-persistence", "--strict-mcp-config"}
+
+var stepArgs = []string{"-p", "--output-format", "json", "--tools", "", "--setting-sources", "", "--strict-mcp-config", "--max-turns", "2"}
 
 type cliResult struct {
 	IsError          bool            `json:"is_error"`
@@ -69,18 +90,108 @@ func (c *CLI) Step(ctx context.Context, req StepRequest) (StepResponse, error) {
 	if len(req.Tools) != 0 {
 		return StepResponse{}, errors.New("claude cli: built-in tools are never enabled")
 	}
-	dir, err := os.MkdirTemp("", "haythos-claude-")
-	if err != nil {
-		return StepResponse{}, fmt.Errorf("claude cli temp dir: %w", err)
+	if c.prepare.Do(c.prepareState); c.prepErr != nil {
+		return StepResponse{}, c.prepErr
 	}
-	defer func() { _ = os.RemoveAll(dir) }()
-	args := append([]string{"-p", "--output-format", "json"}, isolationArgs...)
-	args = append(args, "--max-turns", "2", "--system-prompt", req.System, "--json-schema", string(req.Schema))
+	key := req.System + "\x00" + req.Model + "\x00" + string(req.Schema)
+	if s, ok := c.take(key, req.Prompt); ok {
+		resp, err := c.run(ctx, req, "--resume", s.id, req.Prompt[s.n:])
+		if err == nil {
+			c.put(s.id, key, req.Prompt)
+			return resp, nil
+		}
+		c.forget(s.id)
+		if ctx.Err() != nil {
+			return StepResponse{}, err
+		}
+		slog.WarnContext(ctx, "claude cli session could not be resumed; starting a new one", "err", err)
+	}
+	id := newSessionID()
+	resp, err := c.run(ctx, req, "--session-id", id, req.Prompt)
+	if err != nil {
+		c.forget(id)
+		return StepResponse{}, err
+	}
+	c.put(id, key, req.Prompt)
+	return resp, nil
+}
+
+func newSessionID() string {
+	var b [16]byte
+	_, _ = rand.Read(b[:])
+	b[6], b[8] = b[6]&0x0f|0x40, b[8]&0x3f|0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:])
+}
+
+func (c *CLI) prepareState() {
+	root := c.cfg.StateDir
+	if root == "" {
+		if root, c.prepErr = os.MkdirTemp("", "haythos-claude-"); c.prepErr != nil {
+			c.prepErr = fmt.Errorf("claude cli state dir: %w", c.prepErr)
+			return
+		}
+	}
+	c.work, c.config = filepath.Join(root, "work"), filepath.Join(root, "config")
+	if err := os.RemoveAll(filepath.Join(c.config, "projects")); err != nil {
+		c.prepErr = fmt.Errorf("clear claude cli transcripts: %w", err)
+		return
+	}
+	for _, dir := range []string{c.work, c.config} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			c.prepErr = fmt.Errorf("claude cli state dir: %w", err)
+			return
+		}
+	}
+}
+
+// take removes and returns the session that covers the longest proper prefix of prompt, so no two steps resume it at once.
+func (c *CLI) take(key, prompt string) (session, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	best := -1
+	for i, s := range c.sessions {
+		if s.key == key && s.n < len(prompt) && (best < 0 || s.n > c.sessions[best].n) && sha256.Sum256([]byte(prompt[:s.n])) == s.covered {
+			best = i
+		}
+	}
+	if best < 0 {
+		return session{}, false
+	}
+	s := c.sessions[best]
+	c.sessions = slices.Delete(c.sessions, best, best+1)
+	return s, true
+}
+
+func (c *CLI) put(id, key, prompt string) {
+	c.mu.Lock()
+	c.sessions = append(c.sessions, session{id: id, key: key, covered: sha256.Sum256([]byte(prompt)), n: len(prompt)})
+	var dropped []session
+	if extra := len(c.sessions) - maxSessions; extra > 0 {
+		dropped = slices.Clone(c.sessions[:extra])
+		c.sessions = slices.Delete(c.sessions, 0, extra)
+	}
+	c.mu.Unlock()
+	for _, s := range dropped {
+		c.forget(s.id)
+	}
+}
+
+// forget deletes a session's transcript; the CLI keeps it at <config>/projects/<cwd slug>/<id>.jsonl.
+func (c *CLI) forget(id string) {
+	paths, _ := filepath.Glob(filepath.Join(c.config, "projects", "*", id+".jsonl"))
+	for _, p := range paths {
+		_ = os.Remove(p)
+	}
+}
+
+func (c *CLI) run(ctx context.Context, req StepRequest, sessionFlag, id, stdin string) (StepResponse, error) {
+	args := append(slices.Clone(stepArgs), "--system-prompt", req.System, "--json-schema", string(req.Schema))
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
-	cmd := c.command(ctx, dir, args...)
-	cmd.Stdin = strings.NewReader(req.Prompt)
+	cmd := c.command(ctx, c.work, append(args, sessionFlag, id)...)
+	cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+c.config)
+	cmd.Stdin = strings.NewReader(stdin)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()

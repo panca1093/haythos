@@ -398,3 +398,10 @@ func TestDiscordPostIsTierTwoAndOnlyForDiscordChat(t *testing.T) {
 		t.Error("discord.post must be added to the chat job only when Discord is configured")
 	}
 }
+
+func TestClaudeCLIKeepsItsStateNextToTheDatabase(t *testing.T) {
+	got := claudeCLIConfig(config.Main{DB: filepath.Join("var", "haythos.db")}, "tok").StateDir
+	if want := filepath.Join("var", "claude-cli"); got != want {
+		t.Errorf("StateDir = %q, want %q", got, want)
+	}
+}

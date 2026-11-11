@@ -196,6 +196,7 @@ func TestCLIStepArgsAndEnv(t *testing.T) {
 }
 
 func TestCLIStepResumesWhenPromptExtends(t *testing.T) {
+	t.Parallel()
 	c, record := fakeCLI(t, "structured")
 	req := StepRequest{System: "s", Prompt: "tools\n[user] hi\n", Schema: json.RawMessage(`{}`), Tools: []string{}}
 	step(t, c, req)
@@ -239,6 +240,7 @@ func TestCLIStepStartsNewSessionWhenNotAnExtension(t *testing.T) {
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			c, record := fakeCLI(t, "structured")
 			step(t, c, base)
 			next := tc.next(base)
@@ -257,6 +259,7 @@ func TestCLIStepStartsNewSessionWhenNotAnExtension(t *testing.T) {
 }
 
 func TestCLIStepResumeFailureStartsFresh(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	c, record := fakeCLIIn(t, "resume-fails", state)
 	req := StepRequest{Prompt: "one\n", Tools: []string{}}
@@ -283,6 +286,7 @@ func TestCLIStepResumeFailureStartsFresh(t *testing.T) {
 }
 
 func TestCLIStepForgetsOldestSession(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	c, record := fakeCLIIn(t, "structured", state)
 	for i := 0; i <= maxSessions; i++ {
@@ -305,6 +309,7 @@ func TestCLIStepForgetsOldestSession(t *testing.T) {
 }
 
 func TestCLIStepClearsLeftoverTranscripts(t *testing.T) {
+	t.Parallel()
 	state := t.TempDir()
 	old, keep := fakeTranscript(state, "leftover"), filepath.Join(state, "keep.txt")
 	if err := os.MkdirAll(filepath.Dir(old), 0o700); err != nil {
@@ -326,6 +331,7 @@ func TestCLIStepClearsLeftoverTranscripts(t *testing.T) {
 }
 
 func TestCLIStepConcurrentExtensionsShareNoSession(t *testing.T) {
+	t.Parallel()
 	c, record := fakeCLI(t, "structured")
 	base := StepRequest{Prompt: "base\n", Tools: []string{}}
 	step(t, c, base)

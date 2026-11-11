@@ -381,8 +381,9 @@ func (s claudeSubSelector) Select(_ context.Context, value string) error {
 
 func claudeCLIConfig(cfg config.Main, token string) claudesdk.CLIConfig {
 	return claudesdk.CLIConfig{
-		Command: cfg.ClaudeCLI.Command,
-		Env:     []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
+		Command:  cfg.ClaudeCLI.Command,
+		Env:      []string{"PATH=" + os.Getenv("PATH"), "HOME=" + os.Getenv("HOME"), "CLAUDE_CODE_OAUTH_TOKEN=" + token},
+		StateDir: filepath.Join(filepath.Dir(cfg.DB), "claude-cli"),
 	}
 }
 
