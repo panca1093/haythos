@@ -209,9 +209,6 @@ func run(args []string) error {
 		if cfg.Discord.OwnerID == "" {
 			return errors.New("discord.owner_id must be set in the config")
 		}
-		if cfg.Discord.ChannelID != "" {
-			slog.Warn("discord.channel_id is ignored; delete it from the config")
-		}
 		if channel, err = discord.New(discord.Config{Token: token, OwnerID: cfg.Discord.OwnerID}); err != nil {
 			return err
 		}

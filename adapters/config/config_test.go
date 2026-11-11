@@ -87,7 +87,6 @@ sidecar:
 
 discord:
   owner_id: "100000000000000001"
-  channel_id: "42"
 `
 
 func TestSaveModelChoice(t *testing.T) {

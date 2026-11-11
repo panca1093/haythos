@@ -42,7 +42,7 @@ go run ./cmd/haythos auth openai      # key for an OpenAI-compatible endpoint
 go run ./cmd/haythos auth discord     # Discord bot token
 ```
 
-Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`. (`discord.channel_id` is gone; if your file still has it, Alfred ignores it with a warning, so delete it.)
+Then edit `config/haythos.yaml`: set `discord.owner_id` and `default_model`.
 
 ### `haythos auth chatgpt` (ChatGPT plan)
 
