@@ -362,16 +362,16 @@ func (a *Adapter) Models(ctx context.Context) ([]ModelInfo, error) {
 	return a.models(ctx, token)
 }
 
-func (a *Adapter) ModelNames(ctx context.Context) ([]string, error) {
+func (a *Adapter) List(ctx context.Context) ([]app.ModelChoice, error) {
 	list, err := a.Models(ctx)
 	if err != nil {
 		return nil, err
 	}
-	names := make([]string, 0, len(list))
+	choices := make([]app.ModelChoice, 0, len(list))
 	for _, m := range list {
-		names = append(names, m.Slug)
+		choices = append(choices, app.ModelChoice{Value: m.Slug, Name: m.DisplayName})
 	}
-	return names, nil
+	return choices, nil
 }
 
 func (a *Adapter) WithModel(name string) app.Model {

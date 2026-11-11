@@ -342,10 +342,10 @@ func buildModels(cfg config.Main, vault *file.Vault, jobs []app.Job) (map[string
 				continue
 			}
 			cli := claudesdk.NewCLI(claudeCLIConfig(cfg, token, name))
-			adapter := claudesdk.New(cli, claudesdk.WithModel(m.Model))
-			models[name] = adapter
+			model := claudeSubSelector{Adapter: claudesdk.New(cli, claudesdk.WithModel(m.Model)), lister: cli}
+			models[name] = model
 			if name == cfg.DefaultModel {
-				selector = claudeSubSelector{adapter: adapter, lister: cli}
+				selector = model
 			}
 		case "chatgpt":
 			if name != chatGPTSubModel && !vault.Has("chatgpt") {
@@ -369,8 +369,8 @@ type modelLister interface {
 }
 
 type claudeSubSelector struct {
-	adapter *claudesdk.Adapter
-	lister  modelLister
+	*claudesdk.Adapter
+	lister modelLister
 }
 
 func (s claudeSubSelector) List(ctx context.Context) ([]app.ModelChoice, error) {
@@ -386,15 +386,19 @@ func (s claudeSubSelector) List(ctx context.Context) ([]app.ModelChoice, error) 
 }
 
 func (s claudeSubSelector) Current() string {
-	if m := s.adapter.Model(); m != "" {
+	if m := s.Model(); m != "" {
 		return m
 	}
 	return "default"
 }
 
 func (s claudeSubSelector) Select(_ context.Context, value string) error {
-	s.adapter.SetModel(value)
+	s.SetModel(value)
 	return nil
+}
+
+func (s claudeSubSelector) WithModel(name string) app.Model {
+	return s.Adapter.WithModel(name)
 }
 
 // claudeCLIConfig gives each model entry its own state dir: a CLI clears its transcripts when it starts, so two sharing one would delete each other's.

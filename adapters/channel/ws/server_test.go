@@ -62,8 +62,8 @@ func (h *fakeHandler) Conversations(_ context.Context, prefix string) ([]app.Con
 	return h.convs, nil
 }
 
-func (h *fakeHandler) CurrentModel() string                         { return "opus" }
-func (h *fakeHandler) ChatModels(context.Context) ([]string, error) { return nil, nil }
+func (h *fakeHandler) CurrentModel() string                                  { return "opus" }
+func (h *fakeHandler) ChatModels(context.Context) ([]app.ModelChoice, error) { return nil, nil }
 func (h *fakeHandler) ConversationModel(context.Context, string) (string, error) {
 	return "", nil
 }

@@ -150,9 +150,10 @@ type Frame struct {
 	StartedAt time.Time `json:"started_at,omitzero"`
 	Channels  []string  `json:"channels,omitempty"`
 	// Welcome carries the provider's model value and config name. History and model replies carry the conversation's model name.
-	Model        string   `json:"model,omitempty"`
-	DefaultModel string   `json:"default_model,omitempty"`
-	Models       []string `json:"models,omitempty"`
+	Model        string            `json:"model,omitempty"`
+	DefaultModel string            `json:"default_model,omitempty"`
+	Models       []string          `json:"models,omitempty"`
+	ModelLabels  map[string]string `json:"model_labels,omitempty"`
 
 	Conv    string    `json:"conv,omitempty"`
 	Turns   []Turn    `json:"turns,omitempty"`

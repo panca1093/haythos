@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -61,15 +62,18 @@ var (
 )
 
 type model struct {
-	conn    Conn
-	opts    Options
-	state   string
-	pending []ws.Pending
-	input   []rune
-	cursor  int
-	width   int
+	conn          Conn
+	opts          Options
+	state         string
+	pending       []ws.Pending
+	input         []rune
+	cursor        int
+	width, height int
 	// modelName, context and window feed the status line.
 	modelName, modelAlias   string
+	modelOptions            []string
+	modelLabels             map[string]string
+	modelCursor             int
 	selectingModel          bool
 	startingModel           bool
 	startupErr              error
@@ -103,7 +107,7 @@ var (
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
 func New(c Conn, opts Options) tea.Model {
-	return &model{conn: c, opts: opts, state: "idle", width: 80, now: time.Now,
+	return &model{conn: c, opts: opts, state: "idle", width: 80, height: 24, now: time.Now,
 		startingModel: opts.Model != "", summary: Summary{Conv: opts.Conv, Started: time.Now()}}
 }
 
@@ -183,7 +187,7 @@ func (m *model) print(s string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 	case frameMsg:
 		return m, tea.Batch(m.onFrame(ws.Frame(msg)), m.read())
 	case tickMsg:
@@ -254,12 +258,16 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 			m.modelAlias, m.modelName = f.Model, clean(f.Model)
 			m.context, m.window, m.cached = 0, 0, 0
 		}
-		if len(f.Models) > 0 || f.Message != "" || f.Model == "" {
-			lines := []string{"Pilihan model", clean(strings.Join(f.Models, "\n")), "Pilih dengan /model <nama>"}
-			if f.Message != "" {
-				lines = append(lines, f.Message)
-			}
-			return m.print(dimStyle.Render(strings.Join(lines, "\n")))
+		if len(f.Models) > 0 {
+			m.modelOptions, m.modelLabels = f.Models, f.ModelLabels
+			m.modelCursor = max(0, slices.Index(m.modelOptions, m.modelAlias))
+			return m.print(warnStyle.Render(f.Message))
+		}
+		if f.Message != "" {
+			return m.print(errStyle.Render(f.Message))
+		}
+		if f.Model == "" {
+			return m.print(dimStyle.Render("Tidak ada pilihan model."))
 		}
 		return m.print(dimStyle.Render("Model aktif  " + m.modelName))
 	case ws.TypeNotice:
@@ -366,6 +374,9 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if len(m.modelOptions) > 0 {
+		return m, m.pickModel(k.Type)
+	}
 	if m.edit(k) {
 		return m, nil
 	}
@@ -392,6 +403,23 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text, Model: m.modelAlias}), m.work())
 	}
 	return m, nil
+}
+
+func (m *model) pickModel(key tea.KeyType) tea.Cmd {
+	switch key {
+	case tea.KeyUp:
+		m.modelCursor = max(0, m.modelCursor-1)
+	case tea.KeyDown:
+		m.modelCursor = min(len(m.modelOptions)-1, m.modelCursor+1)
+	case tea.KeyEsc:
+		m.modelOptions, m.modelLabels = nil, nil
+	case tea.KeyEnter:
+		name := m.modelOptions[m.modelCursor]
+		m.modelOptions, m.modelLabels = nil, nil
+		m.selectingModel = true
+		return m.sendCmd(ws.SelectModel{Model: name})
+	}
+	return nil
 }
 
 // work counts a new message in flight and starts the indicator; the timer runs from the first unanswered message.
@@ -585,6 +613,9 @@ func shortPath(dir, home string) string {
 func (m *model) View() string {
 	w := max(m.width, 20)
 	rule := ruleStyle.Render(strings.Repeat("─", w))
+	if len(m.modelOptions) > 0 && len(m.pending) == 0 {
+		return strings.Join([]string{m.modelPickerView(), rule, m.status()}, "\n")
+	}
 	var parts []string
 	if len(m.pending) > 0 {
 		p := m.pending[0].Approval
@@ -605,9 +636,37 @@ func (m *model) View() string {
 	prompt := userStyle.Render("› ") + m.inputView()
 	if len(m.pending) > 0 {
 		prompt = userStyle.Render("› ") + dimStyle.Render("(menunggu izin…)")
+	} else if m.selectingModel {
+		prompt = dimStyle.Render("Menyiapkan model…")
 	}
 	parts = append(parts, rule, prompt, rule, m.status())
 	return strings.Join(parts, "\n")
+}
+
+func (m *model) modelPickerView() string {
+	limit := min(len(m.modelOptions), min(8, max(1, m.height-6)))
+	start := min(max(0, m.modelCursor-limit/2), len(m.modelOptions)-limit)
+	rows := []string{nameStyle.Render("Pilih model")}
+	for i, name := range m.modelOptions[start : start+limit] {
+		label := m.modelLabels[name]
+		if label == "" {
+			label = name
+		}
+		if provider, _, variant := strings.Cut(name, "/"); variant && label != name {
+			label += " · " + provider
+		}
+		if name == m.modelAlias {
+			label += " (aktif)"
+		}
+		label = clean(label)
+		if start+i == m.modelCursor {
+			rows = append(rows, userStyle.Render("› "+label))
+		} else {
+			rows = append(rows, "  "+label)
+		}
+	}
+	rows = append(rows, dimStyle.Render("↑/↓ pilih · Enter konfirmasi · Esc batal"))
+	return strings.Join(rows, "\n")
 }
 
 // inputView draws the text with a block cursor; an empty input shows the cursor over the placeholder.

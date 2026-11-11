@@ -137,7 +137,7 @@ type ModelChoice struct {
 }
 
 type ModelVariants interface {
-	ModelNames(ctx context.Context) ([]string, error)
+	List(ctx context.Context) ([]ModelChoice, error)
 	WithModel(name string) Model
 }
 

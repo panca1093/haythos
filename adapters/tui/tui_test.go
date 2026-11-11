@@ -118,6 +118,43 @@ func TestModelCommandSendsSelectionWithoutCreatingChatMessage(t *testing.T) {
 	}
 }
 
+func TestModelPickerSelectsByNameAndCanCancel(t *testing.T) {
+	t.Parallel()
+	m, conn := start(t)
+	m, cmd := enter(typeText(m, "/model"))
+	drain(cmd)
+	choices := ws.Frame{
+		Type:   ws.TypeModel,
+		Model:  "claude-sub/sonnet",
+		Models: []string{"claude-sub/sonnet", "chatgpt-sub/gpt-test"},
+		ModelLabels: map[string]string{
+			"claude-sub/sonnet":    "Sonnet",
+			"chatgpt-sub/gpt-test": "GPT Test",
+		},
+	}
+	m = feed(m, choices)
+	for _, want := range []string{"Sonnet", "GPT Test", "↑/↓", "Esc"} {
+		if !strings.Contains(m.View(), want) {
+			t.Errorf("picker is missing %q", want)
+		}
+	}
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, cmd = enter(m)
+	drain(cmd)
+	if got := conn.frames(); len(got) != 2 || got[0] != (ws.SelectModel{}) || got[1] != (ws.SelectModel{Model: "chatgpt-sub/gpt-test"}) {
+		t.Fatalf("frames = %+v, want list then chosen model", got)
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeModel, Model: "chatgpt-sub/gpt-test"})
+	m, cmd = enter(typeText(m, "/model"))
+	drain(cmd)
+	m = feed(m, choices)
+	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	drain(cmd)
+	if strings.Contains(m.View(), "GPT Test") || len(conn.frames()) != 3 {
+		t.Fatalf("Esc did not close picker without selecting: %s, %+v", m.View(), conn.frames())
+	}
+}
+
 func TestInitAppliesModelFlagOnSubscribe(t *testing.T) {
 	t.Parallel()
 	conn := &fakeConn{}

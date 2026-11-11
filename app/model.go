@@ -18,29 +18,57 @@ var (
 
 const evConversationModel = task.EventType("conv.model")
 
-func (a *App) ChatModels(ctx context.Context) ([]string, error) {
-	var choices []string
-	var listErr error
+func (a *App) ChatModels(ctx context.Context) ([]ModelChoice, error) {
+	type catalog struct {
+		alias   string
+		choices []ModelChoice
+		err     error
+	}
+	var choices []ModelChoice
+	results := make(chan catalog, len(a.d.Models))
+	count := 0
 	for name, model := range a.d.Models {
 		if a.blockedChatModel(name) {
 			continue
 		}
-		choices = append(choices, name)
+		choices = append(choices, ModelChoice{Value: name, Name: name})
 		if variants, ok := model.(ModelVariants); ok {
-			names, err := variants.ModelNames(ctx)
-			if err != nil {
-				listErr = errors.Join(listErr, fmt.Errorf("%s: %w", name, err))
+			count++
+			go func() {
+				list, err := variants.List(ctx)
+				results <- catalog{alias: name, choices: list, err: err}
+			}()
+		}
+	}
+	var listErr error
+collect:
+	for range count {
+		var result catalog
+		select {
+		case result = <-results:
+		case <-ctx.Done():
+			select {
+			case result = <-results:
+			default:
+				listErr = errors.Join(listErr, ctx.Err())
+				break collect
 			}
-			for _, id := range names {
-				choice := name + "/" + id
-				if !a.blockedChatModel(choice) {
-					choices = append(choices, choice)
-				}
+		}
+		if result.err != nil {
+			listErr = errors.Join(listErr, fmt.Errorf("%s: %w", result.alias, result.err))
+		}
+		for _, choice := range result.choices {
+			if choice.Value == "" {
+				continue
+			}
+			choice.Value = result.alias + "/" + choice.Value
+			if !a.blockedChatModel(choice.Value) {
+				choices = append(choices, choice)
 			}
 		}
 	}
-	slices.Sort(choices)
-	return slices.Compact(choices), listErr
+	slices.SortFunc(choices, func(a, b ModelChoice) int { return strings.Compare(a.Value, b.Value) })
+	return slices.CompactFunc(choices, func(a, b ModelChoice) bool { return a.Value == b.Value }), listErr
 }
 
 func (a *App) SetConversationModel(ctx context.Context, replyTo, model string) error {
@@ -64,11 +92,11 @@ func (a *App) validateChatModel(ctx context.Context, name string) error {
 	if !ok {
 		return fmt.Errorf("%w %q", ErrUnknownModel, name)
 	}
-	names, err := variants.ModelNames(ctx)
+	choices, err := variants.List(ctx)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrModelDiscovery, err)
 	}
-	if !slices.Contains(names, id) {
+	if !slices.ContainsFunc(choices, func(c ModelChoice) bool { return c.Value == id }) {
 		return fmt.Errorf("%w %q", ErrUnknownModel, name)
 	}
 	return nil

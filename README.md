@@ -87,8 +87,8 @@ haythos stop                        # SIGTERM to the kernel, waits up to 10 s
 With a running kernel, `haythos chat` works from any directory. To start a kernel with the default paths, run from the directory that holds `config/`. A kernel started by `chat` logs to `<home>/logs/haythos.log`.
 
 - Enter sends; `/quit` or Ctrl+C closes the window only. The kernel keeps running and a running task keeps going.
-- `/model` lists model names. `/model <name>` switches the current conversation for its next message. The choice is saved with the conversation and restored by `--resume` or `--session`.
-- After ChatGPT sign-in, `/model` also lists the specific models available on your plan as `chatgpt-sub/<model>`. Use one of those names with `/model` or `haythos chat --model`.
+- `/model` opens a picker with display names for the available Claude and ChatGPT subscription models. Use ↑/↓ to move, Enter to select, or Esc to cancel. The choice applies to the next message and is restored by `--resume` or `--session`.
+- You can also select a model directly with `/model <alias>/<model>` or `haythos chat --model <alias>/<model>`, for example `claude-sub/sonnet`.
 - An approval for this conversation shows inline with tool, target and preview; press `y` or `n`. Approvals stay where they were asked: a Discord approval never shows in the terminal and the reverse, and a terminal client can only act on its own `tui:` conversation.
 - Close the window while Alfred waits for your approval and the task stays waiting; `haythos chat --resume` shows the approval again.
 - After rebuilding the binary the old kernel keeps running; the chat says so in one line. Run `haythos stop` and start `chat` again.

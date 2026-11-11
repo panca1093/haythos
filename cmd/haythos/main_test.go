@@ -342,7 +342,7 @@ func (nopTransport) Step(context.Context, claudesdk.StepRequest) (claudesdk.Step
 
 func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	adapter := claudesdk.New(nopTransport{})
-	sel := claudeSubSelector{adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}}
+	sel := claudeSubSelector{Adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}}
 
 	if got := sel.Current(); got != "default" {
 		t.Errorf("Current with no model = %q, want default", got)
@@ -356,6 +356,10 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	}
 	if adapter.Model() != "sonnet" || sel.Current() != "sonnet" {
 		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
+	}
+	variant := sel.WithModel("opus").(*claudesdk.Adapter)
+	if variant.Model() != "opus" || sel.Current() != "sonnet" {
+		t.Fatalf("per-conversation Claude = %q, shared Claude = %q", variant.Model(), sel.Current())
 	}
 }
 

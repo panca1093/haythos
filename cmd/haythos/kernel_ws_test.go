@@ -155,8 +155,11 @@ func TestKernelOverWS(t *testing.T) {
 
 type fakePlanModel struct{ app.Model }
 
-func (m fakePlanModel) ModelNames(context.Context) ([]string, error) {
-	return []string{"gpt-test", "gpt-conflict"}, nil
+func (m fakePlanModel) List(context.Context) ([]app.ModelChoice, error) {
+	return []app.ModelChoice{
+		{Value: "gpt-test", Name: "GPT Test"},
+		{Value: "gpt-conflict", Name: "GPT Conflict"},
+	}, nil
 }
 func (m fakePlanModel) WithModel(name string) app.Model {
 	return testfakes.NewModel(task.AssistantTurn{Text: "from " + name})
@@ -184,6 +187,7 @@ func TestConversationModelOverWS(t *testing.T) {
 		Ledger:     st,
 		Notifier:   route,
 		Vault:      testfakes.Vault{},
+		Windows:    map[string]int{"chatgpt-sub": 123_456},
 	}
 	srv := ws.New(ws.Config{SocketPath: p.Socket, DefaultModel: "claude-sub"}, app.New(deps))
 	route.ws = srv
@@ -211,7 +215,8 @@ func TestConversationModelOverWS(t *testing.T) {
 	first := dialKernel(t, ctx, p.Socket, "tui:first")
 	nextOf(t, ctx, first, ws.TypeHistory)
 	send(first, ws.SelectModel{})
-	if f := nextOf(t, ctx, first, ws.TypeModel); len(f.Models) != 3 || f.Models[1] != "chatgpt-sub/gpt-test" {
+	if f := nextOf(t, ctx, first, ws.TypeModel); len(f.Models) != 3 || f.Models[1] != "chatgpt-sub/gpt-test" ||
+		f.ModelLabels[f.Models[1]] != "GPT Test" {
 		t.Fatalf("choices = %+v, want ChatGPT plan model and provider aliases", f)
 	}
 	send(first, ws.SelectModel{Model: "chatgpt-sub"})
@@ -256,8 +261,8 @@ func TestConversationModelOverWS(t *testing.T) {
 		t.Fatalf("selection = %+v, want exact plan model", f)
 	}
 	send(second, ws.Input{Conv: "tui:second", Text: "hello again", Model: "chatgpt-sub/gpt-test"})
-	if f := nextOf(t, ctx, second, ws.TypeNotice); f.Text != "from gpt-test" {
-		t.Fatalf("variant answer = %+v, want specific model response", f)
+	if f := nextOf(t, ctx, second, ws.TypeNotice); f.Text != "from gpt-test" || f.Window != 123_456 {
+		t.Fatalf("variant answer = %+v, want specific model and inherited context window", f)
 	}
 }
 
@@ -353,9 +358,9 @@ func (nopHandler) ConversationView(context.Context, string) (app.ConversationVie
 func (nopHandler) Conversations(context.Context, string) ([]app.ConversationSummary, error) {
 	return nil, nil
 }
-func (nopHandler) TaskOrigin(context.Context, string) (string, error) { return "", nil }
-func (nopHandler) CurrentModel() string                               { return "" }
-func (nopHandler) ChatModels(context.Context) ([]string, error)       { return nil, nil }
+func (nopHandler) TaskOrigin(context.Context, string) (string, error)    { return "", nil }
+func (nopHandler) CurrentModel() string                                  { return "" }
+func (nopHandler) ChatModels(context.Context) ([]app.ModelChoice, error) { return nil, nil }
 func (nopHandler) ConversationModel(context.Context, string) (string, error) {
 	return "", nil
 }

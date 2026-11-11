@@ -146,6 +146,12 @@ func (a *App) window(model string) int {
 	if w := a.d.Windows[model]; w > 0 {
 		return w
 	}
+	if _, _, variant := a.modelVariant(model); variant {
+		alias, _, _ := strings.Cut(model, "/")
+		if w := a.d.Windows[alias]; w > 0 {
+			return w
+		}
+	}
 	return defaultWindow
 }
 

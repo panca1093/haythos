@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	writeTimeout = 5 * time.Second
-	outboundCap  = 64
-	readLimit    = 1 << 20
-	probeTimeout = time.Second
+	writeTimeout          = 5 * time.Second
+	outboundCap           = 64
+	readLimit             = 1 << 20
+	probeTimeout          = time.Second
+	modelDiscoveryTimeout = 10 * time.Second
 	// maxSocketPath is the macOS sun_path limit (104 with the NUL); Linux allows 108.
 	maxSocketPath = 103
 )
@@ -37,7 +38,7 @@ type Handler interface {
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
 	TaskOrigin(ctx context.Context, taskID string) (string, error)
 	CurrentModel() string
-	ChatModels(ctx context.Context) ([]string, error)
+	ChatModels(ctx context.Context) ([]app.ModelChoice, error)
 	ConversationModel(ctx context.Context, replyTo string) (string, error)
 	SetConversationModel(ctx context.Context, replyTo, model string) error
 }
@@ -281,10 +282,14 @@ func (s *Server) modelLabel(model string) string {
 
 func (s *Server) listModels(ctx context.Context, c *conn, conv string) {
 	model, modelErr := s.h.ConversationModel(ctx, conv)
-	listCtx, cancel := context.WithTimeout(ctx, writeTimeout)
+	listCtx, cancel := context.WithTimeout(ctx, modelDiscoveryTimeout)
 	defer cancel()
 	choices, err := s.h.ChatModels(listCtx)
-	f := Frame{Type: TypeModel, Models: choices}
+	f := Frame{Type: TypeModel, ModelLabels: make(map[string]string, len(choices))}
+	for _, choice := range choices {
+		f.Models = append(f.Models, choice.Value)
+		f.ModelLabels[choice.Value] = choice.Name
+	}
 	if err != nil {
 		f.Message = err.Error()
 	}
@@ -295,7 +300,7 @@ func (s *Server) listModels(ctx context.Context, c *conn, conv string) {
 }
 
 func (s *Server) setModel(ctx context.Context, c *conn, conv, model string) bool {
-	ctx, cancel := context.WithTimeout(ctx, writeTimeout)
+	ctx, cancel := context.WithTimeout(ctx, modelDiscoveryTimeout)
 	defer cancel()
 	err := s.h.SetConversationModel(ctx, conv, model)
 	if err == nil {
