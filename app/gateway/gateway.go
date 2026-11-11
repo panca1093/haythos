@@ -216,13 +216,13 @@ func (g *Gateway) invoke(ctx context.Context, call task.ToolCall, spec task.Tool
 	real.Args = args
 	res, err := g.d.Tools.Call(ctx, real)
 	res.CallID = call.ID
-	res.Untrusted = spec.Untrusted
+	res.Untrusted = res.Untrusted || spec.Untrusted
 	if err != nil {
 		res.Content, res.IsError = scrub(err.Error(), values), true
 		return res, err
 	}
 	res.Content = scrub(res.Content, values)
-	if spec.Untrusted {
+	if res.Untrusted {
 		res.Content = task.StripInvisible(res.Content)
 	}
 	return res, nil

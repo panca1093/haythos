@@ -38,6 +38,15 @@ var (
 		".bash_history", ".zsh_history", ".python_history", ".node_repl_history", ".psql_history",
 	}
 	deniedExts = []string{".pem", ".key", ".p12", ".pfx", ".enc", ".env", ".tfstate", ".tfstate.backup"}
+
+	// A file with one of these extensions is a trusted source; anything else a read returns is untrusted data.
+	sourceExts = map[string]bool{
+		".go": true, ".py": true, ".js": true, ".jsx": true, ".mjs": true, ".cjs": true, ".ts": true, ".tsx": true,
+		".java": true, ".kt": true, ".kts": true, ".scala": true, ".rs": true, ".c": true, ".h": true, ".cc": true,
+		".cpp": true, ".hpp": true, ".cs": true, ".swift": true, ".rb": true, ".php": true, ".lua": true, ".dart": true,
+		".sh": true, ".bash": true, ".zsh": true, ".sql": true, ".proto": true, ".ex": true, ".exs": true, ".erl": true,
+		".hs": true, ".clj": true, ".jl": true, ".vue": true, ".svelte": true,
+	}
 )
 
 type tool struct{ cfg Config }
@@ -49,13 +58,11 @@ func Register(r *local.Registry, cfg Config) {
 		Name:        "fs.list",
 		Description: "List files and folders in the folder this chat was opened in (or a subfolder). Read-only.",
 		InputSchema: json.RawMessage(pathArg + `}`),
-		Untrusted:   true,
 	}, t.list)
 	r.Register(task.ToolSpec{
 		Name:        "fs.read",
 		Description: "Read a text file inside the folder this chat was opened in. Read-only; large files are truncated.",
 		InputSchema: json.RawMessage(pathArg + `,"required":["path"]}`),
-		Untrusted:   true,
 	}, t.read)
 }
 
@@ -255,7 +262,7 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	if truncated {
 		out += fmt.Sprintf("\n[truncated at %d KiB]", maxRead>>10)
 	}
-	return task.ToolResult{Content: out}, nil
+	return task.ToolResult{Content: task.StripInvisible(out), Untrusted: !sourceExts[strings.ToLower(filepath.Ext(full))]}, nil
 }
 
 func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
@@ -286,5 +293,5 @@ func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		more = fmt.Sprintf("\n[%d more not shown]", len(names)-maxList)
 		names = names[:maxList]
 	}
-	return task.ToolResult{Content: strings.Join(names, "\n") + more}, nil
+	return task.ToolResult{Content: task.StripInvisible(strings.Join(names, "\n") + more)}, nil
 }
