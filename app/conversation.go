@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,8 @@ type convTurn struct {
 	Answer  string    `json:"answer"`
 	At      time.Time `json:"at"`
 	Context int       `json:"context,omitempty"`
+	// msgs is the task's own messages as replayed context; nil replays only User and Answer.
+	msgs []task.Message
 }
 
 type convSummary struct {
@@ -36,7 +39,22 @@ type convSummary struct {
 
 func convStream(replyTo string) string { return "conv:" + replyTo }
 
-func (t convTurn) tokens() int { return (len(t.User) + len(t.Answer)) / 4 }
+func (t convTurn) tokens() int {
+	if t.msgs == nil {
+		return (len(t.User) + len(t.Answer)) / 4
+	}
+	n := 0
+	for _, m := range t.msgs {
+		n += len(m.Text)
+		for _, c := range m.Calls {
+			n += len(c.Name) + len(c.Args)
+		}
+		for _, r := range m.Results {
+			n += len(r.Content)
+		}
+	}
+	return n / 4
+}
 
 // splitWindow keeps the newest turns that fit the token budget; older turns overflow.
 func splitWindow(turns []convTurn, budget int) (older, recent []convTurn) {
@@ -71,11 +89,14 @@ func estimatePrompt(summary string, fresh []convTurn, incoming string) int {
 	return est
 }
 
-// fitTurn cuts the answer so the turn fits budget tokens; the user text is kept whole.
+// fitTurn drops the turn's tool traffic, then cuts the answer, so the turn fits budget tokens; the user text is kept whole.
 func fitTurn(t convTurn, budget int) (convTurn, bool) {
 	const marker = "\n[truncated]"
 	if t.tokens() <= budget {
 		return t, false
+	}
+	if t.msgs = nil; t.tokens() <= budget {
+		return t, true
 	}
 	keep := min(max(budget*4-len(t.User)-len(marker), 0), len(t.Answer))
 	t.Answer = strings.ToValidUTF8(t.Answer[:keep], "") + marker
@@ -107,8 +128,8 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 		}
 	}
 	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock()}
-	if s.FirstInput > 0 {
-		turn.Context = s.FirstInput + len(answer)/4
+	if s.LastInput > 0 {
+		turn.Context = s.LastInput + len(answer)/4
 	}
 	marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
 	if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
@@ -165,6 +186,9 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 	var fresh []convTurn
 	for _, t := range turns {
 		if !covered[t.Task] {
+			if t.msgs, err = a.turnMessages(ctx, t.Task); err != nil {
+				return nil, err
+			}
 			fresh = append(fresh, t)
 		}
 	}
@@ -182,7 +206,7 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 		if len(recent) == 1 {
 			fit, cut := fitTurn(recent[0], int(limit)-(len(summary.Text)+len(incoming))/4)
 			if cut {
-				slog.Warn("newest conversation turn alone exceeds the compaction threshold; truncating its answer in the replay", "conversation", replyTo, "tokens", recent[0].tokens())
+				slog.Warn("newest conversation turn alone exceeds the compaction threshold; shortening it in the replay", "conversation", replyTo, "tokens", recent[0].tokens())
 				recent = []convTurn{fit}
 			}
 		}
@@ -192,11 +216,33 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 		out = append(out, task.Message{Role: task.RoleSystem, Text: convSummaryFraming + summary.Text, Context: true})
 	}
 	for _, t := range recent {
+		if t.msgs != nil {
+			out = append(out, t.msgs...)
+			continue
+		}
 		out = append(out,
 			task.Message{Role: task.RoleUser, Text: t.User, Context: true},
 			task.Message{Role: task.RoleAssistant, Text: t.Answer, Context: true})
 	}
 	return out, nil
+}
+
+// turnMessages returns a finished chat task's own messages, from its user input on, unchanged but marked as context.
+func (a *App) turnMessages(ctx context.Context, id string) ([]task.Message, error) {
+	s, err := a.Snapshot(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	for i, m := range s.History {
+		if m.Role == task.RoleUser && !m.Context {
+			own := slices.Clone(s.History[i:])
+			for j := range own {
+				own[j].Context = true
+			}
+			return own, nil
+		}
+	}
+	return nil, nil
 }
 
 func (a *App) compact(ctx context.Context, stream string, summary convSummary, older []convTurn, replyTo string) (convSummary, error) {

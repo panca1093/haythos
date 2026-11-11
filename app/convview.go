@@ -78,7 +78,7 @@ func (a *App) scanLog(ctx context.Context) ([]task.Event, map[string]*taskScan, 
 			if t.firstUser == "" && m.Role == task.RoleUser && !m.Context {
 				t.firstUser = m.Text
 			}
-			if m.Role == task.RoleAssistant {
+			if m.Role == task.RoleAssistant && !m.Context {
 				t.calls += len(m.Calls)
 			}
 		case task.EvApprovalRequested:

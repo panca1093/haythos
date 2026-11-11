@@ -270,7 +270,7 @@ func TestSingleHugeTurnIsTruncatedInReplay(t *testing.T) {
 	}
 }
 
-// toolRig is a chat app with one read tool, note.read, whose result is result.
+// toolRig is a chat app with one read tool, note.read, whose result is result; the tool is untrusted when result is.
 func toolRig(t *testing.T, result task.ToolResult, turns ...task.AssistantTurn) (*app.App, *testfakes.Model, *sqlite.Store) {
 	t.Helper()
 	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
@@ -279,7 +279,7 @@ func toolRig(t *testing.T, result task.ToolResult, turns ...task.AssistantTurn) 
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	model := testfakes.NewModel(turns...)
-	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`), Untrusted: result.Untrusted})
 	tools.Handlers["note.read"] = func(task.ToolCall) (task.ToolResult, error) { return result, nil }
 	a := app.New(app.Deps{
 		Models:     map[string]app.Model{"default": model},
