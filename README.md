@@ -10,6 +10,12 @@ Requirements: Go (version in `go.mod`), the official `claude` CLI for the Claude
 export HAYTHOS_VAULT_KEY=$(openssl rand -base64 32)   # keep this; without it the vault cannot be read (a service reads it from the OS keychain, see below)
 ```
 
+Your config is a local copy of the example; git ignores it, so your ids and local servers never get committed:
+
+```bash
+cp config/haythos.example.yaml config/haythos.yaml
+```
+
 ### `haythos setup` (Claude subscription, recommended)
 
 One command onboards `claude-sub` (kind `claudesdk`). Needs the official `claude` CLI on `PATH` (or `claude_cli.command` in the config) and `HAYTHOS_VAULT_KEY` set.
@@ -189,7 +195,7 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 | `adapters/model/chatgpt/` | ChatGPT plan model: Sign in with ChatGPT (browser login, token refresh) and one step on the Responses API |
 | `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
 | `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
-| `config/` | The YAML files you edit: `haythos.yaml`, `policy.yaml` |
+| `config/` | The YAML files you edit: `haythos.yaml` (your untracked copy of `haythos.example.yaml`), `policy.yaml` |
 | `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |
 | `tests/acceptance/` | Whole-kernel tests with fakes, one file per use case plus `harness_test.go`; the gate for every milestone. Never delete |

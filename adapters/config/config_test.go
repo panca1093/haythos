@@ -18,7 +18,7 @@ func write(t *testing.T, dir, name, body string) string {
 }
 
 func TestShippedConfigLoads(t *testing.T) {
-	m, err := LoadMain("../../config/haythos.yaml")
+	m, err := LoadMain("../../config/haythos.example.yaml")
 	if err != nil || len(m.Models) != 3 {
 		t.Fatalf("main: %+v err=%v", m, err)
 	}

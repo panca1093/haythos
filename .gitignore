@@ -8,3 +8,5 @@ data/
 .DS_Store
 # local throwaway spikes; findings go to docs/FINDINGS.md
 experiments/
+# your local copy of config/haythos.example.yaml
+config/haythos.yaml
