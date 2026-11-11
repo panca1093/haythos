@@ -409,6 +409,16 @@ func TestWorkingIndicatorWhileWaiting(t *testing.T) {
 	}
 }
 
+func TestWorkingIndicatorHasABlankLineAbove(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m, _ = enter(typeText(m, "hi"))
+	lines := strings.Split(m.View(), "\n")
+	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "" || !strings.Contains(lines[1], workVerbs[0]+"…") {
+		t.Fatalf("want a blank line, then the indicator, at the top of the live area:\n%s", m.View())
+	}
+}
+
 func TestWorkingIndicatorPausesForApproval(t *testing.T) {
 	t.Parallel()
 	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)

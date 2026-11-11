@@ -539,7 +539,7 @@ func (m *model) View() string {
 		parts = append(parts, askStyle.Width(w-2).Render(strings.Join(body, "\n")))
 	}
 	if m.busy() {
-		parts = append(parts, m.working())
+		parts = append(parts, "", m.working())
 	}
 	prompt := userStyle.Render("› ") + m.inputView()
 	if len(m.pending) > 0 {
