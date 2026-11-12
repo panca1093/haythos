@@ -23,9 +23,10 @@ const (
 
 // Config: Home anchors the always-denied credential folders; Deny adds exact files such as the vault.
 type Config struct {
-	Home string
-	Deny []string
-	Rg   string
+	Home      string
+	Deny      []string
+	Rg        string
+	Pdftotext string
 }
 
 var (
