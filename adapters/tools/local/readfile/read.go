@@ -22,6 +22,7 @@ const (
 	maxLineChars = 2000
 	maxOutput    = 32 << 10
 	bigFile      = 256 << 10
+	binarySniff  = 8 << 10
 )
 
 var readSpec = task.ToolSpec{
@@ -101,6 +102,14 @@ func (t Guard) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	}
 	if opened.Size() > bigFile && !ranged {
 		return refuse(fmt.Sprintf("file is %d KiB; use file.search or offset/limit", opened.Size()>>10))
+	}
+	head := make([]byte, binarySniff)
+	n, err := f.ReadAt(head, 0)
+	if err != nil && !errors.Is(err, io.EOF) {
+		return refuse("not readable")
+	}
+	if bytes.IndexByte(head[:n], 0) >= 0 {
+		return refuse("not text (binary file)")
 	}
 	out, err := numberedLines(f, offset, limit)
 	if err != nil {
@@ -190,13 +199,13 @@ func nextLine(r *bufio.Reader) (string, error) {
 		}
 	}
 	buf = bytes.TrimSuffix(buf, []byte("\r"))
-	for i := 0; cut && i < utf8.UTFMax-1 && len(buf) > 0 && !utf8.Valid(buf); i++ {
+	for i := 0; cut && i < utf8.UTFMax-1 && len(buf) > 0; i++ {
+		if r, size := utf8.DecodeLastRune(buf); r != utf8.RuneError || size != 1 {
+			break
+		}
 		buf = buf[:len(buf)-1]
 	}
-	if !utf8.Valid(buf) {
-		return "", errors.New("not text (binary file)")
-	}
-	text := string(buf)
+	text := strings.ToValidUTF8(string(buf), "\uFFFD")
 	if utf8.RuneCountInString(text) > maxLineChars {
 		cut = true
 		text = string([]rune(text)[:maxLineChars])
