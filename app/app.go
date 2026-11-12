@@ -1,6 +1,7 @@
 package app
 
 import (
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -99,6 +100,18 @@ type workdirKey struct{}
 // WithWorkdir sets the chat folder tools see; the kernel sets it from the task, tests set it directly.
 func WithWorkdir(ctx context.Context, dir string) context.Context {
 	return context.WithValue(ctx, workdirKey{}, dir)
+}
+
+type cacheKey struct{}
+
+// WithCacheKey names the conversation a model step belongs to, so adapters can send a stable prompt cache key.
+func WithCacheKey(ctx context.Context, key string) context.Context {
+	return context.WithValue(ctx, cacheKey{}, key)
+}
+
+func CacheKeyFrom(ctx context.Context) string {
+	key, _ := ctx.Value(cacheKey{}).(string)
+	return key
 }
 
 // WorkdirFrom is the folder of the chat whose tool call is running; empty when the task has none.
@@ -398,7 +411,7 @@ func (a *App) run(ctx context.Context, id string) error {
 		if !ok {
 			return a.fail(ctx, id, fmt.Sprintf("model %q is not configured", s.Created.Model))
 		}
-		stepCtx, cancel := context.WithTimeout(ctx, a.d.StepTimeout)
+		stepCtx, cancel := context.WithTimeout(WithCacheKey(ctx, cmp.Or(s.Created.ReplyTo, id)), a.d.StepTimeout)
 		turn, err := model.Step(stepCtx, s.History, a.d.Tools.List(s.Created.Tools))
 		timedOut := errors.Is(stepCtx.Err(), context.DeadlineExceeded)
 		cancel()

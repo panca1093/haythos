@@ -92,3 +92,35 @@ func TestLegacyLargeResultIsCappedOnReplay(t *testing.T) {
 	ask(t, a, "Q2")
 	checkCapped(t, lastResult(t, model.Histories[2]), len(legacy))
 }
+
+type keyModel struct {
+	*testfakes.Model
+	keys []string
+}
+
+func (m *keyModel) Step(ctx context.Context, h []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
+	m.keys = append(m.keys, app.CacheKeyFrom(ctx))
+	return m.Model.Step(ctx, h, tools)
+}
+
+func TestModelStepsCarryTheConversationAsCacheKey(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	m := &keyModel{Model: testfakes.NewModel(readNote(10), used("A1", 10), used("A2", 10))}
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": m},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}}, Clock: time.Now,
+	})
+	ask(t, a, "Q1")
+	ask(t, a, "Q2")
+	if len(m.keys) != 3 || m.keys[0] != "c1" || m.keys[1] != "c1" || m.keys[2] != "c1" {
+		t.Fatalf("cache keys = %v, want the conversation key c1 on every step", m.keys)
+	}
+}
