@@ -3,6 +3,7 @@ package readfile
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -115,7 +116,7 @@ func TestReadAndListHideInvisibleCharacters(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "y\u200bz.go"), []byte("package y"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res := f.call(t, f.root, "file.read", `{"path":"x.go"}`); res.Content != "package main // evil" {
+	if res := f.call(t, f.root, "file.read", `{"path":"x.go"}`); res.Content != "1|package main // evil" {
 		t.Errorf("read = %q, want the invisible characters removed from trusted code", res.Content)
 	}
 	res := f.call(t, f.root, "file.list", `{}`)
@@ -131,8 +132,8 @@ func TestRead(t *testing.T) {
 		wantErr             bool
 		want                string
 	}{
-		{"file in folder", f.root, "README.md", false, "# hello"},
-		{"nested", f.root, "src/main.go", false, "package main"},
+		{"file in folder", f.root, "README.md", false, "1|# hello"},
+		{"nested", f.root, "src/main.go", false, "1|package main"},
 		{"no folder for this chat", "", "README.md", true, "no folder"},
 		{"parent escape", f.root, "../outside.txt", true, "outside"},
 		{"absolute path", f.root, filepath.Join(f.home, "outside.txt"), true, "relative"},
@@ -159,25 +160,133 @@ func TestRead(t *testing.T) {
 	}
 }
 
-func TestReadTruncatesLargeFiles(t *testing.T) {
-	f := newFixture(t)
-	if err := os.WriteFile(filepath.Join(f.root, "big.txt"), []byte(strings.Repeat("a", maxRead+100)), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	res := f.call(t, f.root, "file.read", `{"path":"big.txt"}`)
-	if res.IsError || len(res.Content) > maxRead+200 || !strings.Contains(res.Content, "truncated") {
-		t.Fatalf("len=%d error=%v, want at most %d bytes plus a truncation note", len(res.Content), res.IsError, maxRead)
-	}
-}
-
-func TestReadRangeReturnsOnlyRequestedLines(t *testing.T) {
+func TestReadRange(t *testing.T) {
 	f := newFixture(t)
 	if err := os.WriteFile(filepath.Join(f.root, "lines.go"), []byte("first\nsecond\nthird\nfourth\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(t, f.root, "file.read", `{"path":"lines.go","start_line":2,"end_line":3}`)
-	if res.IsError || res.Content != "second\nthird" {
-		t.Fatalf("result = %+v, want lines 2 through 3", res)
+	for _, tc := range []struct{ name, args, want string }{
+		{"offset and limit", `{"path":"lines.go","offset":2,"limit":2}`, "2|second\n3|third\n[truncated; continue with offset=4]"},
+		{"offset to end", `{"path":"lines.go","offset":3}`, "3|third\n4|fourth"},
+		{"limit covers the rest", `{"path":"lines.go","limit":4}`, "1|first\n2|second\n3|third\n4|fourth"},
+		{"limit one", `{"path":"lines.go","limit":1}`, "1|first\n[truncated; continue with offset=2]"},
+		{"offset beyond end", `{"path":"lines.go","offset":9}`, "offset 9 is beyond the end of the file (4 lines)"},
+		{"zero offset", `{"path":"lines.go","offset":0}`, "1|first\n2|second"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := f.call(t, f.root, "file.read", tc.args)
+			if res.IsError || !strings.Contains(res.Content, tc.want) {
+				t.Fatalf("result = %+v, want content containing %q", res, tc.want)
+			}
+		})
+	}
+	for _, bad := range []string{`{"path":"lines.go","offset":-1}`, `{"path":"lines.go","limit":0}`, `{"path":"lines.go","limit":-2}`, `{"path":"lines.go","offset":"x"}`} {
+		if res := f.call(t, f.root, "file.read", bad); !res.IsError {
+			t.Errorf("%s = %+v, want refused", bad, res)
+		}
+	}
+}
+
+func TestReadEmptyFile(t *testing.T) {
+	f := newFixture(t)
+	if err := os.WriteFile(filepath.Join(f.root, "empty.txt"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if res := f.call(t, f.root, "file.read", `{"path":"empty.txt"}`); res.IsError || res.Content != "" {
+		t.Fatalf("result = %+v, want empty content without error", res)
+	}
+}
+
+func TestReadDefaultLimit(t *testing.T) {
+	f := newFixture(t)
+	body := strings.Repeat("x\n", defaultLimit+50)
+	if err := os.WriteFile(filepath.Join(f.root, "many.txt"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call(t, f.root, "file.read", `{"path":"many.txt"}`)
+	lines := strings.Split(res.Content, "\n")
+	if res.IsError || len(lines) != defaultLimit+1 || lines[defaultLimit-1] != "2000|x" || lines[defaultLimit] != "[truncated; continue with offset=2001]" {
+		t.Fatalf("error=%v lines=%d last=%q, want %d numbered lines and a continue marker", res.IsError, len(lines), lines[len(lines)-1], defaultLimit)
+	}
+}
+
+func TestReadCapsLongLines(t *testing.T) {
+	f := newFixture(t)
+	long := strings.Repeat("é", maxLineChars+10)
+	if err := os.WriteFile(filepath.Join(f.root, "long.txt"), []byte(long+"\nshort\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := "1|" + strings.Repeat("é", maxLineChars) + "… [line truncated]\n2|short"
+	if res := f.call(t, f.root, "file.read", `{"path":"long.txt"}`); res.IsError || res.Content != want {
+		t.Fatalf("error=%v len=%d, want the first line cut at %d characters and the second intact", res.IsError, len(res.Content), maxLineChars)
+	}
+	huge := strings.Repeat("a", 100000)
+	if err := os.WriteFile(filepath.Join(f.root, "huge.txt"), []byte(huge+"\nnext\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call(t, f.root, "file.read", `{"path":"huge.txt"}`)
+	if res.IsError || !strings.HasSuffix(res.Content, "[line truncated]\n2|next") {
+		t.Fatalf("result = %.80q, want a capped first line followed by line 2", res.Content)
+	}
+}
+
+func TestReadCapsTotalAtWholeLine(t *testing.T) {
+	f := newFixture(t)
+	line := strings.Repeat("b", 1000)
+	if err := os.WriteFile(filepath.Join(f.root, "wide.txt"), []byte(strings.Repeat(line+"\n", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call(t, f.root, "file.read", `{"path":"wide.txt"}`)
+	lines := strings.Split(res.Content, "\n")
+	last := lines[len(lines)-1]
+	n := len(lines) - 1
+	if res.IsError || len(res.Content) > maxOutput+64 || n == 0 || n >= 100 {
+		t.Fatalf("error=%v len=%d lines=%d, want fewer than 100 whole lines within %d bytes", res.IsError, len(res.Content), n, maxOutput)
+	}
+	if want := fmt.Sprintf("[truncated; continue with offset=%d]", n+1); last != want {
+		t.Fatalf("last = %q, want %q", last, want)
+	}
+	for i, l := range lines[:n] {
+		if want := fmt.Sprintf("%d|%s", i+1, line); l != want {
+			t.Fatalf("line %d = %.30q, want a whole numbered line", i+1, l)
+		}
+	}
+	if len(res.Content)-len(last)-1 > maxOutput {
+		t.Fatalf("body is %d bytes, want at most %d", len(res.Content)-len(last)-1, maxOutput)
+	}
+}
+
+func TestReadBigFileNeedsRange(t *testing.T) {
+	f := newFixture(t)
+	body := strings.Repeat("0123456789\n", bigFile/11+10)
+	if err := os.WriteFile(filepath.Join(f.root, "big.txt"), []byte(body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name, args, want string
+		wantErr          bool
+	}{
+		{"no range", `{"path":"big.txt"}`, "use file.search or offset/limit", true},
+		{"with limit", `{"path":"big.txt","limit":2}`, "2|0123456789", false},
+		{"with offset", `{"path":"big.txt","offset":3}`, "3|0123456789", false},
+		{"deep offset", `{"path":"big.txt","offset":20000,"limit":1}`, "20000|0123456789", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := f.call(t, f.root, "file.read", tc.args)
+			if res.IsError != tc.wantErr || !strings.Contains(res.Content, tc.want) {
+				t.Fatalf("result = %.120q error=%v, want error=%v containing %q", res.Content, res.IsError, tc.wantErr, tc.want)
+			}
+		})
+	}
+}
+
+func TestReadDeniedFilesStayRefusedWithRange(t *testing.T) {
+	f := newFixture(t)
+	for _, p := range []string{".env", "certs/server.pem", "keys/id_ed25519", "vault.enc"} {
+		res := f.call(t, f.root, "file.read", fmt.Sprintf(`{"path":%q,"offset":1,"limit":5}`, p))
+		if !res.IsError || !strings.Contains(res.Content, "not allowed") || strings.Contains(res.Content, "secret") {
+			t.Errorf("%s = %+v, want refused", p, res)
+		}
 	}
 }
 
@@ -272,22 +381,21 @@ func TestReadRefusesNonRegularFiles(t *testing.T) {
 	}
 }
 
-func TestReadTruncationKeepsTextAfterInvalidByte(t *testing.T) {
+func TestReadRefusesInvalidUTF8(t *testing.T) {
 	f := newFixture(t)
-	body := "caf\xff" + strings.Repeat("a", maxRead) + "é"
+	body := "caf\xff" + strings.Repeat("a", 100)
 	if err := os.WriteFile(filepath.Join(f.root, "mixed.txt"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if res := f.call(t, f.root, "file.read", `{"path":"mixed.txt"}`); !res.IsError || !strings.Contains(res.Content, "not text") {
 		t.Fatalf("result = %+v, want binary refusal", res)
 	}
-	split := strings.Repeat("a", maxRead-1) + "é"
-	if err := os.WriteFile(filepath.Join(f.root, "split.txt"), []byte(split), 0o600); err != nil {
+	late := strings.Repeat("a\n", 10) + "b\xff\n"
+	if err := os.WriteFile(filepath.Join(f.root, "late.txt"), []byte(late), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(t, f.root, "file.read", `{"path":"split.txt"}`)
-	if res.IsError || !strings.Contains(res.Content, "truncated") {
-		t.Fatalf("result error=%v, want a truncated text read", res.IsError)
+	if res := f.call(t, f.root, "file.read", `{"path":"late.txt","limit":20}`); !res.IsError || !strings.Contains(res.Content, "not text") {
+		t.Fatalf("result = %+v, want binary refusal", res)
 	}
 }
 

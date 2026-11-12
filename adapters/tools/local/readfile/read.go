@@ -2,22 +2,31 @@ package readfile
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"syscall"
 	"unicode/utf8"
 
 	"github.com/panca/haythos/core/task"
 )
 
+const (
+	defaultLimit = 2000
+	maxLineChars = 2000
+	maxOutput    = 32 << 10
+	bigFile      = 256 << 10
+)
+
 var readSpec = task.ToolSpec{
 	Name:        "file.read",
-	Description: "Read up to 8 KiB from a text file. Use file.search first and pass a 1-based start_line and end_line for relevant lines.",
-	InputSchema: json.RawMessage(pathArg + `,"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"]}`),
+	Description: "Read a text file with line numbers. Search first with file.search, then read only the lines you need with offset/limit. Returns up to 2000 lines or 32 KiB; continue with the offset it gives.",
+	InputSchema: json.RawMessage(pathArg + `,"offset":{"type":"integer","minimum":1,"description":"1-based first line (default 1)"},"limit":{"type":"integer","minimum":1,"description":"number of lines (default 2000)"}},"required":["path"]}`),
 }
 
 func (t Guard) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
@@ -26,11 +35,18 @@ func (t Guard) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		return refuse(why)
 	}
 	var a struct {
-		Start int `json:"start_line"`
-		End   int `json:"end_line"`
+		Offset *int `json:"offset"`
+		Limit  *int `json:"limit"`
 	}
-	if err := json.Unmarshal(raw, &a); err != nil || a.Start < 0 || a.End < 0 || (a.End > 0 && a.End < a.Start) {
-		return refuse("use a valid 1-based line range")
+	if err := json.Unmarshal(raw, &a); err != nil || (a.Offset != nil && *a.Offset < 0) || (a.Limit != nil && *a.Limit < 1) {
+		return refuse("offset and limit must be positive integers")
+	}
+	offset, limit := 1, defaultLimit
+	if a.Offset != nil {
+		offset = max(1, *a.Offset)
+	}
+	if a.Limit != nil {
+		limit = *a.Limit
 	}
 	resolved, err := os.Lstat(target.Full)
 	if err != nil || !resolved.Mode().IsRegular() {
@@ -46,57 +62,85 @@ func (t Guard) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		return refuse("not readable")
 	}
 	defer func() { _ = f.Close() }()
-	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() || !os.SameFile(opened, resolved) {
+	opened, err := f.Stat()
+	if err != nil || !opened.Mode().IsRegular() || !os.SameFile(opened, resolved) {
 		return refuse("not readable")
 	}
-	var b []byte
-	var errRead error
-	if a.Start > 0 || a.End > 0 {
-		b, errRead = readLines(f, max(1, a.Start), a.End)
-	} else {
-		b, errRead = io.ReadAll(io.LimitReader(f, maxRead+1))
+	if opened.Size() > bigFile && a.Offset == nil && a.Limit == nil {
+		return refuse(fmt.Sprintf("file is %d KiB; use file.search or offset/limit", opened.Size()>>10))
 	}
-	if errRead != nil {
-		return refuse(errRead.Error())
-	}
-	truncated := len(b) > maxRead
-	if truncated {
-		b = b[:maxRead]
-		for i := 0; i < utf8.UTFMax-1 && len(b) > 0 && !utf8.Valid(b); i++ {
-			b = b[:len(b)-1]
-		}
-	}
-	if !utf8.Valid(b) {
-		return refuse("not text (binary file)")
-	}
-	out := string(b)
-	if truncated {
-		out += fmt.Sprintf("\n[truncated at %d KiB; use file.search or request a smaller line range]", maxRead>>10)
+	out, err := numberedLines(f, offset, limit)
+	if err != nil {
+		return refuse(err.Error())
 	}
 	return task.ToolResult{Content: task.StripInvisible(out), Untrusted: !IsSource(target.Full)}, nil
 }
 
-func readLines(f io.Reader, start, end int) ([]byte, error) {
-	bounded := &io.LimitedReader{R: f, N: maxScan + 1}
-	scanner := bufio.NewScanner(bounded)
-	var out []byte
-	for line := 1; scanner.Scan(); line++ {
-		if line < start {
+func numberedLines(f io.Reader, offset, limit int) (string, error) {
+	r := bufio.NewReaderSize(f, 64<<10)
+	var out strings.Builder
+	line := 0
+	for {
+		text, err := nextLine(r)
+		if errors.Is(err, io.EOF) {
+			if offset > 1 && line < offset {
+				return fmt.Sprintf("[offset %d is beyond the end of the file (%d lines)]", offset, line), nil
+			}
+			return out.String(), nil
+		}
+		if err != nil {
+			return "", err
+		}
+		line++
+		if line < offset {
 			continue
 		}
-		if line > start {
-			out = append(out, '\n')
+		entry := fmt.Sprintf("%d|%s", line, text)
+		if line >= offset+limit || out.Len()+len(entry)+1 > maxOutput {
+			return fmt.Sprintf("%s\n[truncated; continue with offset=%d]", strings.TrimSuffix(out.String(), "\n"), line), nil
 		}
-		out = append(out, scanner.Bytes()[:min(len(scanner.Bytes()), maxRead+1-len(out))]...)
-		if line == end || len(out) > maxRead {
-			return out, nil
+		if out.Len() > 0 {
+			out.WriteByte('\n')
+		}
+		out.WriteString(entry)
+	}
+}
+
+func nextLine(r *bufio.Reader) (string, error) {
+	const keep = maxLineChars * utf8.UTFMax
+	var buf []byte
+	cut, seen := false, false
+	for {
+		chunk, err := r.ReadSlice('\n')
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, bufio.ErrBufferFull) {
+			return "", fmt.Errorf("read file: %w", err)
+		}
+		seen = seen || len(chunk) > 0
+		chunk = bytes.TrimSuffix(chunk, []byte("\n"))
+		room := keep - len(buf)
+		buf = append(buf, chunk[:min(room, len(chunk))]...)
+		cut = cut || len(chunk) > room
+		if !errors.Is(err, bufio.ErrBufferFull) {
+			if errors.Is(err, io.EOF) && !seen {
+				return "", io.EOF
+			}
+			break
 		}
 	}
-	if err := scanner.Err(); err != nil {
-		return nil, fmt.Errorf("cannot read requested lines: %w", err)
+	buf = bytes.TrimSuffix(buf, []byte("\r"))
+	for i := 0; cut && i < utf8.UTFMax-1 && len(buf) > 0 && !utf8.Valid(buf); i++ {
+		buf = buf[:len(buf)-1]
 	}
-	if bounded.N == 0 && len(out) <= maxRead {
-		return nil, errors.New("requested range exceeds the 1 MiB scan limit")
+	if !utf8.Valid(buf) {
+		return "", errors.New("not text (binary file)")
 	}
-	return out, nil
+	text := string(buf)
+	if utf8.RuneCountInString(text) > maxLineChars {
+		cut = true
+		text = string([]rune(text)[:maxLineChars])
+	}
+	if cut {
+		text += "… [line truncated]"
+	}
+	return text, nil
 }

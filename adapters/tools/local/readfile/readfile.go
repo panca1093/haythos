@@ -18,9 +18,7 @@ import (
 )
 
 const (
-	maxRead = 8 << 10
 	maxList = 200
-	maxScan = 1 << 20
 )
 
 // Config: Home anchors the always-denied credential folders; Deny adds exact files such as the vault.
