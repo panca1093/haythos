@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -13,7 +14,12 @@ import (
 func Run(ctx context.Context, dir string, argv, env []string, limit int) (out string, truncated bool, err error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is built by callers from fixed flags; no shell
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), env...)
+	for _, kv := range os.Environ() {
+		if !strings.HasPrefix(kv, "GIT_") {
+			cmd.Env = append(cmd.Env, kv)
+		}
+	}
+	cmd.Env = append(cmd.Env, env...)
 	cmd.WaitDelay = time.Second
 	stdout := &capped{limit: limit}
 	cmd.Stdout = stdout

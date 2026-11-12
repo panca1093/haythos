@@ -327,6 +327,8 @@ func TestDeniedIsCaseInsensitiveAndCoversMoreCredentials(t *testing.T) {
 	}{
 		{".SSH/ID_RSA", true},
 		{"proj/.ENV", true},
+		{"proj/.git/modules/sub/config", true},
+		{"proj/.git/worktrees/w/config.worktree", true},
 		{"proj/.Env.Local", true},
 		{".CONFIG/GH/hosts.yml", true},
 		{".config/gh/hosts.yml", true},

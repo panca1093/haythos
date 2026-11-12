@@ -30,6 +30,7 @@ var (
 	hardened = []string{
 		"git", "--no-pager", "--literal-pathspecs",
 		"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null", "-c", "diff.external=", "-c", "core.quotepath=false",
+		"-c", "log.showSignature=false", "-c", "gpg.program=gpg", "-c", "gpg.ssh.program=ssh-keygen", "-c", "gpg.x509.program=gpgsm",
 		"--no-optional-locks",
 	}
 	hardenedEnv = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_TERMINAL_PROMPT=0"}
@@ -149,10 +150,11 @@ func (t tool) show(ctx context.Context, raw []byte) (task.ToolResult, error) {
 		return refuse(why)
 	}
 	argv := append([]string{"show"}, noExec...)
+	ref := a.Ref
 	if a.Stat {
-		argv = append(argv, statFlag, "--format=%h")
+		argv, ref = append(argv, statFlag, "--format=%h"), ref+"^{commit}"
 	}
-	argv = append(argv, a.Ref)
+	argv = append(argv, ref)
 	return t.run(ctx, a.Path, a.Stat, t.pick(a.Stat), argv...)
 }
 
@@ -187,7 +189,11 @@ func (t tool) run(ctx context.Context, path string, trusted bool, filter func(to
 		return failure(err)
 	}
 	top = strings.TrimSpace(top)
-	out, cut, err := readfile.Run(ctx, root.Full, git(append(argv, "--", target.Rel)...), hardenedEnv, maxScan)
+	off, err := filtersOff(ctx, root.Full)
+	if err != nil {
+		return failure(err)
+	}
+	out, cut, err := readfile.Run(ctx, root.Full, git(append(off, append(argv, "--", target.Rel)...)...), hardenedEnv, maxScan)
 	if err != nil {
 		return failure(err)
 	}
@@ -201,6 +207,28 @@ func (t tool) run(ctx context.Context, path string, trusted bool, filter func(to
 		out = strings.ToValidUTF8(out, "") + cutMarker
 	}
 	return task.ToolResult{Content: task.StripInvisible(out), Untrusted: !trusted}, nil
+}
+
+// filtersOff blanks every filter driver the repo config names, since clean, smudge and process commands run on status and diff.
+func filtersOff(ctx context.Context, dir string) ([]string, error) {
+	out, _, err := readfile.Run(ctx, dir, git("config", "--get-regexp", `^filter\.`), hardenedEnv, 64<<10)
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var off []string
+	for _, line := range strings.Split(out, "\n") {
+		key, _, _ := strings.Cut(line, " ")
+		name, ok := strings.CutPrefix(key, "filter.")
+		if i := strings.LastIndex(name, "."); ok && i > 0 {
+			n := name[:i]
+			off = append(off, "-c", "filter."+n+".clean=", "-c", "filter."+n+".smudge=", "-c", "filter."+n+".process=", "-c", "filter."+n+".required=false")
+		}
+	}
+	return off, nil
 }
 
 func git(argv ...string) []string { return append(append([]string{}, hardened...), argv...) }

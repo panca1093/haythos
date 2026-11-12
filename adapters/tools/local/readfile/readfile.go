@@ -212,7 +212,7 @@ func (t Guard) Denied(full string) bool {
 				return true
 			}
 		}
-		if part == ".git" && i == len(parts)-2 && parts[i+1] == "config" {
+		if part == ".git" && i < len(parts)-1 && (parts[len(parts)-1] == "config" || parts[len(parts)-1] == "config.worktree") {
 			return true
 		}
 	}

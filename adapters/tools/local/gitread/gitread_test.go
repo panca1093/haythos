@@ -180,10 +180,16 @@ func TestRepoConfigProgramsDoNotRun(t *testing.T) {
 	for _, kv := range [][2]string{{"core.fsmonitor", script}, {"diff.external", script}, {"core.pager", script}, {"core.hooksPath", filepath.Dir(script)}} {
 		gitIn(t, f.root, "config", kv[0], kv[1])
 	}
-	write(t, f.root, ".gitattributes", "*.go diff=evil\n")
+	write(t, f.root, ".gitattributes", "*.go diff=evil filter=evil\n")
 	gitIn(t, f.root, "config", "diff.evil.textconv", script)
+	for _, k := range []string{"filter.evil.clean", "filter.evil.smudge", "filter.evil.process", "gpg.program"} {
+		gitIn(t, f.root, "config", k, script)
+	}
+	gitIn(t, f.root, "config", "log.showSignature", "true")
+	signHead(t, f.root)
 	for _, c := range []struct{ tool, args string }{
-		{"git.status", `{}`}, {"git.diff", `{}`}, {"git.diff", `{"staged":true}`}, {"git.show", `{"ref":"HEAD"}`}, {"git.log", `{}`},
+		{"git.status", `{}`}, {"git.diff", `{}`}, {"git.diff", `{"staged":true}`}, {"git.show", `{"ref":"HEAD"}`},
+		{"git.show", `{"ref":"HEAD","stat":true}`}, {"git.log", `{}`},
 	} {
 		if res := f.call(t, c.tool, c.args); res.IsError {
 			t.Fatalf("%s: %s", c.tool, res.Content)
@@ -258,6 +264,40 @@ func TestScopedToChatFolder(t *testing.T) {
 		res := f.call(t, tool, `{"staged":true}`)
 		if res.IsError || !strings.Contains(res.Content, "a.go") || strings.Contains(res.Content, "notes.md") || strings.Contains(res.Content, "main.go") {
 			t.Errorf("%s = %+v, want only the chat folder's changes", tool, res)
+		}
+	}
+}
+
+// signHead rewrites HEAD with a fake gpgsig header, enough for git to call gpg.program.
+func signHead(t *testing.T, root string) {
+	t.Helper()
+	raw, err := exec.CommandContext(t.Context(), "git", "-C", root, "cat-file", "commit", "HEAD").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	head, body, _ := strings.Cut(string(raw), "\n\n")
+	signed := head + "\ngpgsig -----BEGIN PGP SIGNATURE-----\n x\n -----END PGP SIGNATURE-----\n\n" + body
+	cmd := exec.CommandContext(t.Context(), "git", "-C", root, "hash-object", "-t", "commit", "-w", "--stdin")
+	cmd.Stdin = strings.NewReader(signed)
+	id, err := cmd.Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, root, "update-ref", "HEAD", strings.TrimSpace(string(id)))
+}
+
+func TestShowStatOfATagIsNotTrustedText(t *testing.T) {
+	f := newFixture(t)
+	gitIn(t, f.root, "tag", "-a", "v1", "-m", "tag message attacker text")
+	blob, err := exec.CommandContext(t.Context(), "git", "-C", f.root, "rev-parse", "HEAD:notes.md").Output()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, f.root, "tag", "blobtag", strings.TrimSpace(string(blob)))
+	for _, ref := range []string{"v1", "blobtag"} {
+		res := f.call(t, "git.show", `{"ref":"`+ref+`","stat":true}`)
+		if !res.IsError && !res.Untrusted && (strings.Contains(res.Content, "attacker") || strings.Contains(res.Content, "one")) {
+			t.Fatalf("%s: trusted stat output carries text written by others: %q", ref, res.Content)
 		}
 	}
 }
