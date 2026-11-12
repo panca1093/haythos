@@ -3,6 +3,7 @@ package openai
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -47,11 +48,33 @@ type toolCall struct {
 	Function fn     `json:"function"`
 }
 
+type part struct {
+	Type     string    `json:"type"`
+	Text     string    `json:"text,omitempty"`
+	ImageURL *imageURL `json:"image_url,omitempty"`
+}
+
+type imageURL struct {
+	URL string `json:"url"`
+}
+
 type message struct {
 	Role       string     `json:"role"`
 	Content    *string    `json:"content"`
+	Parts      []part     `json:"-"`
 	ToolCalls  []toolCall `json:"tool_calls,omitempty"`
 	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+func (m message) MarshalJSON() ([]byte, error) {
+	if m.Parts == nil {
+		type plain message
+		return json.Marshal(plain(m))
+	}
+	return json.Marshal(struct {
+		Role    string `json:"role"`
+		Content []part `json:"content"`
+	}{m.Role, m.Parts})
 }
 
 type toolDef struct {
@@ -106,12 +129,22 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 			}
 			req.Messages = append(req.Messages, am)
 		case task.RoleTool:
+			var images []part
 			for _, r := range m.Results {
 				content := r.Content
 				if r.IsError {
 					content = "error: " + content
 				}
 				req.Messages = append(req.Messages, message{Role: "tool", ToolCallID: r.CallID, Content: str(content)})
+				if len(r.Images) > 0 {
+					images = append(images, part{Type: "text", Text: "images from tool call " + r.CallID})
+					for _, img := range r.Images {
+						images = append(images, part{Type: "image_url", ImageURL: &imageURL{URL: "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)}})
+					}
+				}
+			}
+			if images != nil {
+				req.Messages = append(req.Messages, message{Role: "user", Parts: images})
 			}
 		}
 	}

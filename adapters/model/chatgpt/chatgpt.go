@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -54,14 +55,14 @@ type ModelInfo struct {
 }
 
 type inputItem struct {
-	Type      string  `json:"type,omitempty"`
-	Role      string  `json:"role,omitempty"`
-	Content   string  `json:"content,omitempty"`
-	CallID    string  `json:"call_id,omitempty"`
-	Namespace string  `json:"namespace,omitempty"`
-	Name      string  `json:"name,omitempty"`
-	Arguments string  `json:"arguments,omitempty"`
-	Output    *string `json:"output,omitempty"`
+	Type      string `json:"type,omitempty"`
+	Role      string `json:"role,omitempty"`
+	Content   string `json:"content,omitempty"`
+	CallID    string `json:"call_id,omitempty"`
+	Namespace string `json:"namespace,omitempty"`
+	Name      string `json:"name,omitempty"`
+	Arguments string `json:"arguments,omitempty"`
+	Output    any    `json:"output,omitempty"`
 }
 
 type tool struct {
@@ -134,8 +135,6 @@ func wireName(n string) (string, error) {
 	return w, nil
 }
 
-func str(s string) *string { return &s }
-
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	token, err := a.c.Session.AccessToken(ctx)
 	if err != nil {
@@ -164,6 +163,23 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		return task.AssistantTurn{}, fmt.Errorf("chatgpt stream: %w", ctx.Err())
 	}
 	return turn, err
+}
+
+type outputPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text,omitempty"`
+	ImageURL string `json:"image_url,omitempty"`
+}
+
+func toolOutput(out string, images []task.Image) any {
+	if len(images) == 0 {
+		return out
+	}
+	parts := []outputPart{{Type: "input_text", Text: out}}
+	for _, img := range images {
+		parts = append(parts, outputPart{Type: "input_image", ImageURL: "data:" + img.MediaType + ";base64," + base64.StdEncoding.EncodeToString(img.Data)})
+	}
+	return parts
 }
 
 // buildRequest also returns the wire-name to kernel-name map used to resolve the model's tool calls.
@@ -201,7 +217,7 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 				if r.IsError {
 					out = "error: " + out
 				}
-				req.Input = append(req.Input, inputItem{Type: "function_call_output", CallID: r.CallID, Output: str(out)})
+				req.Input = append(req.Input, inputItem{Type: "function_call_output", CallID: r.CallID, Output: toolOutput(out, r.Images)})
 			}
 		}
 	}
