@@ -217,7 +217,6 @@ func streamMessage(text string, images []task.Image) (line []byte, ok bool, err 
 		if convErr != nil || n < 1 || n > len(images) {
 			continue
 		}
-		// TODO: uncertain — tool output that itself contains a placeholder-shaped string duplicates that image, verify before prod
 		blocks = append(blocks, contentBlock{Type: "text", Text: text[last:m[1]]})
 		img := images[n-1]
 		blocks = append(blocks, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: img.MediaType, Data: base64.StdEncoding.EncodeToString(img.Data)}})

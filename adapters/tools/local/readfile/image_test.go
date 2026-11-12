@@ -12,6 +12,7 @@ import (
 	"math/rand"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -192,5 +193,49 @@ func TestReadFileImageEndToEnd(t *testing.T) {
 	}
 	if !strings.Contains(res.Content, "shot.png") {
 		t.Errorf("content = %q", res.Content)
+	}
+}
+
+func TestReadImageGIFFirstFrameOnlyBoundedAlloc(t *testing.T) {
+	frames := &gif.GIF{}
+	for range 20 {
+		frames.Image = append(frames.Image, image.NewPaletted(image.Rect(0, 0, 5000, 5000), color.Palette{color.Black, color.White}))
+		frames.Delay = append(frames.Delay, 1)
+	}
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, frames); err != nil {
+		t.Fatal(err)
+	}
+	var before, after runtime.MemStats
+	runtime.ReadMemStats(&before)
+	img, _, err := readImage(bytes.NewReader(buf.Bytes()))
+	runtime.ReadMemStats(&after)
+	if err != nil || len(img.Data) == 0 {
+		t.Fatalf("err=%v len=%d", err, len(img.Data))
+	}
+	if d := after.TotalAlloc - before.TotalAlloc; d > 300<<20 {
+		t.Fatalf("allocated %d MiB, want first frame only", d>>20)
+	}
+}
+
+func TestReadImageGIFSmallFirstFrameKeepsAspect(t *testing.T) {
+	p := image.NewPaletted(image.Rect(100, 50, 2100, 1050), color.Palette{color.Black, color.White})
+	var buf bytes.Buffer
+	if err := gif.EncodeAll(&buf, &gif.GIF{Image: []*image.Paletted{p}, Delay: []int{0}, Config: image.Config{ColorModel: p.Palette, Width: 4000, Height: 3000}}); err != nil {
+		t.Fatal(err)
+	}
+	img, summary, err := readImage(bytes.NewReader(buf.Bytes()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := png.Decode(bytes.NewReader(img.Data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if b := m.Bounds(); b.Dx() != 1568 || b.Dy() != 784 {
+		t.Fatalf("got %dx%d, want 1568x784; summary %q", b.Dx(), b.Dy(), summary)
+	}
+	if !strings.Contains(summary, "(from 2000×1000)") {
+		t.Fatalf("summary %q", summary)
 	}
 }

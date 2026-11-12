@@ -267,6 +267,9 @@ func promptImages(history []task.Message) []task.Image {
 	return images
 }
 
+// plain defuses "[image " so only placeholders the renderer emits itself match placeholderRe.
+func plain(s string) string { return strings.ReplaceAll(s, "[image ", "(image ") }
+
 func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	var b strings.Builder
 	b.WriteString("Output format: reply with ONLY one JSON object, no prose, no code fences:\n")
@@ -286,16 +289,16 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 		switch m.Role {
 		case task.RoleSystem:
 			if m.Context {
-				fmt.Fprintf(&b, "%s\n", m.Text)
+				fmt.Fprintf(&b, "%s\n", plain(m.Text))
 			}
 		case task.RoleUser:
-			fmt.Fprintf(&b, "[user] %s\n", m.Text)
+			fmt.Fprintf(&b, "[user] %s\n", plain(m.Text))
 		case task.RoleAssistant:
 			if m.Text != "" {
-				fmt.Fprintf(&b, "[assistant] %s\n", m.Text)
+				fmt.Fprintf(&b, "[assistant] %s\n", plain(m.Text))
 			}
 			for _, c := range m.Calls {
-				fmt.Fprintf(&b, "[assistant called %s id=%s] %s\n", c.Name, c.ID, c.Args)
+				fmt.Fprintf(&b, "[assistant called %s id=%s] %s\n", c.Name, c.ID, plain(string(c.Args)))
 			}
 		case task.RoleTool:
 			for _, r := range m.Results {
@@ -303,7 +306,7 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 				if r.IsError {
 					status = "error"
 				}
-				fmt.Fprintf(&b, "[tool %s id=%s] %s\n", status, r.CallID, r.Content)
+				fmt.Fprintf(&b, "[tool %s id=%s] %s\n", status, r.CallID, plain(r.Content))
 				for range r.Images {
 					images++
 					fmt.Fprintf(&b, "[image %d from tool call %s]\n", images, r.CallID)

@@ -41,7 +41,7 @@ func readImage(r io.Reader) (img task.Image, summary string, err error) {
 	}
 
 	out := toRGBA(src)
-	w, h := cfg.Width, cfg.Height
+	w, h := out.Bounds().Dx(), out.Bounds().Dy()
 	if long := max(w, h); long > maxImageEdge {
 		nw, nh := max(1, (w*maxImageEdge+long/2)/long), max(1, (h*maxImageEdge+long/2)/long)
 		out = boxResize(out, nw, nh)
@@ -67,14 +67,7 @@ func decodeFirstFrame(raw []byte, format string) (image.Image, error) {
 	case "jpeg":
 		return jpeg.Decode(bytes.NewReader(raw))
 	default:
-		g, err := gif.DecodeAll(bytes.NewReader(raw))
-		if err != nil {
-			return nil, err
-		}
-		if len(g.Image) == 0 {
-			return nil, errors.New("gif has no frames")
-		}
-		return g.Image[0], nil
+		return gif.Decode(bytes.NewReader(raw))
 	}
 }
 
