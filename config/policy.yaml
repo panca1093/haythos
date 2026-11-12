@@ -1,10 +1,9 @@
 version: "1"
 tiers:
   vmhealth.read: 0
-  fs.list: 0
-  fs.glob: 0
-  fs.grep: 0
-  fs.read: 0
+  file.list: 0
+  file.search: 0
+  file.read: 0
   jobs.list: 0
   discord.channels: 0
   discord.post: 2

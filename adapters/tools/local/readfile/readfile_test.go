@@ -1,4 +1,4 @@
-package fs
+package readfile
 
 import (
 	"context"
@@ -64,8 +64,8 @@ func (f fixture) call(t *testing.T, workdir, tool, args string) task.ToolResult 
 
 func TestSpecsAreReadOnlyAndLeaveTrustToTheResult(t *testing.T) {
 	f := newFixture(t)
-	specs := f.reg.List([]string{"fs.list", "fs.read", "fs.glob", "fs.grep"})
-	if len(specs) != 4 {
+	specs := f.reg.List([]string{"file.list", "file.read", "file.search"})
+	if len(specs) != 3 {
 		t.Fatalf("specs = %+v", specs)
 	}
 	for _, s := range specs {
@@ -99,7 +99,7 @@ func TestReadMarksOnlyNonCodeAsUntrusted(t *testing.T) {
 	} {
 		t.Run(path, func(t *testing.T) {
 			b, _ := json.Marshal(map[string]string{"path": path})
-			res := f.call(t, f.root, "fs.read", string(b))
+			res := f.call(t, f.root, "file.read", string(b))
 			if res.IsError || res.Untrusted != untrusted {
 				t.Fatalf("result = %+v, want untrusted=%v: only source code is a trusted source, and a link is judged by what it points to", res, untrusted)
 			}
@@ -115,10 +115,10 @@ func TestReadAndListHideInvisibleCharacters(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "y\u200bz.go"), []byte("package y"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res := f.call(t, f.root, "fs.read", `{"path":"x.go"}`); res.Content != "package main // evil" {
+	if res := f.call(t, f.root, "file.read", `{"path":"x.go"}`); res.Content != "package main // evil" {
 		t.Errorf("read = %q, want the invisible characters removed from trusted code", res.Content)
 	}
-	res := f.call(t, f.root, "fs.list", `{}`)
+	res := f.call(t, f.root, "file.list", `{}`)
 	if res.Untrusted || strings.ContainsAny(res.Content, "\u200b\u202e") || !strings.Contains(res.Content, "yz.go") {
 		t.Errorf("list = %+v, want a trusted listing without invisible characters", res)
 	}
@@ -148,7 +148,7 @@ func TestRead(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			b, _ := json.Marshal(map[string]string{"path": tc.path})
-			res := f.call(t, tc.workdir, "fs.read", string(b))
+			res := f.call(t, tc.workdir, "file.read", string(b))
 			if res.IsError != tc.wantErr || !strings.Contains(res.Content, tc.want) {
 				t.Fatalf("result = %+v, want error=%v containing %q", res, tc.wantErr, tc.want)
 			}
@@ -164,7 +164,7 @@ func TestReadTruncatesLargeFiles(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "big.txt"), []byte(strings.Repeat("a", maxRead+100)), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(t, f.root, "fs.read", `{"path":"big.txt"}`)
+	res := f.call(t, f.root, "file.read", `{"path":"big.txt"}`)
 	if res.IsError || len(res.Content) > maxRead+200 || !strings.Contains(res.Content, "truncated") {
 		t.Fatalf("len=%d error=%v, want at most %d bytes plus a truncation note", len(res.Content), res.IsError, maxRead)
 	}
@@ -175,31 +175,15 @@ func TestReadRangeReturnsOnlyRequestedLines(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "lines.go"), []byte("first\nsecond\nthird\nfourth\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(t, f.root, "fs.read", `{"path":"lines.go","start_line":2,"end_line":3}`)
+	res := f.call(t, f.root, "file.read", `{"path":"lines.go","start_line":2,"end_line":3}`)
 	if res.IsError || res.Content != "second\nthird" {
 		t.Fatalf("result = %+v, want lines 2 through 3", res)
 	}
 }
 
-func TestSearchIsScopedAndReturnsPathsOrMatchingLines(t *testing.T) {
-	f := newFixture(t)
-	glob := f.call(t, f.root, "fs.glob", `{"pattern":"*.go"}`)
-	if glob.IsError || glob.Content != "src/main.go" {
-		t.Fatalf("glob = %+v", glob)
-	}
-	grep := f.call(t, f.root, "fs.grep", `{"query":"package","pattern":"*.go"}`)
-	if grep.IsError || grep.Content != "src/main.go:1:package main" || grep.Untrusted {
-		t.Fatalf("grep = %+v", grep)
-	}
-	hidden := f.call(t, f.root, "fs.grep", `{"query":"secret"}`)
-	if hidden.IsError || strings.Contains(hidden.Content, "TOKEN") {
-		t.Fatalf("grep returned a denied file: %+v", hidden)
-	}
-}
-
 func TestList(t *testing.T) {
 	f := newFixture(t)
-	res := f.call(t, f.root, "fs.list", `{}`)
+	res := f.call(t, f.root, "file.list", `{}`)
 	if res.IsError {
 		t.Fatalf("list: %+v", res)
 	}
@@ -213,10 +197,10 @@ func TestList(t *testing.T) {
 			t.Errorf("listing shows denied %q:\n%s", hidden, res.Content)
 		}
 	}
-	if res := f.call(t, f.root, "fs.list", `{"path":".."}`); !res.IsError {
+	if res := f.call(t, f.root, "file.list", `{"path":".."}`); !res.IsError {
 		t.Errorf("listing the parent = %+v, want refused", res)
 	}
-	if res := f.call(t, f.home, "fs.list", `{"path":".ssh"}`); !res.IsError {
+	if res := f.call(t, f.home, "file.list", `{"path":".ssh"}`); !res.IsError {
 		t.Errorf("listing .ssh = %+v, want refused", res)
 	}
 }
@@ -227,7 +211,7 @@ func TestDeniedIsCaseInsensitiveAndCoversMoreCredentials(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tl := tool{cfg: Config{Home: home, Deny: []string{filepath.Join(home, "Vault.enc")}}}
+	tl := NewGuard(Config{Home: home, Deny: []string{filepath.Join(home, "Vault.enc")}})
 	for _, tc := range []struct {
 		rel  string
 		want bool
@@ -263,7 +247,7 @@ func TestDeniedIsCaseInsensitiveAndCoversMoreCredentials(t *testing.T) {
 		{"proj/environment.go", false},
 	} {
 		t.Run(tc.rel, func(t *testing.T) {
-			if got := tl.denied(filepath.Join(real, filepath.FromSlash(tc.rel))); got != tc.want {
+			if got := tl.Denied(filepath.Join(real, filepath.FromSlash(tc.rel))); got != tc.want {
 				t.Fatalf("denied(%q) = %v, want %v", tc.rel, got, tc.want)
 			}
 		})
@@ -277,7 +261,7 @@ func TestReadRefusesNonRegularFiles(t *testing.T) {
 		t.Skipf("mkfifo: %v", err)
 	}
 	done := make(chan task.ToolResult, 1)
-	go func() { done <- f.call(t, f.root, "fs.read", `{"path":"pipe"}`) }()
+	go func() { done <- f.call(t, f.root, "file.read", `{"path":"pipe"}`) }()
 	select {
 	case res := <-done:
 		if !res.IsError {
@@ -294,14 +278,14 @@ func TestReadTruncationKeepsTextAfterInvalidByte(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(f.root, "mixed.txt"), []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if res := f.call(t, f.root, "fs.read", `{"path":"mixed.txt"}`); !res.IsError || !strings.Contains(res.Content, "not text") {
+	if res := f.call(t, f.root, "file.read", `{"path":"mixed.txt"}`); !res.IsError || !strings.Contains(res.Content, "not text") {
 		t.Fatalf("result = %+v, want binary refusal", res)
 	}
 	split := strings.Repeat("a", maxRead-1) + "é"
 	if err := os.WriteFile(filepath.Join(f.root, "split.txt"), []byte(split), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	res := f.call(t, f.root, "fs.read", `{"path":"split.txt"}`)
+	res := f.call(t, f.root, "file.read", `{"path":"split.txt"}`)
 	if res.IsError || !strings.Contains(res.Content, "truncated") {
 		t.Fatalf("result error=%v, want a truncated text read", res.IsError)
 	}
@@ -316,7 +300,7 @@ func TestCaseAndFoldVariantsOfDeniedPathsAreRefused(t *testing.T) {
 	for _, p := range []string{".SSH/config", ".\u017fsh/config", ".bash_hi\ufb06ory", "project/.ENV", "project/.env.LOCAL"} {
 		t.Run(p, func(t *testing.T) {
 			b, _ := json.Marshal(map[string]string{"path": p})
-			res := f.call(t, f.home, "fs.read", string(b))
+			res := f.call(t, f.home, "file.read", string(b))
 			if !res.IsError || strings.Contains(res.Content, "Host x") || strings.Contains(res.Content, "secret") {
 				t.Fatalf("read %q = %+v, want refused without content", p, res)
 			}
