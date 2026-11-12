@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/panca/haythos/app/gateway"
 	"github.com/panca/haythos/core/policy"
@@ -555,10 +556,30 @@ func (a *App) appendMessage(ctx context.Context, id string, m task.Message) erro
 }
 
 func (a *App) appendResult(ctx context.Context, id string, r task.ToolResult) error {
+	r.Content = capResult(r.Content)
 	if err := a.appendMessage(ctx, id, task.Message{Role: task.RoleTool, Results: []task.ToolResult{r}}); err != nil {
 		return err
 	}
 	return a.hook("app.after_tool_result")
+}
+
+// maxToolResult bounds every recorded tool result (about 10k tokens, the Codex default) so history stays small and cache-stable.
+const maxToolResult = 40 << 10
+
+// capResult keeps the head and tail of an oversized result and marks how many bytes were cut from the middle.
+func capResult(s string) string {
+	if len(s) <= maxToolResult {
+		return s
+	}
+	keep := maxToolResult - 64
+	head, tail := keep/2, len(s)-(keep-keep/2)
+	for head > 0 && !utf8.RuneStart(s[head]) {
+		head--
+	}
+	for tail < len(s) && !utf8.RuneStart(s[tail]) {
+		tail++
+	}
+	return fmt.Sprintf("%s\n…%d bytes truncated…\n%s", s[:head], tail-head, s[tail:])
 }
 
 // notify publishes at most once per key and target. A crash between Publish and the record can repeat one notice.

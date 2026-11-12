@@ -238,6 +238,12 @@ func (a *App) turnMessages(ctx context.Context, id string) ([]task.Message, erro
 			own := slices.Clone(s.History[i:])
 			for j := range own {
 				own[j].Context = true
+				if len(own[j].Results) > 0 {
+					own[j].Results = slices.Clone(own[j].Results)
+					for k := range own[j].Results {
+						own[j].Results[k].Content = capResult(own[j].Results[k].Content)
+					}
+				}
 			}
 			return own, nil
 		}
