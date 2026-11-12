@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 
@@ -27,6 +28,7 @@ type Conn interface {
 type Options struct {
 	Conv, Version, Display string
 	Workdir, Home          string
+	Model                  string
 }
 
 // Summary is what the chat prints after the TUI closes.
@@ -42,8 +44,9 @@ type frameMsg ws.Frame
 type connErrMsg struct{ err error }
 
 type sendErrMsg struct {
-	err   error
-	input bool
+	err       error
+	input     bool
+	selection bool
 }
 
 type tickMsg struct{}
@@ -59,15 +62,21 @@ var (
 )
 
 type model struct {
-	conn    Conn
-	opts    Options
-	state   string
-	pending []ws.Pending
-	input   []rune
-	cursor  int
-	width   int
+	conn          Conn
+	opts          Options
+	state         string
+	pending       []ws.Pending
+	input         []rune
+	cursor        int
+	width, height int
 	// modelName, context and window feed the status line.
-	modelName               string
+	modelName, modelAlias   string
+	modelOptions            []string
+	modelLabels             map[string]string
+	modelCursor             int
+	selectingModel          bool
+	startingModel           bool
+	startupErr              error
 	context, window, cached int
 	printed                 []string
 	carded                  bool
@@ -98,7 +107,8 @@ var (
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
 func New(c Conn, opts Options) tea.Model {
-	return &model{conn: c, opts: opts, state: "idle", width: 80, now: time.Now, summary: Summary{Conv: opts.Conv, Started: time.Now()}}
+	return &model{conn: c, opts: opts, state: "idle", width: 80, height: 24, now: time.Now,
+		startingModel: opts.Model != "", summary: Summary{Conv: opts.Conv, Started: time.Now()}}
 }
 
 // SummaryOf returns the exit summary of a model New returned.
@@ -112,6 +122,13 @@ func SummaryOf(m tea.Model) (Summary, bool) {
 	return s, true
 }
 
+func StartupError(m tea.Model) error {
+	if mm, ok := m.(*model); ok {
+		return mm.startupErr
+	}
+	return nil
+}
+
 func (m *model) Init() tea.Cmd {
 	return tea.Batch(m.handshake(), m.read())
 }
@@ -120,7 +137,7 @@ func (m *model) handshake() tea.Cmd {
 	return func() tea.Msg {
 		frames := []any{
 			ws.Hello{Client: "tui", Instance: m.opts.Conv, Version: m.opts.Version},
-			ws.Subscribe{Conv: m.opts.Conv, Workdir: m.opts.Workdir},
+			ws.Subscribe{Conv: m.opts.Conv, Workdir: m.opts.Workdir, Model: m.opts.Model},
 		}
 		for _, f := range frames {
 			if err := m.send(f); err != nil {
@@ -151,7 +168,8 @@ func (m *model) sendCmd(f any) tea.Cmd {
 	return func() tea.Msg {
 		if err := m.send(f); err != nil {
 			_, input := f.(ws.Input)
-			return sendErrMsg{err: err, input: input}
+			_, selection := f.(ws.SelectModel)
+			return sendErrMsg{err: err, input: input, selection: selection}
 		}
 		return nil
 	}
@@ -169,7 +187,7 @@ func (m *model) print(s string) tea.Cmd {
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
+		m.width, m.height = msg.Width, msg.Height
 	case frameMsg:
 		return m, tea.Batch(m.onFrame(ws.Frame(msg)), m.read())
 	case tickMsg:
@@ -183,8 +201,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.inflight = 0
 		return m, m.print(errStyle.Render("Terputus dari Alfred: " + msg.err.Error() + " (Ctrl+C untuk keluar)"))
 	case sendErrMsg:
+		if m.startingModel {
+			return m, m.failModelStartup(msg.err.Error())
+		}
 		if msg.input {
 			m.answered()
+		}
+		if msg.selection {
+			m.selectingModel = false
 		}
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
 	case tea.KeyMsg:
@@ -199,6 +223,7 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 	case ws.TypeWelcome:
 		var cmds []tea.Cmd
 		m.modelName = modelLabel(f)
+		m.modelAlias = f.DefaultModel
 		if !m.carded {
 			m.carded = true
 			cmds = append(cmds, m.print(m.card(f)))
@@ -208,6 +233,14 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 		}
 		return tea.Batch(cmds...)
 	case ws.TypeHistory:
+		if m.startingModel && f.Model != m.opts.Model {
+			return m.failModelStartup("Alfred belum mengonfirmasi pilihan model. Mulai ulang Alfred dan buka chat lagi.")
+		}
+		m.startingModel = false
+		if f.Model != "" {
+			m.modelName = clean(f.Model)
+			m.modelAlias = f.Model
+		}
 		m.summary.UserMessages, m.summary.ToolCalls = f.UserMessages, f.ToolCalls
 		var cmds []tea.Cmd
 		for _, t := range f.Turns {
@@ -219,15 +252,44 @@ func (m *model) onFrame(f ws.Frame) tea.Cmd {
 			m.addPending(p)
 		}
 		return tea.Batch(cmds...)
+	case ws.TypeModel:
+		m.selectingModel = false
+		if f.Model != "" && f.Model != m.modelAlias {
+			m.modelAlias, m.modelName = f.Model, clean(f.Model)
+			m.context, m.window, m.cached = 0, 0, 0
+		}
+		if len(f.Models) > 0 {
+			m.modelOptions, m.modelLabels = f.Models, f.ModelLabels
+			m.modelCursor = max(0, slices.Index(m.modelOptions, m.modelAlias))
+			return m.print(warnStyle.Render(f.Message))
+		}
+		if f.Message != "" {
+			return m.print(errStyle.Render(f.Message))
+		}
+		if f.Model == "" {
+			return m.print(dimStyle.Render("Tidak ada pilihan model."))
+		}
+		return m.print(dimStyle.Render("Model aktif  " + m.modelName))
 	case ws.TypeNotice:
 		return m.onNotice(f)
 	case ws.TypeError:
+		if m.startingModel {
+			return m.failModelStartup(f.Message)
+		}
 		if inputError(f.Message) {
 			m.answered()
+		}
+		if f.Model != "" || f.Message == `unknown frame type "model"` || f.Message == "subscribe to a conversation first" {
+			m.selectingModel = false
 		}
 		return m.print(errStyle.Render(f.Message))
 	}
 	return nil
+}
+
+func (m *model) failModelStartup(message string) tea.Cmd {
+	m.startupErr = fmt.Errorf("pilih model %q: %s", m.opts.Model, message)
+	return tea.Quit
 }
 
 func (m *model) onNotice(f ws.Frame) tea.Cmd {
@@ -312,25 +374,52 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
+	if len(m.modelOptions) > 0 {
+		return m, m.pickModel(k.Type)
+	}
 	if m.edit(k) {
 		return m, nil
 	}
 	switch k.Type {
 	case tea.KeyEnter:
 		text := strings.TrimSpace(string(m.input))
+		if (m.selectingModel || m.startingModel) && !isExit(text) {
+			return m, nil
+		}
 		m.input, m.cursor = nil, 0
 		switch {
 		case text == "":
 			return m, nil
 		case isExit(text):
 			return m, tea.Quit
+		case strings.Fields(text)[0] == "/model":
+			name := strings.TrimSpace(strings.TrimPrefix(text, "/model"))
+			m.selectingModel = true
+			return m, m.sendCmd(ws.SelectModel{Model: name})
 		}
 		m.title(text)
 		m.summary.UserMessages++
 		m.state = "running"
-		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text}), m.work())
+		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text, Model: m.modelAlias}), m.work())
 	}
 	return m, nil
+}
+
+func (m *model) pickModel(key tea.KeyType) tea.Cmd {
+	switch key {
+	case tea.KeyUp:
+		m.modelCursor = max(0, m.modelCursor-1)
+	case tea.KeyDown:
+		m.modelCursor = min(len(m.modelOptions)-1, m.modelCursor+1)
+	case tea.KeyEsc:
+		m.modelOptions, m.modelLabels = nil, nil
+	case tea.KeyEnter:
+		name := m.modelOptions[m.modelCursor]
+		m.modelOptions, m.modelLabels = nil, nil
+		m.selectingModel = true
+		return m.sendCmd(ws.SelectModel{Model: name})
+	}
+	return nil
 }
 
 // work counts a new message in flight and starts the indicator; the timer runs from the first unanswered message.
@@ -524,6 +613,9 @@ func shortPath(dir, home string) string {
 func (m *model) View() string {
 	w := max(m.width, 20)
 	rule := ruleStyle.Render(strings.Repeat("─", w))
+	if len(m.modelOptions) > 0 && len(m.pending) == 0 {
+		return strings.Join([]string{m.modelPickerView(), rule, m.status()}, "\n")
+	}
 	var parts []string
 	if len(m.pending) > 0 {
 		p := m.pending[0].Approval
@@ -544,9 +636,37 @@ func (m *model) View() string {
 	prompt := userStyle.Render("› ") + m.inputView()
 	if len(m.pending) > 0 {
 		prompt = userStyle.Render("› ") + dimStyle.Render("(menunggu izin…)")
+	} else if m.selectingModel {
+		prompt = dimStyle.Render("Menyiapkan model…")
 	}
 	parts = append(parts, rule, prompt, rule, m.status())
 	return strings.Join(parts, "\n")
+}
+
+func (m *model) modelPickerView() string {
+	limit := min(len(m.modelOptions), min(8, max(1, m.height-6)))
+	start := min(max(0, m.modelCursor-limit/2), len(m.modelOptions)-limit)
+	rows := []string{nameStyle.Render("Pilih model")}
+	for i, name := range m.modelOptions[start : start+limit] {
+		label := m.modelLabels[name]
+		if label == "" {
+			label = name
+		}
+		if provider, _, variant := strings.Cut(name, "/"); variant && label != name {
+			label += " · " + provider
+		}
+		if name == m.modelAlias {
+			label += " (aktif)"
+		}
+		label = clean(label)
+		if start+i == m.modelCursor {
+			rows = append(rows, userStyle.Render("› "+label))
+		} else {
+			rows = append(rows, "  "+label)
+		}
+	}
+	rows = append(rows, dimStyle.Render("↑/↓ pilih · Enter konfirmasi · Esc batal"))
+	return strings.Join(rows, "\n")
 }
 
 // inputView draws the text with a block cursor; an empty input shows the cursor over the placeholder.

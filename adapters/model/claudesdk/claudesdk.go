@@ -69,6 +69,10 @@ func New(t Transport, opts ...Option) *Adapter {
 	return a
 }
 
+func (a *Adapter) WithModel(name string) *Adapter {
+	return New(a.t, WithModel(name))
+}
+
 const outputSchema = `{"type":"object","properties":{"text":{"type":"string"},"tool_calls":{"type":"array","items":{"type":"object","properties":{"name":{"type":"string"},"args":{"type":"object"}},"required":["name","args"]}}},"required":["text"]}`
 
 type modelOutput struct {

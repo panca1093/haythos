@@ -39,17 +39,17 @@ func workdirAppWindows(t *testing.T, windows map[string]int, n *testfakes.Notifi
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
 		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"fs.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
 		Tools:      tools,
 		Windows:    windows,
 		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
-		Policy: policy.Policy{Tiers: map[string]policy.Tier{"fs.read": policy.TierRead}},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{"file.read": policy.TierRead}},
 		Clock:  func() time.Time { return time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC) },
 	})
 }
 
 func readCall() task.AssistantTurn {
-	return task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "fs.read", Args: json.RawMessage(`{"path":"README.md"}`)}}}
+	return task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "file.read", Args: json.RawMessage(`{"path":"README.md"}`)}}}
 }
 
 func TestWorkdirReachesToolsAndToolActivityGoesToOrigin(t *testing.T) {
@@ -62,7 +62,7 @@ func TestWorkdirReachesToolsAndToolActivityGoesToOrigin(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			n := &testfakes.Notifier{}
-			tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+			tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "file.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 			a := workdirApp(t, n, tools, readCall(), task.AssistantTurn{Text: "done"})
 			if _, err := a.HandleInput(context.Background(), app.Input{Text: "read it", ReplyTo: tc.replyTo, Workdir: tc.workdir}); err != nil {
 				t.Fatalf("handle input: %v", err)
@@ -71,8 +71,8 @@ func TestWorkdirReachesToolsAndToolActivityGoesToOrigin(t *testing.T) {
 				t.Fatalf("workdir seen by tool = %q, want [%q]", tools.seen, tc.workdir)
 			}
 			got := n.Of(app.NoticeTool)
-			if len(got) != 1 || got[0].ReplyTo != tc.replyTo || !strings.Contains(got[0].Text, "fs.read") || !strings.Contains(got[0].Text, "README.md") {
-				t.Fatalf("tool notices = %+v, want one fs.read README.md to %q", got, tc.replyTo)
+			if len(got) != 1 || got[0].ReplyTo != tc.replyTo || !strings.Contains(got[0].Text, "file.read") || !strings.Contains(got[0].Text, "README.md") {
+				t.Fatalf("tool notices = %+v, want one file.read README.md to %q", got, tc.replyTo)
 			}
 		})
 	}
@@ -80,9 +80,9 @@ func TestWorkdirReachesToolsAndToolActivityGoesToOrigin(t *testing.T) {
 
 func TestToolActivityIsNotSentForTasksWithoutOrigin(t *testing.T) {
 	n := &testfakes.Notifier{}
-	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "file.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	a := workdirApp(t, n, tools, readCall(), task.AssistantTurn{Text: "done"})
-	id, err := a.CreateTask(context.Background(), app.Job{Name: "job", Goal: "g", Model: "default", Tools: []string{"fs.read"}}, "go")
+	id, err := a.CreateTask(context.Background(), app.Job{Name: "job", Goal: "g", Model: "default", Tools: []string{"file.read"}}, "go")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -96,7 +96,7 @@ func TestToolActivityIsNotSentForTasksWithoutOrigin(t *testing.T) {
 
 func TestConversationViewCountsMessagesAndToolCalls(t *testing.T) {
 	n := &testfakes.Notifier{}
-	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "file.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	a := workdirApp(t, n, tools, readCall(), task.AssistantTurn{Text: "done"}, task.AssistantTurn{Text: "hi"})
 	ctx := context.Background()
 	for _, text := range []string{"read it", "thanks"} {
@@ -197,9 +197,9 @@ func TestToolActivityOnlyWhenTheCallActuallyRuns(t *testing.T) {
 
 func TestToolTargetIsCutByRunes(t *testing.T) {
 	n := &testfakes.Notifier{}
-	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "fs.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
+	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "file.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	long, _ := json.Marshal(map[string]string{"path": strings.Repeat("é", 100)})
-	a := workdirApp(t, n, tools, task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "fs.read", Args: long}}}, task.AssistantTurn{Text: "done"})
+	a := workdirApp(t, n, tools, task.AssistantTurn{Calls: []task.ToolCall{{ID: "c1", Name: "file.read", Args: long}}}, task.AssistantTurn{Text: "done"})
 	if _, err := a.HandleInput(context.Background(), app.Input{Text: "read", ReplyTo: "tui:abc"}); err != nil {
 		t.Fatal(err)
 	}

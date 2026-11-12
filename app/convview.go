@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -26,6 +27,7 @@ type PendingApproval struct {
 type ConversationView struct {
 	Turns   []TurnView
 	Pending []PendingApproval
+	Model   string
 	// UserMessages and ToolCalls count the whole conversation, for the chat's exit summary.
 	UserMessages, ToolCalls int
 }
@@ -97,8 +99,12 @@ func (a *App) ConversationView(ctx context.Context, replyTo string) (Conversatio
 	if err != nil {
 		return ConversationView{}, err
 	}
-	var v ConversationView
 	stream := convStream(replyTo)
+	model, err := conversationModel(events, stream)
+	if err != nil {
+		return ConversationView{}, err
+	}
+	v := ConversationView{Model: model}
 	seen := map[string]bool{}
 	for _, e := range events {
 		switch {
@@ -126,6 +132,19 @@ func (a *App) ConversationView(ctx context.Context, replyTo string) (Conversatio
 		}
 	}
 	return v, nil
+}
+
+func conversationModel(events []task.Event, stream string) (string, error) {
+	for _, e := range slices.Backward(events) {
+		if e.TaskID == stream && e.Type == evConversationModel {
+			var model string
+			if err := json.Unmarshal(e.Payload, &model); err != nil {
+				return "", fmt.Errorf("decode conversation model %d: %w", e.Cursor, err)
+			}
+			return model, nil
+		}
+	}
+	return "", nil
 }
 
 // Conversations lists the conversations whose address starts with prefix, most recently active first.
@@ -158,6 +177,10 @@ func (a *App) Conversations(ctx context.Context, prefix string) ([]ConversationS
 			if c.sum.FirstUser == "" {
 				c.sum.FirstUser = firstRunes(t.firstUser, firstUserRunes)
 			}
+			continue
+		}
+		if e.Type == evConversationModel && strings.HasPrefix(e.TaskID, convPrefix) {
+			touch(strings.TrimPrefix(e.TaskID, "conv:"), e, e.TS)
 			continue
 		}
 		if e.Type == evConvTurn && strings.HasPrefix(e.TaskID, convPrefix) {

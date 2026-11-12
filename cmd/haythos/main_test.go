@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/panca/haythos/adapters/config"
+	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/testfakes"
@@ -341,7 +342,7 @@ func (nopTransport) Step(context.Context, claudesdk.StepRequest) (claudesdk.Step
 
 func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	adapter := claudesdk.New(nopTransport{})
-	sel := claudeSubSelector{adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}}
+	sel := claudeSubSelector{Adapter: adapter, lister: fakeModelLister{{Value: "sonnet", DisplayName: "Sonnet 5.5", Description: "routine"}}}
 
 	if got := sel.Current(); got != "default" {
 		t.Errorf("Current with no model = %q, want default", got)
@@ -355,6 +356,10 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 	}
 	if adapter.Model() != "sonnet" || sel.Current() != "sonnet" {
 		t.Errorf("adapter model = %q, want sonnet", adapter.Model())
+	}
+	variant := sel.WithModel("opus").(*claudesdk.Adapter)
+	if variant.Model() != "opus" || sel.Current() != "sonnet" {
+		t.Fatalf("per-conversation Claude = %q, shared Claude = %q", variant.Model(), sel.Current())
 	}
 }
 
@@ -371,6 +376,28 @@ func TestBuildModelsChatGPTNeedsSignIn(t *testing.T) {
 	models, _, err = buildModels(cfg, v, nil)
 	if err != nil || models["gpt-sub"] == nil {
 		t.Fatalf("signed in: models=%v err=%v", models, err)
+	}
+}
+
+func TestBuildModelsOffersChatGPTWithoutYAML(t *testing.T) {
+	v, err := file.Open(filepath.Join(t.TempDir(), "v.enc"), make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Main{
+		DefaultModel: "claude-sub",
+		Models:       map[string]config.Model{"claude-sub": {Kind: "claudesdk"}},
+	}
+	models, _, err := buildModels(cfg, v, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, ok := models["chatgpt-sub"].(*chatgpt.Adapter)
+	if !ok {
+		t.Fatalf("chatgpt-sub = %T, want ChatGPT subscription adapter", models["chatgpt-sub"])
+	}
+	if _, err := m.Step(context.Background(), nil, nil); !errors.Is(err, chatgpt.ErrSignInRequired) {
+		t.Fatalf("unsigned-in ChatGPT error = %v, want sign-in instructions", err)
 	}
 }
 

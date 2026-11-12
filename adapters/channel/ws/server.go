@@ -21,10 +21,11 @@ import (
 )
 
 const (
-	writeTimeout = 5 * time.Second
-	outboundCap  = 64
-	readLimit    = 1 << 20
-	probeTimeout = time.Second
+	writeTimeout          = 5 * time.Second
+	outboundCap           = 64
+	readLimit             = 1 << 20
+	probeTimeout          = time.Second
+	modelDiscoveryTimeout = 10 * time.Second
 	// maxSocketPath is the macOS sun_path limit (104 with the NUL); Linux allows 108.
 	maxSocketPath = 103
 )
@@ -37,6 +38,9 @@ type Handler interface {
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
 	TaskOrigin(ctx context.Context, taskID string) (string, error)
 	CurrentModel() string
+	ChatModels(ctx context.Context) ([]app.ModelChoice, error)
+	ConversationModel(ctx context.Context, replyTo string) (string, error)
+	SetConversationModel(ctx context.Context, replyTo, model string) error
 }
 
 type Config struct {
@@ -206,7 +210,17 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 	case TypeHello:
 		s.reply(c, Frame{Type: TypeWelcome, Version: s.cfg.Version, PID: os.Getpid(), StartedAt: s.cfg.StartedAt, Channels: s.cfg.Channels, Model: s.h.CurrentModel(), DefaultModel: s.cfg.DefaultModel})
 	case TypeSubscribe:
-		s.subscribe(ctx, c, f.Conv, f.Workdir)
+		s.subscribe(ctx, c, f.Conv, f.Workdir, f.Model)
+	case TypeModel:
+		conv := s.convOf(c)
+		switch {
+		case conv == "":
+			s.reply(c, errorFrame("subscribe to a conversation first"))
+		case f.Model == "":
+			s.listModels(ctx, c, conv)
+		case s.setModel(ctx, c, conv, f.Model):
+			s.reply(c, Frame{Type: TypeModel, Model: f.Model})
+		}
 	case TypeInput:
 		conv, workdir := s.attachmentOf(c)
 		switch {
@@ -217,8 +231,18 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		case strings.TrimSpace(f.Text) == "":
 			s.reply(c, errorFrame("empty input"))
 		default:
+			model, err := s.h.ConversationModel(ctx, conv)
+			if err != nil {
+				slog.Warn("ws load conversation model failed", "conv", conv, "err", err)
+				s.reply(c, errorFrame("input failed"))
+				return
+			}
+			if s.modelLabel(f.Model) != s.modelLabel(model) {
+				s.reply(c, errorFrame("input refused: the conversation model changed; run /model before resending"))
+				return
+			}
 			s.background(kernel, c, "input", func(ctx context.Context) error {
-				_, err := s.h.HandleInput(ctx, app.Input{Text: f.Text, ReplyTo: conv, Workdir: workdir})
+				_, err := s.h.HandleInput(ctx, app.Input{Text: f.Text, ReplyTo: conv, Workdir: workdir, Model: model})
 				return err
 			})
 		}
@@ -249,10 +273,56 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 	}
 }
 
+func (s *Server) modelLabel(model string) string {
+	if model == "" {
+		return s.cfg.DefaultModel
+	}
+	return model
+}
+
+func (s *Server) listModels(ctx context.Context, c *conn, conv string) {
+	model, modelErr := s.h.ConversationModel(ctx, conv)
+	listCtx, cancel := context.WithTimeout(ctx, modelDiscoveryTimeout)
+	defer cancel()
+	choices, err := s.h.ChatModels(listCtx)
+	f := Frame{Type: TypeModel, ModelLabels: make(map[string]string, len(choices))}
+	for _, choice := range choices {
+		f.Models = append(f.Models, choice.Value)
+		f.ModelLabels[choice.Value] = choice.Name
+	}
+	if err != nil {
+		f.Message = err.Error()
+	}
+	if modelErr == nil {
+		f.Model = s.modelLabel(model)
+	}
+	s.reply(c, f)
+}
+
+func (s *Server) setModel(ctx context.Context, c *conn, conv, model string) bool {
+	ctx, cancel := context.WithTimeout(ctx, modelDiscoveryTimeout)
+	defer cancel()
+	err := s.h.SetConversationModel(ctx, conv, model)
+	if err == nil {
+		return true
+	}
+	message := "could not select model; run /model to check available choices"
+	if errors.Is(err, app.ErrUnknownModel) || errors.Is(err, app.ErrModelDiscovery) {
+		message = err.Error()
+	} else {
+		slog.Warn("ws set conversation model failed", "conv", conv, "err", err)
+	}
+	s.reply(c, Frame{Type: TypeError, Model: model, Message: message})
+	return false
+}
+
 // subscribe sets conv first and holds back notices until the history is queued, so none arrives before it.
-func (s *Server) subscribe(ctx context.Context, c *conn, conv, workdir string) {
+func (s *Server) subscribe(ctx context.Context, c *conn, conv, workdir, model string) {
 	if !strings.HasPrefix(conv, Prefix) || len(conv) == len(Prefix) {
 		s.reply(c, errorFrame("subscribe refused: clients may only open "+Prefix+" conversations"))
+		return
+	}
+	if model != "" && !s.setModel(ctx, c, conv, model) {
 		return
 	}
 	c.mu.Lock()

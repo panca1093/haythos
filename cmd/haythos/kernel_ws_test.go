@@ -153,6 +153,119 @@ func TestKernelOverWS(t *testing.T) {
 	}
 }
 
+type fakePlanModel struct{ app.Model }
+
+func (m fakePlanModel) List(context.Context) ([]app.ModelChoice, error) {
+	return []app.ModelChoice{
+		{Value: "gpt-test", Name: "GPT Test"},
+		{Value: "gpt-conflict", Name: "GPT Conflict"},
+	}, nil
+}
+func (m fakePlanModel) WithModel(name string) app.Model {
+	return testfakes.NewModel(task.AssistantTurn{Text: "from " + name})
+}
+
+func TestConversationModelOverWS(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	p := shortHome(t)
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	route := &routeNotifier{other: &testfakes.Notifier{}}
+	deps := app.Deps{
+		Models: map[string]app.Model{
+			"claude-sub":               testfakes.NewModel(task.AssistantTurn{Text: "from Claude"}),
+			"chatgpt-sub":              fakePlanModel{testfakes.NewModel(task.AssistantTurn{Text: "from ChatGPT"})},
+			"chatgpt-sub/gpt-conflict": testfakes.NewModel(task.AssistantTurn{Text: "from API key"}),
+		},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "claude-sub"},
+		Tools:      testfakes.NewTools(),
+		Events:     st,
+		Ledger:     st,
+		Notifier:   route,
+		Vault:      testfakes.Vault{},
+		Windows:    map[string]int{"chatgpt-sub": 123_456},
+	}
+	srv := ws.New(ws.Config{SocketPath: p.Socket, DefaultModel: "claude-sub"}, app.New(deps))
+	route.ws = srv
+	serveCtx, stopServe := context.WithCancel(ctx)
+	errc := make(chan error, 1)
+	go func() { errc <- srv.Serve(serveCtx) }()
+	defer func() {
+		stopServe()
+		if err := <-errc; err != nil {
+			t.Errorf("serve: %v", err)
+		}
+	}()
+	select {
+	case <-srv.Listening():
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	send := func(c *ws.Client, f any) {
+		t.Helper()
+		if err := c.Send(ctx, f); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	first := dialKernel(t, ctx, p.Socket, "tui:first")
+	nextOf(t, ctx, first, ws.TypeHistory)
+	send(first, ws.SelectModel{})
+	if f := nextOf(t, ctx, first, ws.TypeModel); len(f.Models) != 3 || f.Models[1] != "chatgpt-sub/gpt-test" ||
+		f.ModelLabels[f.Models[1]] != "GPT Test" {
+		t.Fatalf("choices = %+v, want ChatGPT plan model and provider aliases", f)
+	}
+	send(first, ws.SelectModel{Model: "chatgpt-sub"})
+	if f := nextOf(t, ctx, first, ws.TypeModel); f.Model != "chatgpt-sub" {
+		t.Fatalf("selection = %+v, want ChatGPT", f)
+	}
+	send(first, ws.SelectModel{Model: "unknown"})
+	nextOf(t, ctx, first, ws.TypeError)
+	send(first, ws.SelectModel{Model: "chatgpt-sub/gpt-conflict"})
+	nextOf(t, ctx, first, ws.TypeError)
+	_ = first.Close()
+
+	convs, err := app.New(deps).Conversations(ctx, ws.Prefix)
+	if err != nil || len(convs) != 1 || convs[0].ReplyTo != "tui:first" {
+		t.Fatalf("resumable conversations = %+v, %v", convs, err)
+	}
+	resumed := dialKernel(t, ctx, p.Socket, "tui:first")
+	if f := nextOf(t, ctx, resumed, ws.TypeHistory); f.Model != "chatgpt-sub" {
+		t.Fatalf("resumed model = %q, want chatgpt-sub", f.Model)
+	}
+	send(resumed, ws.Input{Conv: "tui:first", Text: "stale", Model: "claude-sub"})
+	nextOf(t, ctx, resumed, ws.TypeError)
+	send(resumed, ws.Input{Conv: "tui:first", Text: "from an older client"})
+	nextOf(t, ctx, resumed, ws.TypeError)
+	send(resumed, ws.Input{Conv: "tui:first", Text: "hello", Model: "chatgpt-sub"})
+	if f := nextOf(t, ctx, resumed, ws.TypeNotice); f.Text != "from ChatGPT" {
+		t.Fatalf("resumed answer = %+v, want ChatGPT response", f)
+	}
+
+	second := dialKernel(t, ctx, p.Socket, "tui:second")
+	nextOf(t, ctx, second, ws.TypeHistory)
+	send(second, ws.Input{Conv: "tui:second", Text: "hello"})
+	if f := nextOf(t, ctx, second, ws.TypeNotice); f.Text != "from Claude" {
+		t.Fatalf("other conversation answer = %+v, want Claude response", f)
+	}
+	send(second, ws.Subscribe{Conv: "tui:second", Model: "chatgpt-sub"})
+	if f := nextOf(t, ctx, second, ws.TypeHistory); f.Model != "chatgpt-sub" {
+		t.Fatalf("explicit model on subscribe = %q, want chatgpt-sub", f.Model)
+	}
+	send(second, ws.SelectModel{Model: "chatgpt-sub/gpt-test"})
+	if f := nextOf(t, ctx, second, ws.TypeModel); f.Model != "chatgpt-sub/gpt-test" {
+		t.Fatalf("selection = %+v, want exact plan model", f)
+	}
+	send(second, ws.Input{Conv: "tui:second", Text: "hello again", Model: "chatgpt-sub/gpt-test"})
+	if f := nextOf(t, ctx, second, ws.TypeNotice); f.Text != "from gpt-test" || f.Window != 123_456 {
+		t.Fatalf("variant answer = %+v, want specific model and inherited context window", f)
+	}
+}
+
 func TestDecideRefusesApprovalOfAnotherTask(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -245,8 +358,15 @@ func (nopHandler) ConversationView(context.Context, string) (app.ConversationVie
 func (nopHandler) Conversations(context.Context, string) ([]app.ConversationSummary, error) {
 	return nil, nil
 }
-func (nopHandler) TaskOrigin(context.Context, string) (string, error) { return "", nil }
-func (nopHandler) CurrentModel() string                               { return "" }
+func (nopHandler) TaskOrigin(context.Context, string) (string, error)    { return "", nil }
+func (nopHandler) CurrentModel() string                                  { return "" }
+func (nopHandler) ChatModels(context.Context) ([]app.ModelChoice, error) { return nil, nil }
+func (nopHandler) ConversationModel(context.Context, string) (string, error) {
+	return "", nil
+}
+func (nopHandler) SetConversationModel(context.Context, string, string) error {
+	return nil
+}
 
 func TestStopIgnoresStalePIDFile(t *testing.T) {
 	t.Parallel()

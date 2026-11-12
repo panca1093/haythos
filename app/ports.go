@@ -120,7 +120,8 @@ type Job struct {
 }
 
 type Input struct {
-	Text string
+	Text  string
+	Model string
 	// ReplyTo is the channel adapter's address for this input's notices; empty means its default.
 	ReplyTo string
 	// DM marks ReplyTo as a direct-message channel; conversation memory only looks back 24 h there.
@@ -133,6 +134,11 @@ type ModelChoice struct {
 	Value       string
 	Name        string
 	Description string
+}
+
+type ModelVariants interface {
+	List(ctx context.Context) ([]ModelChoice, error)
+	WithModel(name string) Model
 }
 
 type ModelSelector interface {

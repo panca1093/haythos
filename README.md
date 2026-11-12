@@ -54,7 +54,7 @@ go run ./cmd/haythos auth chatgpt
 
 1. Prints a `http://127.0.0.1:<port>/login/...` link and tries to open your browser. Sign in and allow ChatGPT plan usage.
 2. The access, refresh and ID tokens, the issued client id and this host's id are stored in the vault as `secret://chatgpt`; nothing is printed.
-3. Add a model in `config/haythos.yaml`, for example `chatgpt-sub: { kind: chatgpt, model: gpt-5 }` (`model` is optional; empty uses the first model your account lists), and point `default_model` or a job's `model:` at it.
+3. Run `haythos chat --model chatgpt-sub` or enter `/model chatgpt-sub` in terminal chat. The built-in `chatgpt-sub` uses the first model available to your ChatGPT account. To choose a specific model for the kernel default or a job, define an alias with `kind: chatgpt` and its `model:` in the config.
 
 Alfred refreshes the token itself (1 h access token; the 30-day refresh token rotates on every refresh and is written to the vault before use). When the plan's usage limit is hit the task fails with a link to https://chatgpt.com/settings/usage; it never falls back to API-key billing. Run `auth chatgpt` again if the refresh token expires or is revoked.
 
@@ -76,6 +76,7 @@ One binary, `haythos`. The kernel (`haythos serve`) keeps Discord and the schedu
 ```bash
 go install ./cmd/haythos            # chat starts the kernel from this binary, so build it (go run uses a temp file)
 haythos chat                        # new conversation tui:<12 hex>; starts the kernel in the background if none answers
+haythos chat --model chatgpt-sub    # start a conversation on your ChatGPT plan
 haythos chat --resume               # continue the most recent terminal conversation
 haythos chat --session 6836b54688f8 # continue a given one (ids from `haythos sessions`)
 haythos sessions                    # <id>  <last active>  <first line>, newest first
@@ -83,9 +84,11 @@ haythos status                      # running pid <n> since <time> version <v> c
 haythos stop                        # SIGTERM to the kernel, waits up to 10 s
 ```
 
-Run these from the directory that holds `config/` (or pass `-config`, `-policy`, `-jobs` before the subcommand); a kernel started by `chat` gets the same files as absolute paths and logs to `<home>/logs/haythos.log`.
+With a running kernel, `haythos chat` works from any directory. To start a kernel with the default paths, run from the directory that holds `config/`. A kernel started by `chat` logs to `<home>/logs/haythos.log`.
 
 - Enter sends; `/quit` or Ctrl+C closes the window only. The kernel keeps running and a running task keeps going.
+- `/model` opens a picker with display names for the available Claude and ChatGPT subscription models. Use ↑/↓ to move, Enter to select, or Esc to cancel. The choice applies to the next message and is restored by `--resume` or `--session`.
+- You can also select a model directly with `/model <alias>/<model>` or `haythos chat --model <alias>/<model>`, for example `claude-sub/sonnet`.
 - An approval for this conversation shows inline with tool, target and preview; press `y` or `n`. Approvals stay where they were asked: a Discord approval never shows in the terminal and the reverse, and a terminal client can only act on its own `tui:` conversation.
 - Close the window while Alfred waits for your approval and the task stays waiting; `haythos chat --resume` shows the approval again.
 - After rebuilding the binary the old kernel keeps running; the chat says so in one line. Run `haythos stop` and start `chat` again.

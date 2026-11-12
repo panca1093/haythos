@@ -103,10 +103,9 @@ func fitTurn(t convTurn, budget int) (convTurn, bool) {
 	return t, true
 }
 
-func (a *App) chatWindow() int {
-	model := a.d.DefaultJob.Model
-	if sel := a.d.ModelSelector; sel != nil && a.d.Windows[sel.Current()] > 0 {
-		model = sel.Current()
+func (a *App) chatWindow(model string) int {
+	if sel := a.d.ModelSelector; model == a.d.DefaultJob.Model && sel != nil && a.d.Windows[sel.Current()] > 0 {
+		return a.window(sel.Current())
 	}
 	return a.window(model)
 }
@@ -142,7 +141,8 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 }
 
 // conversation returns the earlier turns of replyTo as context messages: a summary of folded turns, then recent turns verbatim.
-func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incoming string) ([]task.Message, error) {
+func (a *App) conversation(ctx context.Context, in Input, model string) ([]task.Message, error) {
+	replyTo, incoming := in.ReplyTo, in.Text
 	if replyTo == "" {
 		return nil, nil
 	}
@@ -163,7 +163,7 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 			if err := json.Unmarshal(e.Payload, &t); err != nil {
 				return nil, fmt.Errorf("decode conversation turn %d: %w", e.Cursor, err)
 			}
-			if !seen[t.Task] && (!dm || !t.At.Before(a.d.Clock().Add(-convDMLookback))) {
+			if !seen[t.Task] && (!in.DM || !t.At.Before(a.d.Clock().Add(-convDMLookback))) {
 				seen[t.Task] = true
 				turns = append(turns, t)
 			}
@@ -192,14 +192,14 @@ func (a *App) conversation(ctx context.Context, replyTo string, dm bool, incomin
 			fresh = append(fresh, t)
 		}
 	}
-	window := a.chatWindow()
+	window := a.chatWindow(model)
 	recent := fresh
 	limit := a.d.CompactAt * float64(window)
 	if float64(estimatePrompt(summary.Text, fresh, incoming)) >= limit {
 		var older []convTurn
 		older, recent = splitTail(fresh, int(convTailShare*float64(window)))
 		if len(older) > 0 {
-			if summary, err = a.compact(ctx, stream, summary, older, replyTo); err != nil {
+			if summary, err = a.compact(ctx, stream, summary, older, replyTo, model); err != nil {
 				return nil, err
 			}
 		}
@@ -245,8 +245,8 @@ func (a *App) turnMessages(ctx context.Context, id string) ([]task.Message, erro
 	return nil, nil
 }
 
-func (a *App) compact(ctx context.Context, stream string, summary convSummary, older []convTurn, replyTo string) (convSummary, error) {
-	text, err := a.summarize(ctx, summary.Text, older)
+func (a *App) compact(ctx context.Context, stream string, summary convSummary, older []convTurn, replyTo, model string) (convSummary, error) {
+	text, err := a.summarize(ctx, summary.Text, older, model)
 	if err != nil {
 		slog.Warn("summarize conversation failed; replaying the tail only for this message", "conversation", replyTo, "err", err)
 		return summary, nil
@@ -266,10 +266,10 @@ func turnIDs(turns []convTurn) []string {
 	return ids
 }
 
-func (a *App) summarize(ctx context.Context, previous string, turns []convTurn) (string, error) {
-	model, ok := a.d.Models[a.d.DefaultJob.Model]
+func (a *App) summarize(ctx context.Context, previous string, turns []convTurn, modelName string) (string, error) {
+	model, ok := a.resolveModel(modelName)
 	if !ok {
-		return "", fmt.Errorf("model %q is not configured", a.d.DefaultJob.Model)
+		return "", fmt.Errorf("model %q is not configured", modelName)
 	}
 	var b strings.Builder
 	if previous != "" {

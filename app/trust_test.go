@@ -11,7 +11,7 @@ import (
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/tools/local"
-	fstools "github.com/panca/haythos/adapters/tools/local/fs"
+	readfile "github.com/panca/haythos/adapters/tools/local/readfile"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
@@ -36,16 +36,16 @@ func newTrustRig(t *testing.T, turns ...task.AssistantTurn) *trustRig {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	reg := local.New()
-	fstools.Register(reg, fstools.Config{Home: dir})
+	readfile.Register(reg, readfile.Config{Home: dir})
 	reg.Register(task.ToolSpec{Name: "brain.remember", Write: true, InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(context.Context, []byte) (task.ToolResult, error) { return task.ToolResult{Content: "saved"}, nil })
 	a := app.New(app.Deps{
 		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"fs.list", "fs.read", "brain.remember"}},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.list", "file.read", "brain.remember"}},
 		Tools:      reg, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{
 			Version: "v1", AutoWhenClean: []string{"brain.remember"},
-			Tiers: map[string]policy.Tier{"fs.list": policy.TierRead, "fs.read": policy.TierRead, "brain.remember": policy.TierInternalWrite},
+			Tiers: map[string]policy.Tier{"file.list": policy.TierRead, "file.read": policy.TierRead, "brain.remember": policy.TierInternalWrite},
 		},
 		Clock: time.Now, ApprovalTTL: time.Hour,
 	})
@@ -84,7 +84,7 @@ func TestSavingMemoryAfterReadingFiles(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := newTrustRig(t, callTool("fs.list", `{}`), callTool("fs.read", `{"path":"`+tc.path+`"}`), remember(), task.AssistantTurn{Text: "done"})
+			r := newTrustRig(t, callTool("file.list", `{}`), callTool("file.read", `{"path":"`+tc.path+`"}`), remember(), task.AssistantTurn{Text: "done"})
 			if got := r.say(t, "learn this repo"); got != tc.want {
 				t.Fatalf("state = %s, want %s", got, tc.want)
 			}
@@ -105,7 +105,7 @@ func TestSavingMemoryInAFollowUpAfterReadingFiles(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			r := newTrustRig(t, callTool("fs.read", `{"path":"`+tc.path+`"}`), task.AssistantTurn{Text: "read it"}, remember(), task.AssistantTurn{Text: "saved"})
+			r := newTrustRig(t, callTool("file.read", `{"path":"`+tc.path+`"}`), task.AssistantTurn{Text: "read it"}, remember(), task.AssistantTurn{Text: "saved"})
 			if got := r.say(t, "read the file"); got != task.Done {
 				t.Fatalf("first message ended %s, want done", got)
 			}

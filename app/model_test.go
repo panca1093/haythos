@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
@@ -101,5 +102,46 @@ func TestListAndCurrentModel(t *testing.T) {
 	}
 	if cur := none.CurrentModel(); cur != "" {
 		t.Errorf("current without selector = %q", cur)
+	}
+}
+
+type waitingCatalog struct {
+	app.Model
+	started  chan struct{}
+	released chan struct{}
+}
+
+func (m waitingCatalog) List(context.Context) ([]app.ModelChoice, error) {
+	close(m.started)
+	<-m.released
+	return nil, nil
+}
+
+func (m waitingCatalog) WithModel(string) app.Model { return m.Model }
+
+func TestChatModelsReturnsAvailableChoicesWhenDiscoveryIsCanceled(t *testing.T) {
+	model := waitingCatalog{started: make(chan struct{}), released: make(chan struct{})}
+	defer close(model.released)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	a := app.New(app.Deps{Models: map[string]app.Model{"subscription": model}})
+	type result struct {
+		choices []app.ModelChoice
+		err     error
+	}
+	done := make(chan result, 1)
+	go func() {
+		choices, err := a.ChatModels(ctx)
+		done <- result{choices: choices, err: err}
+	}()
+	<-model.started
+	cancel()
+	select {
+	case got := <-done:
+		if !errors.Is(got.err, context.Canceled) || len(got.choices) != 1 || got.choices[0].Value != "subscription" {
+			t.Fatalf("choices = %v, err = %v", got.choices, got.err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("model list waited for a provider after cancellation")
 	}
 }

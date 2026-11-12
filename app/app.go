@@ -50,7 +50,8 @@ type Deps struct {
 	Hook func(point string) error
 
 	// ModelSelector is optional; nil disables /model.
-	ModelSelector ModelSelector
+	ModelSelector    ModelSelector
+	BlockedChatModel string
 	// Brain is optional; nil disables recall and brain tools.
 	Brain Brain
 }
@@ -144,6 +145,19 @@ const (
 func (a *App) window(model string) int {
 	if w := a.d.Windows[model]; w > 0 {
 		return w
+	}
+	if adapter, ok := a.resolveModel(model); ok {
+		if sized, ok := adapter.(interface{ ContextWindow() int }); ok {
+			if w := sized.ContextWindow(); w > 0 {
+				return w
+			}
+		}
+	}
+	if _, _, variant := a.modelVariant(model); variant {
+		alias, _, _ := strings.Cut(model, "/")
+		if w := a.d.Windows[alias]; w > 0 {
+			return w
+		}
 	}
 	return defaultWindow
 }
@@ -317,11 +331,18 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	prior, err := a.conversation(ctx, in.ReplyTo, in.DM, in.Text)
+	job := a.d.DefaultJob
+	if in.Model != "" {
+		if a.blockedChatModel(in.Model) {
+			return "", fmt.Errorf("%w %q", ErrUnknownModel, in.Model)
+		}
+		job.Model = in.Model
+	}
+	prior, err := a.conversation(ctx, in, job.Model)
 	if err != nil {
 		return "", err
 	}
-	id, err := a.createTask(ctx, newID(a.d.DefaultJob.Name), a.d.DefaultJob, in.Text, in.ReplyTo, in.Workdir, prior...)
+	id, err := a.createTask(ctx, newID(job.Name), job, in.Text, in.ReplyTo, in.Workdir, prior...)
 	if err != nil {
 		return "", err
 	}
@@ -372,7 +393,7 @@ func (a *App) run(ctx context.Context, id string) error {
 			continue
 		}
 
-		model, ok := a.d.Models[s.Created.Model]
+		model, ok := a.resolveModel(s.Created.Model)
 		if !ok {
 			return a.fail(ctx, id, fmt.Sprintf("model %q is not configured", s.Created.Model))
 		}
