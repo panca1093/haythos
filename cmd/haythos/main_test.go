@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/chatgpt"
@@ -435,5 +436,20 @@ func TestClaudeCLIKeepsItsStateNextToTheDatabaseOnePerModel(t *testing.T) {
 	}
 	if a == b {
 		t.Errorf("two model entries share the state dir %q; the second one's start-up cleanup would delete the first one's transcripts", a)
+	}
+}
+
+func TestSelfAboutIsReadOnlyChatTool(t *testing.T) {
+	pol, err := config.LoadPolicy("../../config/policy.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := pol.Tiers["self.about"]; !ok || got != policy.TierRead {
+		t.Errorf("self.about tier = %d (set %v), want %d", got, ok, policy.TierRead)
+	}
+	cfg := config.Main{Models: map[string]config.Model{"b": {}, "a": {}}}
+	got := aboutConfig(cfg, pol, defaultJob.Tools, []string{"tui"}, time.Unix(0, 0), "/repo")
+	if !slices.Contains(defaultJob.Tools, "self.about") || !slices.Equal(got.Models, []string{"a", "b"}) || got.Repo != "/repo" || len(got.Tools) != len(defaultJob.Tools) {
+		t.Errorf("aboutConfig = %+v", got)
 	}
 }
