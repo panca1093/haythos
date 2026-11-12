@@ -14,6 +14,7 @@ import (
 
 const (
 	officeBudget = 64 << 20
+	outputBudget = 16 << 20
 	maxSheetCols = 16384
 
 	nsWord = "http://schemas.openxmlformats.org/wordprocessingml/2006/main"
@@ -21,11 +22,31 @@ const (
 	nsRel  = "http://schemas.openxmlformats.org/officeDocument/2006/relationships"
 )
 
-var errOfficeBomb = errors.New("document expands to more than 64 MiB")
+var (
+	errOfficeBomb  = errors.New("document expands to more than 64 MiB")
+	errOutputBomb  = errors.New("document text is larger than 16 MiB")
+	errMissingPart = errors.New("missing part")
+	errBadXML      = errors.New("bad XML")
+)
 
 type officeDoc struct {
-	parts map[string]*zip.File
-	left  int64
+	parts   map[string]*zip.File
+	left    int64
+	outLeft int64
+}
+
+func (d *officeDoc) spend(n int) error {
+	if d.outLeft -= int64(n); d.outLeft < 0 {
+		return errOutputBomb
+	}
+	return nil
+}
+
+func badXML(err error) error {
+	if errors.Is(err, errOfficeBomb) || errors.Is(err, errOutputBomb) {
+		return err
+	}
+	return errBadXML
 }
 
 type budgetReader struct {
@@ -51,7 +72,7 @@ func officeText(r io.ReaderAt, size int64, ext string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("not a valid %s file: %w", ext, err)
 	}
-	d := &officeDoc{parts: make(map[string]*zip.File, len(zr.File)), left: officeBudget}
+	d := &officeDoc{parts: make(map[string]*zip.File, len(zr.File)), left: officeBudget, outLeft: outputBudget}
 	for _, f := range zr.File {
 		d.parts[f.Name] = f
 	}
@@ -67,6 +88,10 @@ func officeText(r io.ReaderAt, size int64, ext string) (string, error) {
 		err = fmt.Errorf("unsupported office format %s", ext)
 	}
 	if err != nil {
+		switch {
+		case errors.Is(err, errMissingPart), errors.Is(err, errBadXML):
+			return "", fmt.Errorf("not a valid %s file (%w)", ext, err)
+		}
 		return "", err
 	}
 	for i, l := range lines {
@@ -75,16 +100,16 @@ func officeText(r io.ReaderAt, size int64, ext string) (string, error) {
 	return strings.TrimRight(strings.Join(lines, "\n"), "\n"), nil
 }
 
-func (d *officeDoc) decoder(name string) (*xml.Decoder, error) {
+func (d *officeDoc) decoder(name string) (*xml.Decoder, io.Closer, error) {
 	f, ok := d.parts[name]
 	if !ok {
-		return nil, fmt.Errorf("document has no %s", name)
+		return nil, nil, errMissingPart
 	}
 	rc, err := f.Open()
 	if err != nil {
-		return nil, fmt.Errorf("open %s: %w", name, err)
+		return nil, nil, errBadXML
 	}
-	return xml.NewDecoder(budgetReader{r: rc, left: &d.left}), nil
+	return xml.NewDecoder(budgetReader{r: rc, left: &d.left}), rc, nil
 }
 
 func attr(se xml.StartElement, space, local string) string {
@@ -104,10 +129,11 @@ func resolvePart(dir, target string) string {
 }
 
 func (d *officeDoc) rels(part string) (map[string]string, error) {
-	dec, err := d.decoder(path.Join(path.Dir(part), "_rels", path.Base(part)+".rels"))
+	dec, rc, err := d.decoder(path.Join(path.Dir(part), "_rels", path.Base(part)+".rels"))
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rc.Close() }()
 	out := map[string]string{}
 	for {
 		tok, err := dec.Token()
@@ -115,7 +141,7 @@ func (d *officeDoc) rels(part string) (map[string]string, error) {
 			return out, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse relationships of %s: %w", part, err)
+			return nil, badXML(err)
 		}
 		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "Relationship" {
 			out[attr(se, "", "Id")] = attr(se, "", "Target")
@@ -181,10 +207,11 @@ func runText(dec *xml.Decoder) (string, error) {
 var cellSpaces = strings.NewReplacer("\n", " ", "\t", " ")
 
 func (d *officeDoc) docx() ([]string, error) {
-	dec, err := d.decoder("word/document.xml")
+	dec, rc, err := d.decoder("word/document.xml")
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rc.Close() }()
 	var lines, cellParts, rowCells []string
 	var para strings.Builder
 	tcDepth, inT := 0, false
@@ -194,7 +221,7 @@ func (d *officeDoc) docx() ([]string, error) {
 			return lines, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse word/document.xml: %w", err)
+			return nil, badXML(err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -221,6 +248,9 @@ func (d *officeDoc) docx() ([]string, error) {
 			case "p":
 				text := para.String()
 				para.Reset()
+				if err := d.spend(len(text) + 1); err != nil {
+					return nil, err
+				}
 				if tcDepth == 0 {
 					lines = append(lines, text)
 				} else if s := strings.TrimSpace(cellSpaces.Replace(text)); s != "" {
@@ -249,10 +279,11 @@ func (d *officeDoc) sharedStrings() ([]string, error) {
 	if _, ok := d.parts["xl/sharedStrings.xml"]; !ok {
 		return nil, nil
 	}
-	dec, err := d.decoder("xl/sharedStrings.xml")
+	dec, rc, err := d.decoder("xl/sharedStrings.xml")
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rc.Close() }()
 	var out []string
 	for {
 		tok, err := dec.Token()
@@ -260,12 +291,12 @@ func (d *officeDoc) sharedStrings() ([]string, error) {
 			return out, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse xl/sharedStrings.xml: %w", err)
+			return nil, badXML(err)
 		}
 		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "si" {
 			s, err := runText(dec)
 			if err != nil {
-				return nil, fmt.Errorf("parse xl/sharedStrings.xml: %w", err)
+				return nil, badXML(err)
 			}
 			out = append(out, s)
 		}
@@ -273,10 +304,11 @@ func (d *officeDoc) sharedStrings() ([]string, error) {
 }
 
 func (d *officeDoc) xlsx() ([]string, error) {
-	dec, err := d.decoder("xl/workbook.xml")
+	dec, rc, err := d.decoder("xl/workbook.xml")
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rc.Close() }()
 	type sheet struct{ name, rid string }
 	var sheets []sheet
 	for {
@@ -285,7 +317,7 @@ func (d *officeDoc) xlsx() ([]string, error) {
 			break
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse xl/workbook.xml: %w", err)
+			return nil, badXML(err)
 		}
 		if se, ok := tok.(xml.StartElement); ok && se.Name.Local == "sheet" {
 			sheets = append(sheets, sheet{attr(se, "", "name"), attr(se, nsRel, "id")})
@@ -303,7 +335,7 @@ func (d *officeDoc) xlsx() ([]string, error) {
 	for _, s := range sheets {
 		target, ok := rels[s.rid]
 		if !ok {
-			return nil, fmt.Errorf("sheet %q has no part in xl/_rels/workbook.xml.rels", s.name)
+			return nil, errMissingPart
 		}
 		rows, err := d.sheetRows(resolvePart("xl", target), sst)
 		if err != nil {
@@ -322,15 +354,19 @@ func colIndex(ref string) int {
 			break
 		}
 		col = col*26 + int(c-'A') + 1
+		if col > maxSheetCols {
+			return maxSheetCols
+		}
 	}
 	return col - 1
 }
 
 func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
-	dec, err := d.decoder(part)
+	dec, rc, err := d.decoder(part)
 	if err != nil {
 		return nil, err
 	}
+	defer func() { _ = rc.Close() }()
 	var rows, fields []string
 	var typ, val string
 	col, nextCol := 0, 0
@@ -340,7 +376,7 @@ func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
 			return rows, nil
 		}
 		if err != nil {
-			return nil, fmt.Errorf("parse %s: %w", part, err)
+			return nil, badXML(err)
 		}
 		switch t := tok.(type) {
 		case xml.StartElement:
@@ -360,7 +396,7 @@ func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
 				val, err = runText(dec)
 			}
 			if err != nil {
-				return nil, fmt.Errorf("parse %s: %w", part, err)
+				return nil, badXML(err)
 			}
 		case xml.EndElement:
 			switch t.Name.Local {
@@ -373,7 +409,10 @@ func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
 				case "b":
 					val = map[string]string{"1": "TRUE", "0": "FALSE"}[strings.TrimSpace(val)]
 				}
-				if val != "" && col < maxSheetCols {
+				if val != "" && col >= 0 && col < maxSheetCols {
+					if err := d.spend(len(val) + 1); err != nil {
+						return nil, err
+					}
 					for len(fields) <= col {
 						fields = append(fields, "")
 					}
@@ -381,6 +420,9 @@ func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
 				}
 			case "row":
 				if len(fields) > 0 {
+					if err := d.spend(len(fields)); err != nil {
+						return nil, err
+					}
 					rows = append(rows, strings.Join(fields, "\t"))
 				}
 			}
@@ -389,7 +431,8 @@ func (d *officeDoc) sheetRows(part string, sst []string) ([]string, error) {
 }
 
 func (d *officeDoc) slideParts() []string {
-	if dec, err := d.decoder("ppt/presentation.xml"); err == nil {
+	if dec, rc, err := d.decoder("ppt/presentation.xml"); err == nil {
+		defer func() { _ = rc.Close() }()
 		if rels, err := d.rels("ppt/presentation.xml"); err == nil {
 			var out []string
 			for {
@@ -435,10 +478,11 @@ func (d *officeDoc) pptx() ([]string, error) {
 	}
 	var lines []string
 	for i, part := range slides {
-		dec, err := d.decoder(part)
+		dec, rc, err := d.decoder(part)
 		if err != nil {
 			return nil, err
 		}
+		defer func() { _ = rc.Close() }()
 		lines = append(lines, fmt.Sprintf("# slide %d", i+1))
 		var para strings.Builder
 		inT := false
@@ -448,7 +492,7 @@ func (d *officeDoc) pptx() ([]string, error) {
 				break
 			}
 			if err != nil {
-				return nil, fmt.Errorf("parse %s: %w", part, err)
+				return nil, badXML(err)
 			}
 			switch t := tok.(type) {
 			case xml.StartElement:
@@ -470,6 +514,9 @@ func (d *officeDoc) pptx() ([]string, error) {
 					inT = false
 				case "p":
 					if strings.TrimSpace(para.String()) != "" {
+						if err := d.spend(para.Len() + 1); err != nil {
+							return nil, err
+						}
 						lines = append(lines, para.String())
 					}
 					para.Reset()

@@ -433,3 +433,23 @@ func TestCaseAndFoldVariantsOfDeniedPathsAreRefused(t *testing.T) {
 		})
 	}
 }
+
+func TestReadRefusesUnsupportedFormats(t *testing.T) {
+	f := newFixture(t)
+	for ext, want := range map[string]string{
+		".xls": oldOffice, ".doc": oldOffice, ".ppt": oldOffice,
+		".webp": otherImage, ".heic": otherImage, ".heif": otherImage, ".bmp": otherImage,
+		".tif": otherImage, ".tiff": otherImage, ".svg": otherImage, ".XLS": oldOffice,
+	} {
+		t.Run(ext, func(t *testing.T) {
+			name := "file" + ext
+			if err := os.WriteFile(filepath.Join(f.root, name), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			res := f.call(t, f.root, "file.read", `{"path":"`+name+`"}`)
+			if !res.IsError || res.Content != want {
+				t.Fatalf("result = %+v, want error %q", res, want)
+			}
+		})
+	}
+}

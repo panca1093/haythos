@@ -156,8 +156,8 @@ func TestOfficeTextErrors(t *testing.T) {
 		want string
 	}{
 		{"not a zip", ".docx", notZip, "not a valid .docx file"},
-		{"docx without document.xml", ".docx", buildZip(t, map[string]string{"other.xml": "<a/>"}), "word/document.xml"},
-		{"xlsx without workbook", ".xlsx", buildZip(t, map[string]string{"other.xml": "<a/>"}), "xl/workbook.xml"},
+		{"docx without document.xml", ".docx", buildZip(t, map[string]string{"other.xml": "<a/>"}), "not a valid .docx file (missing part)"},
+		{"xlsx without workbook", ".xlsx", buildZip(t, map[string]string{"other.xml": "<a/>"}), "not a valid .xlsx file (missing part)"},
 		{"pptx without slides", ".pptx", buildZip(t, map[string]string{"other.xml": "<a/>"}), "no slides"},
 		{"zip bomb", ".docx", bomb, "document expands to more than 64 MiB"},
 	}
@@ -181,5 +181,52 @@ func TestOfficeDocxThroughFileRead(t *testing.T) {
 	res := f.call(t, f.root, "file.read", `{"path":"memo.docx"}`)
 	if res.IsError || !res.Untrusted || !strings.Contains(res.Content, "1|first") || !strings.Contains(res.Content, "2|second") {
 		t.Fatalf("result = %+v, want numbered untrusted text", res)
+	}
+}
+
+func TestOfficeColumnRefOverflowDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	data := buildZip(t, xlsxParts(`<row r="1"><c r="CRPXNLSKVLJFHH"><v>big</v></c><c><v>next</v></c><c><v>more</v></c></row><row r="2"><c r="A2"><v>ok</v></c></row>`))
+	got, err := officeText(bytes.NewReader(data), int64(len(data)), ".xlsx")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(got, "ok") {
+		t.Fatalf("got %q, want later rows kept", got)
+	}
+}
+
+func TestOfficeOutputAmplificationIsCapped(t *testing.T) {
+	t.Parallel()
+	parts := xlsxParts(strings.Repeat(`<row><c t="s"><v>0</v></c></row>`, 200))
+	parts["xl/sharedStrings.xml"] = `<sst ` + testNSS + `><si><t>` + strings.Repeat("a", 1<<20) + `</t></si></sst>`
+	data := buildZip(t, parts)
+	_, err := officeText(bytes.NewReader(data), int64(len(data)), ".xlsx")
+	if err == nil || !strings.Contains(err.Error(), "document text is larger than 16 MiB") {
+		t.Fatalf("err = %v, want output budget error", err)
+	}
+}
+
+func TestOfficeErrorsCarryNoFileText(t *testing.T) {
+	t.Parallel()
+	const secret = "IGNORE-PREVIOUS-INSTRUCTIONS"
+	badRels := xlsxParts(`<row r="1"><c r="A1"><v>1</v></c></row>`)
+	badRels["xl/_rels/workbook.xml.rels"] = `<Relationships ` + testRelNS + `><Relationship Id="rId1" Type="x" Target="` + secret + `.xml"/><Relationship Id="rId2" Type="x" Target="` + secret + `2.xml"/></Relationships>`
+	badSheet := xlsxParts("")
+	badSheet["xl/workbook.xml"] = `<workbook ` + testNSS + `><sheets><sheet name="` + secret + `" sheetId="1" r:id="rId9"/></sheets></workbook>`
+	badXML := xlsxParts("")
+	badXML["xl/worksheets/sheet1.xml"] = `<worksheet><` + secret + `></worksheet>`
+	for name, parts := range map[string]map[string]string{"target": badRels, "sheet name": badSheet, "xml": badXML} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			data := buildZip(t, parts)
+			_, err := officeText(bytes.NewReader(data), int64(len(data)), ".xlsx")
+			if err == nil {
+				t.Fatal("want error")
+			}
+			if strings.Contains(err.Error(), secret) {
+				t.Fatalf("err = %q leaks file text", err)
+			}
+		})
 	}
 }
