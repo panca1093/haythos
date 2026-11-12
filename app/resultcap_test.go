@@ -124,3 +124,37 @@ func TestModelStepsCarryTheConversationAsCacheKey(t *testing.T) {
 		t.Fatalf("cache keys = %v, want the conversation key c1 on every step", m.keys)
 	}
 }
+
+func TestImagesSurviveTheCapAndReplay(t *testing.T) {
+	t.Parallel()
+	st, err := sqlite.Open(t.TempDir() + "/haythos.db")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+	img := task.Image{MediaType: "image/png", Data: []byte("\x89PNG fake")}
+	model := testfakes.NewModel(readNote(10), used("A1", 10), used("A2", 10))
+	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)})
+	tools.Handlers["note.read"] = func(c task.ToolCall) (task.ToolResult, error) {
+		return task.ToolResult{CallID: c.ID, Content: strings.Repeat("x", 50<<10), Images: []task.Image{img}}, nil
+	}
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": model},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}}, Clock: time.Now,
+	})
+	ask(t, a, "Q1")
+	ask(t, a, "Q2")
+	for i, h := range [][]task.Message{model.Histories[1], model.Histories[2]} {
+		var got []task.Image
+		for _, m := range h {
+			for _, r := range m.Results {
+				got = append(got, r.Images...)
+			}
+		}
+		if len(got) != 1 || got[0].MediaType != img.MediaType || string(got[0].Data) != string(img.Data) {
+			t.Fatalf("history %d images = %+v, want the one image kept", i+1, got)
+		}
+	}
+}

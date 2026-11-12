@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"strings"
@@ -12,8 +13,13 @@ import (
 
 // Run executes argv without a shell in dir, keeping at most limit bytes of stdout; truncated reports a cut.
 func Run(ctx context.Context, dir string, argv, env []string, limit int) (out string, truncated bool, err error) {
+	return runStdin(ctx, dir, argv, env, limit, nil)
+}
+
+func runStdin(ctx context.Context, dir string, argv, env []string, limit int, stdin io.Reader) (out string, truncated bool, err error) {
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) //nolint:gosec // argv is built by callers from fixed flags; no shell
 	cmd.Dir = dir
+	cmd.Stdin = stdin
 	for _, kv := range os.Environ() {
 		if !strings.HasPrefix(kv, "GIT_") {
 			cmd.Env = append(cmd.Env, kv)

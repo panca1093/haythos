@@ -45,10 +45,32 @@ type block struct {
 	Name      string          `json:"name,omitempty"`
 	Input     json.RawMessage `json:"input,omitempty"`
 	ToolUseID string          `json:"tool_use_id,omitempty"`
-	Content   string          `json:"content,omitempty"`
+	Content   any             `json:"content,omitempty"`
 	IsError   bool            `json:"is_error,omitempty"`
 
+	Source *imageSource `json:"source,omitempty"`
+
 	CacheControl *cacheControl `json:"cache_control,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data"`
+}
+
+func toolResultContent(r task.ToolResult) any {
+	if len(r.Images) == 0 {
+		if r.Content == "" {
+			return nil
+		}
+		return r.Content
+	}
+	parts := []block{{Type: "text", Text: r.Content}}
+	for _, img := range r.Images {
+		parts = append(parts, block{Type: "image", Source: &imageSource{Type: "base64", MediaType: img.MediaType, Data: img.Data}})
+	}
+	return parts
 }
 
 type cacheControl struct {
@@ -113,7 +135,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		case task.RoleTool:
 			var bs []block
 			for _, r := range m.Results {
-				bs = append(bs, block{Type: "tool_result", ToolUseID: r.CallID, Content: r.Content, IsError: r.IsError})
+				bs = append(bs, block{Type: "tool_result", ToolUseID: r.CallID, Content: toolResultContent(r), IsError: r.IsError})
 			}
 			if n := len(req.Messages); n > 0 && req.Messages[n-1].Role == "user" && req.Messages[n-1].Content[0].Type == "tool_result" {
 				req.Messages[n-1].Content = append(req.Messages[n-1].Content, bs...)

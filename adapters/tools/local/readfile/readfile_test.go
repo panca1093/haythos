@@ -383,21 +383,37 @@ func TestReadRefusesNonRegularFiles(t *testing.T) {
 	}
 }
 
-func TestReadRefusesInvalidUTF8(t *testing.T) {
+func TestReadNonUTF8(t *testing.T) {
+	t.Parallel()
 	f := newFixture(t)
-	body := "caf\xff" + strings.Repeat("a", 100)
-	if err := os.WriteFile(filepath.Join(f.root, "mixed.txt"), []byte(body), 0o600); err != nil {
-		t.Fatal(err)
+	files := map[string]string{
+		"latin1.csv":   "name;city\nJos\xe9;S\xe3o Paulo\n",
+		"early.txt":    "caf\xff\n" + strings.Repeat("a\n", 10),
+		"nul.txt":      "abc\x00def\n",
+		"late-nul.txt": strings.Repeat("a", 9<<10) + "\x00\n",
 	}
-	if res := f.call(t, f.root, "file.read", `{"path":"mixed.txt"}`); !res.IsError || !strings.Contains(res.Content, "not text") {
-		t.Fatalf("result = %+v, want binary refusal", res)
+	for name, body := range files {
+		if err := os.WriteFile(filepath.Join(f.root, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
 	}
-	late := strings.Repeat("a\n", 10) + "b\xff\n"
-	if err := os.WriteFile(filepath.Join(f.root, "late.txt"), []byte(late), 0o600); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name, args, want string
+		refused          bool
+	}{
+		{"invalid bytes become U+FFFD", `{"path":"latin1.csv"}`, "2|Jos\ufffd;S\ufffdo Paulo", false},
+		{"bad byte before offset is not checked", `{"path":"early.txt","offset":3,"limit":1}`, "3|a", false},
+		{"NUL in the first 8 KiB is binary", `{"path":"nul.txt"}`, "not text", true},
+		{"NUL after 8 KiB is not checked", `{"path":"late-nul.txt","limit":1}`, "1|aaa", false},
 	}
-	if res := f.call(t, f.root, "file.read", `{"path":"late.txt","limit":20}`); !res.IsError || !strings.Contains(res.Content, "not text") {
-		t.Fatalf("result = %+v, want binary refusal", res)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res := f.call(t, f.root, "file.read", tc.args)
+			if res.IsError != tc.refused || !strings.Contains(res.Content, tc.want) {
+				t.Fatalf("result = %+v, want refused=%v containing %q", res, tc.refused, tc.want)
+			}
+		})
 	}
 }
 
@@ -413,6 +429,26 @@ func TestCaseAndFoldVariantsOfDeniedPathsAreRefused(t *testing.T) {
 			res := f.call(t, f.home, "file.read", string(b))
 			if !res.IsError || strings.Contains(res.Content, "Host x") || strings.Contains(res.Content, "secret") {
 				t.Fatalf("read %q = %+v, want refused without content", p, res)
+			}
+		})
+	}
+}
+
+func TestReadRefusesUnsupportedFormats(t *testing.T) {
+	f := newFixture(t)
+	for ext, want := range map[string]string{
+		".xls": oldOffice, ".doc": oldOffice, ".ppt": oldOffice,
+		".webp": otherImage, ".heic": otherImage, ".heif": otherImage, ".bmp": otherImage,
+		".tif": otherImage, ".tiff": otherImage, ".svg": otherImage, ".XLS": oldOffice,
+	} {
+		t.Run(ext, func(t *testing.T) {
+			name := "file" + ext
+			if err := os.WriteFile(filepath.Join(f.root, name), []byte("x"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			res := f.call(t, f.root, "file.read", `{"path":"`+name+`"}`)
+			if !res.IsError || res.Content != want {
+				t.Fatalf("result = %+v, want error %q", res, want)
 			}
 		})
 	}
