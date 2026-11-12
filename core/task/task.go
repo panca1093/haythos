@@ -62,12 +62,19 @@ type ToolCall struct {
 	Args json.RawMessage `json:"args"`
 }
 
+// Image is an encoded picture a tool returns for the model to see; Data is base64 in JSON.
+type Image struct {
+	MediaType string `json:"media_type"`
+	Data      []byte `json:"data"`
+}
+
 type ToolResult struct {
-	CallID    string `json:"call_id"`
-	Content   string `json:"content"`
-	IsError   bool   `json:"is_error,omitempty"`
-	Untrusted bool   `json:"untrusted,omitempty"`
-	Normal    bool   `json:"normal,omitempty"`
+	CallID    string  `json:"call_id"`
+	Content   string  `json:"content"`
+	IsError   bool    `json:"is_error,omitempty"`
+	Untrusted bool    `json:"untrusted,omitempty"`
+	Normal    bool    `json:"normal,omitempty"`
+	Images    []Image `json:"images,omitempty"`
 }
 
 type Message struct {
