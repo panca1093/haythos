@@ -19,10 +19,8 @@ import (
 )
 
 const namespace = "alfred"
-const maxReplayedFileBytes = 8<<10 + 128
 
 var ErrUsageLimit = errors.New("ChatGPT plan usage limit reached, see https://chatgpt.com/settings/usage (no API-key fallback)")
-var errCacheBreakpointRejected = errors.New("ChatGPT rejected the prompt cache breakpoint")
 
 type Config struct {
 	Model   string
@@ -56,20 +54,14 @@ type ModelInfo struct {
 }
 
 type inputItem struct {
-	Type      string `json:"type,omitempty"`
-	Role      string `json:"role,omitempty"`
-	Content   string `json:"content,omitempty"`
-	CallID    string `json:"call_id,omitempty"`
-	Namespace string `json:"namespace,omitempty"`
-	Name      string `json:"name,omitempty"`
-	Arguments string `json:"arguments,omitempty"`
-	Output    any    `json:"output,omitempty"`
-}
-
-type cacheToolText struct {
-	Type       string            `json:"type"`
-	Text       string            `json:"text"`
-	Breakpoint map[string]string `json:"prompt_cache_breakpoint,omitempty"`
+	Type      string  `json:"type,omitempty"`
+	Role      string  `json:"role,omitempty"`
+	Content   string  `json:"content,omitempty"`
+	CallID    string  `json:"call_id,omitempty"`
+	Namespace string  `json:"namespace,omitempty"`
+	Name      string  `json:"name,omitempty"`
+	Arguments string  `json:"arguments,omitempty"`
+	Output    *string `json:"output,omitempty"`
 }
 
 type tool struct {
@@ -86,6 +78,7 @@ type request struct {
 	Instructions string      `json:"instructions,omitempty"`
 	Input        []inputItem `json:"input"`
 	Tools        []tool      `json:"tools,omitempty"`
+	CacheKey     string      `json:"prompt_cache_key,omitempty"`
 	Store        bool        `json:"store"`
 	Stream       bool        `json:"stream"`
 }
@@ -105,7 +98,6 @@ type outputItem struct {
 type apiError struct {
 	Code    string `json:"code"`
 	Message string `json:"message"`
-	Param   string `json:"param"`
 }
 
 type event struct {
@@ -142,6 +134,8 @@ func wireName(n string) (string, error) {
 	return w, nil
 }
 
+func str(s string) *string { return &s }
+
 func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task.ToolSpec) (task.AssistantTurn, error) {
 	token, err := a.c.Session.AccessToken(ctx)
 	if err != nil {
@@ -155,18 +149,12 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 	if err != nil {
 		return task.AssistantTurn{}, err
 	}
+	built.CacheKey = app.CacheKeyFrom(ctx)
 	body, err := json.Marshal(built)
 	if err != nil {
 		return task.AssistantTurn{}, fmt.Errorf("encode request: %w", err)
 	}
 	resp, err := a.do(ctx, http.MethodPost, "/responses", body, token)
-	if errors.Is(err, errCacheBreakpointRejected) && plainToolOutputs(built.Input) {
-		body, err = json.Marshal(built)
-		if err != nil {
-			return task.AssistantTurn{}, fmt.Errorf("encode request without cache breakpoints: %w", err)
-		}
-		resp, err = a.do(ctx, http.MethodPost, "/responses", body, token)
-	}
 	if err != nil {
 		return task.AssistantTurn{}, err
 	}
@@ -182,7 +170,6 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (request, map[string]string, error) {
 	req := request{Model: model, Input: []inputItem{}, Store: false, Stream: true}
 	var system []string
-	fileReads := map[string]bool{}
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
@@ -198,7 +185,6 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 				req.Input = append(req.Input, inputItem{Role: "assistant", Content: m.Text})
 			}
 			for _, c := range m.Calls {
-				fileReads[c.ID] = c.Name == "fs.read"
 				args := string(c.Args)
 				if args == "" {
 					args = "{}"
@@ -212,13 +198,10 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 		case task.RoleTool:
 			for _, r := range m.Results {
 				out := r.Content
-				if fileReads[r.CallID] && len(out) > maxReplayedFileBytes {
-					out = strings.ToValidUTF8(out[:8<<10], "") + "\n[truncated file result; use fs.grep or read a line range]"
-				}
 				if r.IsError {
 					out = "error: " + out
 				}
-				req.Input = append(req.Input, inputItem{Type: "function_call_output", CallID: r.CallID, Output: out})
+				req.Input = append(req.Input, inputItem{Type: "function_call_output", CallID: r.CallID, Output: str(out)})
 			}
 		}
 	}
@@ -245,42 +228,7 @@ func buildRequest(model string, history []task.Message, tools []task.ToolSpec) (
 		}
 		req.Tools = []tool{ns}
 	}
-	if supportsCacheBreakpoints(model) {
-		markToolCacheBreakpoints(req.Input)
-	}
 	return req, names, nil
-}
-
-func supportsCacheBreakpoints(model string) bool {
-	return model == "gpt-5.6" || model == "gpt-6" ||
-		strings.HasPrefix(model, "gpt-5.6-") || strings.HasPrefix(model, "gpt-6-") || strings.HasPrefix(model, "gpt-6.1-")
-}
-
-func markToolCacheBreakpoints(input []inputItem) {
-	remaining := 3
-	for i := len(input) - 1; i >= 0; i-- {
-		item := &input[i]
-		if item.Type != "function_call_output" {
-			continue
-		}
-		block := cacheToolText{Type: "input_text", Text: item.Output.(string)}
-		if remaining > 0 && (i+1 == len(input) || input[i+1].Type != item.Type) {
-			block.Breakpoint = map[string]string{"mode": "explicit"}
-			remaining--
-		}
-		item.Output = []cacheToolText{block}
-	}
-}
-
-func plainToolOutputs(input []inputItem) bool {
-	changed := false
-	for i := range input {
-		if blocks, ok := input[i].Output.([]cacheToolText); ok {
-			input[i].Output = blocks[0].Text
-			changed = true
-		}
-	}
-	return changed
 }
 
 func parseStream(body io.Reader, token string, names map[string]string) (task.AssistantTurn, error) {
@@ -403,10 +351,6 @@ func (a *Adapter) do(ctx context.Context, method, path string, body []byte, toke
 	ae := apiError{Message: e.Detail}
 	if e.Error != nil {
 		ae = *e.Error
-	}
-	if resp.StatusCode == http.StatusBadRequest &&
-		(strings.Contains(ae.Param, "prompt_cache_breakpoint") || strings.Contains(ae.Message, "prompt_cache_breakpoint")) {
-		return nil, fmt.Errorf("%w: %w", errCacheBreakpointRejected, planError(resp.StatusCode, ae, token))
 	}
 	return nil, planError(resp.StatusCode, ae, token)
 }

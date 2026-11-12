@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/task"
 )
 
@@ -98,36 +99,26 @@ func TestStepRequestShape(t *testing.T) {
 	}
 }
 
-func TestToolBatchHasExplicitCacheBoundaryOnGPT61(t *testing.T) {
-	req, _, err := buildRequest("gpt-6.1-sol", history, tools)
-	if err != nil {
-		t.Fatal(err)
+func TestStepSendsTheConversationAsPromptCacheKey(t *testing.T) {
+	t.Parallel()
+	api := newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) { sse(w, completed) })
+	a := newAdapter(t, api, "gpt-x")
+	var keys []any
+	for range 2 {
+		if _, err := a.Step(app.WithCacheKey(context.Background(), "tui:abc"), history, tools); err != nil {
+			t.Fatal(err)
+		}
+		var got map[string]any
+		if err := json.Unmarshal(api.body.Load().([]byte), &got); err != nil {
+			t.Fatal(err)
+		}
+		keys = append(keys, got["prompt_cache_key"])
 	}
-	encoded, err := json.Marshal(req.Input[len(req.Input)-1])
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.Contains(string(encoded), `"prompt_cache_breakpoint":{"mode":"explicit"}`) {
-		t.Fatalf("tool output has no cache boundary: %s", encoded)
+	if keys[0] != "tui:abc" || keys[1] != "tui:abc" {
+		t.Fatalf("prompt_cache_key per step = %v, want the conversation key on every step", keys)
 	}
 	if got := New(Config{Model: "gpt-6.1-sol"}).ContextWindow(); got != 1_000_000 {
 		t.Fatalf("window = %d, want 1M", got)
-	}
-}
-
-func TestLegacyFileReadIsBoundedInChatGPTReplay(t *testing.T) {
-	old := strings.Repeat("x", 20<<10)
-	earlier := []task.Message{
-		{Role: task.RoleAssistant, Context: true, Calls: []task.ToolCall{{ID: "read", Name: "fs.read"}}},
-		{Role: task.RoleTool, Context: true, Results: []task.ToolResult{{CallID: "read", Content: old}}},
-	}
-	req, _, err := buildRequest("gpt-6.1-sol", earlier, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	encoded, err := json.Marshal(req.Input[1])
-	if err != nil || len(encoded) > 9<<10 || !strings.Contains(string(encoded), "truncated") {
-		t.Fatalf("encoded legacy result = %d bytes, %v; want bounded preview", len(encoded), err)
 	}
 }
 
@@ -246,39 +237,6 @@ func TestStepCancel(t *testing.T) {
 	_, err := a.Step(ctx, history, tools)
 	if !errors.Is(err, context.Canceled) || time.Since(start) > 2*time.Second {
 		t.Fatalf("err = %v after %v", err, time.Since(start))
-	}
-}
-
-func TestStepRetriesWithoutCacheBreakpointOnlyWhenRejected(t *testing.T) {
-	t.Parallel()
-	cases := map[string]struct {
-		param     string
-		wantCalls int32
-		wantErr   bool
-	}{
-		"breakpoint rejected": {param: "input[3].output[0].prompt_cache_breakpoint", wantCalls: 2},
-		"other bad request":   {param: "input[0].content", wantCalls: 1, wantErr: true},
-	}
-	for name, tc := range cases {
-		t.Run(name, func(t *testing.T) {
-			t.Parallel()
-			var api *fakeAPI
-			api = newFakeAPI(t, func(w http.ResponseWriter, _ *http.Request) {
-				if api.responses.Load() == 1 {
-					w.WriteHeader(http.StatusBadRequest)
-					_, _ = fmt.Fprintf(w, `{"error":{"code":"invalid_request","message":"unsupported","param":%q}}`, tc.param)
-					return
-				}
-				sse(w, completed)
-			})
-			_, err := newAdapter(t, api, "gpt-6.1-sol").Step(context.Background(), history, tools)
-			if (err != nil) != tc.wantErr || api.responses.Load() != tc.wantCalls {
-				t.Fatalf("err = %v, calls = %d, want err %v and %d calls", err, api.responses.Load(), tc.wantErr, tc.wantCalls)
-			}
-			if !tc.wantErr && strings.Contains(string(api.body.Load().([]byte)), "prompt_cache_breakpoint") {
-				t.Fatalf("retry still carries a cache breakpoint: %s", api.body.Load())
-			}
-		})
 	}
 }
 
