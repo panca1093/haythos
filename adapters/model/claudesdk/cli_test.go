@@ -3,6 +3,7 @@ package claudesdk
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/panca/haythos/core/task"
 )
 
 type fakeRecord struct {
@@ -65,6 +68,14 @@ func TestCLIHelper(t *testing.T) {
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"text":"hi"},"usage":{"input_tokens":3,"output_tokens":2}}`)
 	case "cached":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"ok","usage":{"input_tokens":2,"cache_creation_input_tokens":1458,"cache_read_input_tokens":9000,"output_tokens":53}}`)
+	case "stream":
+		if slices.Contains(args, "--input-format") {
+			fmt.Println(`{"type":"system","subtype":"init"}`)
+			fmt.Println(`{"type":"assistant","message":{"content":[{"type":"text","text":"thinking"}]}}`)
+			fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"text":"red"},"usage":{"input_tokens":3,"output_tokens":2}}`)
+		} else {
+			fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"","structured_output":{"text":"plain"},"usage":{"input_tokens":3,"output_tokens":2}}`)
+		}
 	case "plain":
 		fmt.Println(`{"type":"result","subtype":"success","is_error":false,"result":"plain","usage":{"input_tokens":1,"output_tokens":1}}`)
 	case "error":
@@ -508,5 +519,139 @@ func TestCLIModelsNoResponse(t *testing.T) {
 	defer cancel()
 	if _, err := c.Models(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Errorf("err = %v, want deadline exceeded", err)
+	}
+}
+
+type streamBlock struct {
+	Type   string `json:"type"`
+	Text   string `json:"text"`
+	Source struct {
+		Type      string `json:"type"`
+		MediaType string `json:"media_type"`
+		Data      string `json:"data"`
+	} `json:"source"`
+}
+
+func streamContent(t *testing.T, stdin string) []streamBlock {
+	t.Helper()
+	if strings.Count(strings.TrimSpace(stdin), "\n") != 0 {
+		t.Fatalf("stdin is not one stream-json line: %q", stdin)
+	}
+	var msg struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string        `json:"role"`
+			Content []streamBlock `json:"content"`
+		} `json:"message"`
+	}
+	if err := json.Unmarshal([]byte(stdin), &msg); err != nil {
+		t.Fatalf("stdin is not JSON: %v: %q", err, stdin)
+	}
+	if msg.Type != "user" || msg.Message.Role != "user" {
+		t.Errorf("message type=%q role=%q, want a user message", msg.Type, msg.Message.Role)
+	}
+	return msg.Message.Content
+}
+
+func wantStreamFlags(t *testing.T, args []string, stream bool) {
+	t.Helper()
+	i := slices.Index(args, "--output-format")
+	if i < 0 || i+1 >= len(args) {
+		t.Fatalf("no --output-format in %q", args)
+	}
+	if stream {
+		if args[i+1] != "stream-json" || !slices.Contains(args, "--verbose") || !slices.Contains(args, "--input-format") || args[slices.Index(args, "--input-format")+1] != "stream-json" {
+			t.Errorf("args = %q, want stream-json in and out with --verbose", args)
+		}
+		return
+	}
+	if args[i+1] != "json" || slices.Contains(args, "--input-format") || slices.Contains(args, "--verbose") {
+		t.Errorf("args = %q, want plain --output-format json", args)
+	}
+}
+
+var (
+	pngA = task.Image{MediaType: "image/png", Data: []byte("png-a")}
+	jpgB = task.Image{MediaType: "image/jpeg", Data: []byte("jpg-b")}
+)
+
+func TestCLIStepSendsImagesAsStreamJSON(t *testing.T) {
+	t.Parallel()
+	c, record := fakeCLI(t, "stream")
+	req := StepRequest{System: "s", Prompt: "tools\n[tool result id=c1] shot\n[image 1 from tool call c1]\n[user] what?\n", Schema: json.RawMessage(`{}`), Tools: []string{}, Images: []task.Image{pngA}}
+	resp, err := c.Step(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.Text != `{"text":"red"}` {
+		t.Errorf("text = %q", resp.Text)
+	}
+	rec := readRecord(t, record)
+	wantStreamFlags(t, rec.Args, true)
+	if flag, id := sessionFlag(rec.Args); flag != "--session-id" || !uuidRe.MatchString(id) {
+		t.Errorf("session flag = %s %s", flag, id)
+	}
+	got := streamContent(t, rec.Stdin)
+	if len(got) != 3 || got[0].Type != "text" || got[0].Text != "tools\n[tool result id=c1] shot\n[image 1 from tool call c1]" ||
+		got[1].Type != "image" || got[1].Source.Type != "base64" || got[1].Source.MediaType != "image/png" || got[1].Source.Data != base64.StdEncoding.EncodeToString(pngA.Data) ||
+		got[2].Type != "text" || got[2].Text != "\n[user] what?\n" {
+		t.Errorf("content = %+v", got)
+	}
+}
+
+func TestCLIStepResumedDeltaCarriesOnlyNewImage(t *testing.T) {
+	t.Parallel()
+	c, record := fakeCLI(t, "stream")
+	req := StepRequest{Prompt: "[tool result id=c1] a\n[image 1 from tool call c1]\n", Tools: []string{}, Images: []task.Image{pngA}}
+	step(t, c, req)
+	req.Prompt += "[user] thanks\n"
+	step(t, c, req)
+	req.Prompt += "[tool result id=c2] b\n[image 2 from tool call c2]\n"
+	req.Images = append(req.Images, jpgB)
+	step(t, c, req)
+	recs := readRecords(t, record)
+	if len(recs) != 3 {
+		t.Fatalf("CLI ran %d times, want 3", len(recs))
+	}
+	_, id := sessionFlag(recs[0].Args)
+	for i, rec := range recs[1:] {
+		if flag, got := sessionFlag(rec.Args); flag != "--resume" || got != id {
+			t.Errorf("step %d: %s %s, want --resume %s", i+2, flag, got, id)
+		}
+	}
+	wantStreamFlags(t, recs[1].Args, false)
+	if recs[1].Stdin != "[user] thanks\n" {
+		t.Errorf("text-only delta stdin = %q, want plain text", recs[1].Stdin)
+	}
+	wantStreamFlags(t, recs[2].Args, true)
+	got := streamContent(t, recs[2].Stdin)
+	if len(got) != 3 || got[0].Text != "[tool result id=c2] b\n[image 2 from tool call c2]" ||
+		got[1].Type != "image" || got[1].Source.MediaType != "image/jpeg" || got[1].Source.Data != base64.StdEncoding.EncodeToString(jpgB.Data) ||
+		got[2].Type != "text" || got[2].Text != "\n" {
+		t.Errorf("resumed content = %+v, want only image 2", got)
+	}
+}
+
+func TestParseStreamResult(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, out string
+		ok        bool
+		want      string
+	}{
+		{"takes the result line", "{\"type\":\"system\",\"subtype\":\"init\"}\n{\"type\":\"assistant\",\"message\":{}}\n{\"type\":\"result\",\"subtype\":\"success\",\"is_error\":false,\"result\":\"x\",\"structured_output\":{\"text\":\"red\"},\"usage\":{\"input_tokens\":4,\"cache_read_input_tokens\":3767,\"output_tokens\":2}}\n", true, `{"text":"red"}`},
+		{"no result line", "{\"type\":\"system\",\"subtype\":\"init\"}\n", false, ""},
+		{"empty", "", false, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			res, err := parseStreamResult([]byte(tc.out))
+			if (err == nil) != tc.ok {
+				t.Fatalf("err = %v, want ok=%v", err, tc.ok)
+			}
+			if tc.ok && (string(res.StructuredOutput) != tc.want || res.Usage.CacheRead != 3767 || res.Usage.InputTokens != 4 || res.Subtype != "success") {
+				t.Errorf("res = %+v", res)
+			}
+		})
 	}
 }

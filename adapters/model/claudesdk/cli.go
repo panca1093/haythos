@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -14,7 +15,9 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -191,14 +194,98 @@ func (c *CLI) forget(id string) {
 	}
 }
 
+var placeholderRe = regexp.MustCompile(`\[image (\d+) from tool call [^\]\n]*\]`)
+
+type contentBlock struct {
+	Type   string       `json:"type"`
+	Text   string       `json:"text,omitempty"`
+	Source *imageSource `json:"source,omitempty"`
+}
+
+type imageSource struct {
+	Type      string `json:"type"`
+	MediaType string `json:"media_type"`
+	Data      string `json:"data"`
+}
+
+// streamMessage splits text at image placeholders into one stream-json user message; ok is false when text has none.
+func streamMessage(text string, images []task.Image) (line []byte, ok bool, err error) {
+	var blocks []contentBlock
+	last := 0
+	for _, m := range placeholderRe.FindAllStringSubmatchIndex(text, -1) {
+		n, convErr := strconv.Atoi(text[m[2]:m[3]])
+		if convErr != nil || n < 1 || n > len(images) {
+			continue
+		}
+		// TODO: uncertain — tool output that itself contains a placeholder-shaped string duplicates that image, verify before prod
+		blocks = append(blocks, contentBlock{Type: "text", Text: text[last:m[1]]})
+		img := images[n-1]
+		blocks = append(blocks, contentBlock{Type: "image", Source: &imageSource{Type: "base64", MediaType: img.MediaType, Data: base64.StdEncoding.EncodeToString(img.Data)}})
+		last = m[1]
+	}
+	if len(blocks) == 0 {
+		return nil, false, nil
+	}
+	if last < len(text) {
+		blocks = append(blocks, contentBlock{Type: "text", Text: text[last:]})
+	}
+	msg := struct {
+		Type    string `json:"type"`
+		Message struct {
+			Role    string         `json:"role"`
+			Content []contentBlock `json:"content"`
+		} `json:"message"`
+	}{Type: "user"}
+	msg.Message.Role, msg.Message.Content = "user", blocks
+	line, err = json.Marshal(msg)
+	if err != nil {
+		return nil, false, fmt.Errorf("encode stream-json message: %w", err)
+	}
+	return append(line, '\n'), true, nil
+}
+
+// parseStreamResult takes the last result event from stream-json stdout.
+func parseStreamResult(out []byte) (cliResult, error) {
+	var res cliResult
+	found := false
+	for _, line := range bytes.Split(out, []byte("\n")) {
+		var ev struct {
+			Type string `json:"type"`
+		}
+		if json.Unmarshal(line, &ev) != nil || ev.Type != "result" {
+			continue
+		}
+		if err := json.Unmarshal(line, &res); err != nil {
+			return cliResult{}, fmt.Errorf("decode result line: %w", err)
+		}
+		found = true
+	}
+	if !found {
+		return cliResult{}, errors.New("no result line in stream-json output")
+	}
+	return res, nil
+}
+
 func (c *CLI) run(ctx context.Context, req StepRequest, sessionFlag, id, stdin string) (StepResponse, error) {
-	args := append(slices.Clone(stepArgs), "--system-prompt", req.System, "--json-schema", string(req.Schema))
+	line, stream, err := streamMessage(stdin, req.Images)
+	if err != nil {
+		return StepResponse{}, err
+	}
+	args := slices.Clone(stepArgs)
+	if stream {
+		args = slices.Replace(args, 1, 3, "--input-format", "stream-json", "--output-format", "stream-json", "--verbose")
+	}
+	args = append(args, "--system-prompt", req.System, "--json-schema", string(req.Schema))
 	if req.Model != "" {
 		args = append(args, "--model", req.Model)
 	}
 	cmd := c.command(ctx, c.work, append(args, sessionFlag, id)...)
 	cmd.Env = append(cmd.Env, "CLAUDE_CONFIG_DIR="+c.config)
-	cmd.Stdin = strings.NewReader(stdin)
+	if stream {
+		cmd.Stdin = bytes.NewReader(line)
+	} else {
+		cmd.Stdin = strings.NewReader(stdin)
+	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, runErr := cmd.Output()
@@ -206,7 +293,12 @@ func (c *CLI) run(ctx context.Context, req StepRequest, sessionFlag, id, stdin s
 		return StepResponse{}, fmt.Errorf("claude cli step: %w", ctx.Err())
 	}
 	var res cliResult
-	if err := json.Unmarshal(bytes.TrimSpace(out), &res); err != nil {
+	if stream {
+		res, err = parseStreamResult(out)
+	} else {
+		err = json.Unmarshal(bytes.TrimSpace(out), &res)
+	}
+	if err != nil {
 		if runErr != nil {
 			slog.DebugContext(ctx, "claude cli stderr", "tail", tail(stderr.String()))
 			if strings.Contains(stderr.String(), "No conversation found") {

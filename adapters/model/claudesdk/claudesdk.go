@@ -21,6 +21,8 @@ type StepRequest struct {
 	Schema json.RawMessage `json:"schema"`
 	Tools  []string        `json:"tools"`
 	Model  string          `json:"model,omitempty"`
+	// Images are the pictures behind the prompt's "[image <n> ...]" placeholders, image n at index n-1.
+	Images []task.Image `json:"images,omitempty"`
 }
 
 // ModelInfo is one entry of the SDK's live model list; Value is what goes into StepRequest.Model.
@@ -91,6 +93,7 @@ func (a *Adapter) Step(ctx context.Context, history []task.Message, tools []task
 		Schema: json.RawMessage(outputSchema),
 		Tools:  []string{},
 		Model:  a.Model(),
+		Images: promptImages(history),
 	}
 	var usage task.Usage
 	var lastErr error
@@ -251,6 +254,19 @@ func systemPrompt(history []task.Message) string {
 	return strings.Join(parts, "\n\n")
 }
 
+// promptImages lists tool result images in the order renderPrompt numbers their placeholders.
+func promptImages(history []task.Message) []task.Image {
+	var images []task.Image
+	for _, m := range history {
+		if m.Role == task.RoleTool {
+			for _, r := range m.Results {
+				images = append(images, r.Images...)
+			}
+		}
+	}
+	return images
+}
+
 func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 	var b strings.Builder
 	b.WriteString("Output format: reply with ONLY one JSON object, no prose, no code fences:\n")
@@ -265,6 +281,7 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 		fmt.Fprintf(&b, "- %s: %s\n  input schema: %s\n", t.Name, t.Description, t.InputSchema)
 	}
 	b.WriteString("\nConversation:\n")
+	images := 0
 	for _, m := range history {
 		switch m.Role {
 		case task.RoleSystem:
@@ -287,6 +304,10 @@ func renderPrompt(history []task.Message, tools []task.ToolSpec) string {
 					status = "error"
 				}
 				fmt.Fprintf(&b, "[tool %s id=%s] %s\n", status, r.CallID, r.Content)
+				for range r.Images {
+					images++
+					fmt.Fprintf(&b, "[image %d from tool call %s]\n", images, r.CallID)
+				}
 			}
 		}
 	}

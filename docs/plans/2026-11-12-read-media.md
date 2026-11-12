@@ -102,8 +102,7 @@ The `file.read` description becomes: "Read a file in the chat folder. Text files
 - `// TODO: uncertain`: does the ChatGPT backend (`chatgpt.com/backend-api/codex/responses`) accept an array `output` on `function_call_output`?
   - The public Responses API does, and recent Codex sends `input_image` there.
   - If the backend rejects it, fall back to the openai approach: a user message after the outputs.
-- `// TODO: uncertain`: `claude -p` with `--input-format stream-json` plus `--json-schema` plus `--resume`. Does `structured_output` still come back on the `result` line?
-  - Check with one real call before wiring the tests to that shape.
+- **Verified live (2026-11-12):** `claude -p` with `--input-format stream-json`, `--json-schema` and `--resume` returns `structured_output` on the `result` line. The model named a red test square, and a text-only resume still saw it.
 - Token cost: a 1568 px image is about 1.6k tokens on Claude, and it is replayed on every later step of the conversation. Accepted for now. Compaction at 92% still bounds it.
 
 ## Not in scope
