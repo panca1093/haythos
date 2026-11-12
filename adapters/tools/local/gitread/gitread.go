@@ -233,6 +233,11 @@ func filtersOff(ctx context.Context, dir string) ([]string, error) {
 
 func git(argv ...string) []string { return append(append([]string{}, hardened...), argv...) }
 
+// Run executes git with argv (subcommand first) in dir under the hardened flags and env, keeping at most limit bytes of stdout.
+func Run(ctx context.Context, dir string, limit int, argv ...string) (out string, truncated bool, err error) {
+	return readfile.Run(ctx, dir, git(argv...), hardenedEnv, limit)
+}
+
 func failure(err error) (task.ToolResult, error) {
 	switch {
 	case errors.Is(err, exec.ErrNotFound):
