@@ -331,6 +331,10 @@ func (a *Adapter) do(ctx context.Context, method, path string, body []byte, toke
 		req.Header.Set("Content-Type", "application/json")
 		req.Header.Set("Accept", "text/event-stream")
 	}
+	if key := app.CacheKeyFrom(ctx); key != "" {
+		// ChatGPT takes cache affinity from this header, as Codex sends it; the body key alone gave no hits.
+		req.Header.Set("session-id", key)
+	}
 	resp, err := a.c.HTTP.Do(req)
 	if err != nil {
 		if ctx.Err() != nil {

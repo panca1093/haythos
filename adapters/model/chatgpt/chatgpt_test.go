@@ -18,6 +18,7 @@ import (
 )
 
 type fakeAPI struct {
+	session   atomic.Value
 	srv       *httptest.Server
 	responses atomic.Int32
 	body      atomic.Value
@@ -34,6 +35,7 @@ func newFakeAPI(t *testing.T, handler func(w http.ResponseWriter, r *http.Reques
 		b, _ := io.ReadAll(r.Body)
 		f.body.Store(b)
 		f.auth.Store(r.Header.Get("Authorization"))
+		f.session.Store(r.Header.Get("session-id"))
 		handler(w, r)
 	})
 	mux.HandleFunc("GET /v1/models", func(w http.ResponseWriter, _ *http.Request) {
@@ -113,6 +115,9 @@ func TestStepSendsTheConversationAsPromptCacheKey(t *testing.T) {
 			t.Fatal(err)
 		}
 		keys = append(keys, got["prompt_cache_key"])
+		if h := api.session.Load(); h != "tui:abc" {
+			t.Fatalf("session-id header = %v, want the conversation key: ChatGPT takes cache affinity from it", h)
+		}
 	}
 	if keys[0] != "tui:abc" || keys[1] != "tui:abc" {
 		t.Fatalf("prompt_cache_key per step = %v, want the conversation key on every step", keys)
