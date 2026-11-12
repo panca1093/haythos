@@ -27,6 +27,7 @@ const (
 type Config struct {
 	Home string
 	Deny []string
+	Rg   string
 }
 
 var (
