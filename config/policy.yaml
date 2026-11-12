@@ -4,6 +4,10 @@ tiers:
   file.list: 0
   file.search: 0
   file.read: 0
+  git.status: 0
+  git.diff: 0
+  git.log: 0
+  git.show: 0
   jobs.list: 0
   discord.channels: 0
   discord.post: 2
