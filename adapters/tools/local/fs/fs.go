@@ -2,11 +2,13 @@
 package fs
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	iofs "io/fs"
 	"os"
 	"path/filepath"
 	"sort"
@@ -20,8 +22,11 @@ import (
 )
 
 const (
-	maxRead = 64 << 10
-	maxList = 200
+	maxRead   = 8 << 10
+	maxList   = 200
+	maxScan   = 1 << 20
+	maxVisits = 4000
+	maxSearch = 16 << 20
 )
 
 // Config: Home anchors the always-denied credential folders; Deny adds exact files such as the vault.
@@ -53,17 +58,27 @@ type tool struct{ cfg Config }
 
 func Register(r *local.Registry, cfg Config) {
 	t := tool{cfg: cfg}
-	pathArg := `{"type":"object","properties":{"path":{"type":"string","description":"path relative to the chat folder"}}`
+	pathArg := `{"type":"object","properties":{"path":{"type":"string","description":"path relative to the chat folder"}`
 	r.Register(task.ToolSpec{
 		Name:        "fs.list",
 		Description: "List files and folders in the folder this chat was opened in (or a subfolder). Read-only.",
-		InputSchema: json.RawMessage(pathArg + `}`),
+		InputSchema: json.RawMessage(pathArg + `}}`),
 	}, t.list)
 	r.Register(task.ToolSpec{
 		Name:        "fs.read",
-		Description: "Read a text file inside the folder this chat was opened in. Read-only; large files are truncated.",
-		InputSchema: json.RawMessage(pathArg + `,"required":["path"]}`),
+		Description: "Read up to 8 KiB from a text file. Use fs.grep first and pass a 1-based start_line and end_line for relevant lines.",
+		InputSchema: json.RawMessage(pathArg + `,"start_line":{"type":"integer","minimum":1},"end_line":{"type":"integer","minimum":1}},"required":["path"]}`),
 	}, t.read)
+	r.Register(task.ToolSpec{
+		Name:        "fs.glob",
+		Description: "Find file paths recursively by a shell pattern on the filename, for example *.go. Optional path narrows the folder.",
+		InputSchema: json.RawMessage(pathArg + `,"pattern":{"type":"string"}},"required":["pattern"]}`),
+	}, func(ctx context.Context, raw []byte) (task.ToolResult, error) { return t.search(ctx, raw, false) })
+	r.Register(task.ToolSpec{
+		Name:        "fs.grep",
+		Description: "Find up to 32 lines containing a literal string. Returns path:line:text. Use path and filename pattern to narrow the search.",
+		InputSchema: json.RawMessage(pathArg + `,"query":{"type":"string"},"pattern":{"type":"string"}},"required":["query"]}`),
+	}, func(ctx context.Context, raw []byte) (task.ToolResult, error) { return t.search(ctx, raw, true) })
 }
 
 func refuse(msg string) (task.ToolResult, error) {
@@ -74,47 +89,72 @@ type args struct {
 	Path string `json:"path"`
 }
 
+type scopedPath struct {
+	root, full, rel string
+}
+
+func (p scopedPath) openDir() (*os.Root, error) {
+	expected, err := os.Lstat(p.full)
+	if err != nil || !expected.IsDir() {
+		return nil, errors.New("not a readable folder")
+	}
+	chat, err := os.OpenRoot(p.root)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = chat.Close() }()
+	dir, err := chat.OpenRoot(p.rel)
+	if err != nil {
+		return nil, err
+	}
+	if opened, err := dir.Stat("."); err != nil || !os.SameFile(opened, expected) {
+		_ = dir.Close()
+		return nil, errors.New("folder changed while opening it")
+	}
+	return dir, nil
+}
+
 // resolve returns the real path of rel inside the chat folder, or a reason the model may read.
-func (t tool) resolve(ctx context.Context, raw []byte) (string, string) {
+func (t tool) resolve(ctx context.Context, raw []byte) (scopedPath, string) {
 	root := app.WorkdirFrom(ctx)
 	if root == "" {
-		return "", "this chat has no folder; file tools only work in `haythos chat`"
+		return scopedPath{}, "this chat has no folder; file tools only work in `haythos chat`"
 	}
 	var a args
 	if len(raw) > 0 && json.Unmarshal(raw, &a) != nil {
-		return "", "arguments must be {\"path\": \"...\"}"
+		return scopedPath{}, "arguments must be {\"path\": \"...\"}"
 	}
 	if a.Path == "" {
 		a.Path = "."
 	}
 	if filepath.IsAbs(a.Path) {
-		return "", "use a path relative to the chat folder"
+		return scopedPath{}, "use a path relative to the chat folder"
 	}
 	realRoot, err := filepath.EvalSymlinks(root)
 	if err != nil {
-		return "", "the chat folder is not readable"
+		return scopedPath{}, "the chat folder is not readable"
 	}
 	full, err := filepath.EvalSymlinks(filepath.Join(realRoot, a.Path))
 	if errors.Is(err, os.ErrNotExist) {
-		return "", a.Path + ": not found"
+		return scopedPath{}, a.Path + ": not found"
 	}
 	if err != nil {
-		return "", a.Path + ": not readable"
+		return scopedPath{}, a.Path + ": not readable"
 	}
 	if full, err = onDisk(full); err != nil {
-		return "", a.Path + ": not readable"
+		return scopedPath{}, a.Path + ": not readable"
 	}
 	if realRoot, err = onDisk(realRoot); err != nil {
-		return "", "the chat folder is not readable"
+		return scopedPath{}, "the chat folder is not readable"
 	}
 	rel, err := filepath.Rel(realRoot, full)
 	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", a.Path + ": outside the chat folder"
+		return scopedPath{}, a.Path + ": outside the chat folder"
 	}
 	if t.denied(full) {
-		return "", a.Path + ": not allowed (credential file)"
+		return scopedPath{}, a.Path + ": not allowed (credential file)"
 	}
-	return full, ""
+	return scopedPath{root: realRoot, full: full, rel: rel}, ""
 }
 
 // onDisk rewrites each component of an absolute, symlink-free path to the name stored on disk, because case-insensitive file systems (APFS) open ".ſsh" or ".SSH" as ".ssh".
@@ -228,15 +268,27 @@ func deniedName(name string) bool {
 }
 
 func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
-	full, why := t.resolve(ctx, raw)
+	target, why := t.resolve(ctx, raw)
 	if why != "" {
 		return refuse(why)
 	}
-	resolved, err := os.Lstat(full)
+	var a struct {
+		Start int `json:"start_line"`
+		End   int `json:"end_line"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || a.Start < 0 || a.End < 0 || (a.End > 0 && a.End < a.Start) {
+		return refuse("use a valid 1-based line range")
+	}
+	resolved, err := os.Lstat(target.full)
 	if err != nil || !resolved.Mode().IsRegular() {
 		return refuse("not a regular file")
 	}
-	f, err := os.OpenFile(full, os.O_RDONLY|syscall.O_NONBLOCK, 0) //nolint:gosec // path is confined to the chat folder by resolve
+	root, err := os.OpenRoot(target.root)
+	if err != nil {
+		return refuse("not readable")
+	}
+	defer func() { _ = root.Close() }()
+	f, err := root.OpenFile(target.rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	if err != nil {
 		return refuse("not readable")
 	}
@@ -244,9 +296,15 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	if opened, err := f.Stat(); err != nil || !opened.Mode().IsRegular() || !os.SameFile(opened, resolved) {
 		return refuse("not readable")
 	}
-	b, err := io.ReadAll(io.LimitReader(f, maxRead+1))
-	if err != nil {
-		return refuse("not readable")
+	var b []byte
+	var errRead error
+	if a.Start > 0 || a.End > 0 {
+		b, errRead = readLines(f, max(1, a.Start), a.End)
+	} else {
+		b, errRead = io.ReadAll(io.LimitReader(f, maxRead+1))
+	}
+	if errRead != nil {
+		return refuse(errRead.Error())
 	}
 	truncated := len(b) > maxRead
 	if truncated {
@@ -260,17 +318,165 @@ func (t tool) read(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	}
 	out := string(b)
 	if truncated {
-		out += fmt.Sprintf("\n[truncated at %d KiB]", maxRead>>10)
+		out += fmt.Sprintf("\n[truncated at %d KiB; use fs.grep or request a smaller line range]", maxRead>>10)
 	}
-	return task.ToolResult{Content: task.StripInvisible(out), Untrusted: !sourceExts[strings.ToLower(filepath.Ext(full))]}, nil
+	return task.ToolResult{Content: task.StripInvisible(out), Untrusted: !sourceExts[strings.ToLower(filepath.Ext(target.full))]}, nil
 }
 
-func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
-	full, why := t.resolve(ctx, raw)
+func readLines(f io.Reader, start, end int) ([]byte, error) {
+	bounded := &io.LimitedReader{R: f, N: maxScan + 1}
+	scanner := bufio.NewScanner(bounded)
+	var out []byte
+	for line := 1; scanner.Scan(); line++ {
+		if line < start {
+			continue
+		}
+		if line > start {
+			out = append(out, '\n')
+		}
+		out = append(out, scanner.Bytes()[:min(len(scanner.Bytes()), maxRead+1-len(out))]...)
+		if line == end || len(out) > maxRead {
+			return out, nil
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return nil, fmt.Errorf("cannot read requested lines: %w", err)
+	}
+	if bounded.N == 0 && len(out) <= maxRead {
+		return nil, errors.New("requested range exceeds the 1 MiB scan limit")
+	}
+	return out, nil
+}
+
+func (t tool) search(ctx context.Context, raw []byte, grep bool) (task.ToolResult, error) {
+	var a struct {
+		Path    string `json:"path"`
+		Pattern string `json:"pattern"`
+		Query   string `json:"query"`
+	}
+	if err := json.Unmarshal(raw, &a); err != nil || (grep && a.Query == "") || (!grep && a.Pattern == "") {
+		return refuse("provide a search query or filename pattern")
+	}
+	if a.Pattern == "" {
+		a.Pattern = "*"
+	}
+	if _, err := filepath.Match(a.Pattern, ""); err != nil {
+		return refuse("invalid filename pattern")
+	}
+	target, why := t.resolve(ctx, raw)
 	if why != "" {
 		return refuse(why)
 	}
-	entries, err := os.ReadDir(full)
+	root, err := target.openDir()
+	if err != nil {
+		return refuse("not a readable folder")
+	}
+	defer func() { _ = root.Close() }()
+	var out strings.Builder
+	untrusted := false
+	limit := maxList
+	if grep {
+		limit = 32
+	}
+	visits := 0
+	scanBudget := int64(maxSearch)
+	partial := false
+	err = iofs.WalkDir(root.FS(), ".", func(path string, entry iofs.DirEntry, walkErr error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if walkErr != nil {
+			return walkErr
+		}
+		visits++
+		if visits > maxVisits || limit <= 0 || out.Len() >= maxRead || scanBudget == 0 {
+			return iofs.SkipAll
+		}
+		if path == "." {
+			return nil
+		}
+		if entry.IsDir() {
+			if entry.Name() == ".git" || t.denied(filepath.Join(target.full, path)) {
+				return iofs.SkipDir
+			}
+			return nil
+		}
+		matched, _ := filepath.Match(a.Pattern, entry.Name())
+		if !matched || !entry.Type().IsRegular() || t.denied(filepath.Join(target.full, path)) {
+			return nil
+		}
+		displayPath := filepath.ToSlash(filepath.Join(a.Path, path))
+		if !grep {
+			out.WriteString(displayPath + "\n")
+			limit--
+			return nil
+		}
+		matchedText, incomplete := grepFile(ctx, root, path, displayPath, entry, a.Query, &out, &limit, &scanBudget)
+		partial = partial || incomplete
+		if matchedText && !sourceExts[strings.ToLower(filepath.Ext(path))] {
+			untrusted = true
+		}
+		return nil
+	})
+	if err != nil {
+		return refuse("search stopped: " + err.Error())
+	}
+	text := out.String()
+	if text == "" {
+		text = "No matches."
+	}
+	if len(text) > maxRead || limit == 0 || visits > maxVisits || scanBudget == 0 || partial {
+		text = strings.ToValidUTF8(text[:min(len(text), maxRead)], "") + "\n[search incomplete; narrow path or pattern]"
+	}
+	return task.ToolResult{Content: task.StripInvisible(strings.TrimSuffix(text, "\n")), Untrusted: untrusted}, nil
+}
+
+func grepFile(ctx context.Context, root *os.Root, path, displayPath string, entry iofs.DirEntry, query string, out *strings.Builder, limit *int, scanBudget *int64) (bool, bool) {
+	info, err := entry.Info()
+	if err != nil || !info.Mode().IsRegular() {
+		return false, true
+	}
+	f, err := root.OpenFile(path, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	if err != nil {
+		return false, true
+	}
+	defer func() { _ = f.Close() }()
+	if opened, err := f.Stat(); err != nil || !os.SameFile(opened, info) {
+		return false, true
+	}
+	readLimit := min(int64(maxScan+1), *scanBudget)
+	bounded := &io.LimitedReader{R: f, N: readLimit}
+	scanner := bufio.NewScanner(bounded)
+	scanner.Buffer(make([]byte, 4096), maxScan+2)
+	matched := false
+	for line := 1; *limit > 0 && out.Len() < maxRead && ctx.Err() == nil && scanner.Scan(); line++ {
+		text := scanner.Text()
+		if !utf8.ValidString(text) || strings.ContainsRune(text, 0) {
+			break
+		}
+		if index := strings.Index(text, query); index >= 0 {
+			start := max(0, index-80)
+			text = strings.ToValidUTF8(text[start:min(len(text), start+240)], "")
+			fmt.Fprintf(out, "%s:%d:%s\n", displayPath, line, text)
+			(*limit)--
+			matched = true
+		}
+	}
+	*scanBudget -= readLimit - bounded.N
+	return matched, bounded.N == 0 || scanner.Err() != nil
+}
+
+func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
+	target, why := t.resolve(ctx, raw)
+	if why != "" {
+		return refuse(why)
+	}
+	dir, err := target.openDir()
+	if err != nil {
+		return refuse("not a readable folder")
+	}
+	defer func() { _ = dir.Close() }()
+	entries, err := iofs.ReadDir(dir.FS(), ".")
 	if err != nil {
 		return refuse("not a readable folder")
 	}
@@ -278,11 +484,11 @@ func (t tool) list(ctx context.Context, raw []byte) (task.ToolResult, error) {
 	for _, e := range entries {
 		name := e.Name()
 		if e.IsDir() {
-			if t.denied(filepath.Join(full, name)) {
+			if t.denied(filepath.Join(target.full, name)) {
 				continue
 			}
 			name += "/"
-		} else if t.denied(filepath.Join(full, name)) {
+		} else if t.denied(filepath.Join(target.full, name)) {
 			continue
 		}
 		names = append(names, name)

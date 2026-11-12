@@ -64,11 +64,14 @@ func (f fixture) call(t *testing.T, workdir, tool, args string) task.ToolResult 
 
 func TestSpecsAreReadOnlyAndLeaveTrustToTheResult(t *testing.T) {
 	f := newFixture(t)
-	specs := f.reg.List([]string{"fs.list", "fs.read"})
-	if len(specs) != 2 {
+	specs := f.reg.List([]string{"fs.list", "fs.read", "fs.glob", "fs.grep"})
+	if len(specs) != 4 {
 		t.Fatalf("specs = %+v", specs)
 	}
 	for _, s := range specs {
+		if !json.Valid(s.InputSchema) {
+			t.Errorf("%s has invalid JSON schema: %s", s.Name, s.InputSchema)
+		}
 		if s.Write || s.Untrusted {
 			t.Errorf("%s: write=%v untrusted=%v, want read-only with trust decided per result", s.Name, s.Write, s.Untrusted)
 		}
@@ -164,6 +167,33 @@ func TestReadTruncatesLargeFiles(t *testing.T) {
 	res := f.call(t, f.root, "fs.read", `{"path":"big.txt"}`)
 	if res.IsError || len(res.Content) > maxRead+200 || !strings.Contains(res.Content, "truncated") {
 		t.Fatalf("len=%d error=%v, want at most %d bytes plus a truncation note", len(res.Content), res.IsError, maxRead)
+	}
+}
+
+func TestReadRangeReturnsOnlyRequestedLines(t *testing.T) {
+	f := newFixture(t)
+	if err := os.WriteFile(filepath.Join(f.root, "lines.go"), []byte("first\nsecond\nthird\nfourth\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	res := f.call(t, f.root, "fs.read", `{"path":"lines.go","start_line":2,"end_line":3}`)
+	if res.IsError || res.Content != "second\nthird" {
+		t.Fatalf("result = %+v, want lines 2 through 3", res)
+	}
+}
+
+func TestSearchIsScopedAndReturnsPathsOrMatchingLines(t *testing.T) {
+	f := newFixture(t)
+	glob := f.call(t, f.root, "fs.glob", `{"pattern":"*.go"}`)
+	if glob.IsError || glob.Content != "src/main.go" {
+		t.Fatalf("glob = %+v", glob)
+	}
+	grep := f.call(t, f.root, "fs.grep", `{"query":"package","pattern":"*.go"}`)
+	if grep.IsError || grep.Content != "src/main.go:1:package main" || grep.Untrusted {
+		t.Fatalf("grep = %+v", grep)
+	}
+	hidden := f.call(t, f.root, "fs.grep", `{"query":"secret"}`)
+	if hidden.IsError || strings.Contains(hidden.Content, "TOKEN") {
+		t.Fatalf("grep returned a denied file: %+v", hidden)
 	}
 }
 
