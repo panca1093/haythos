@@ -29,7 +29,7 @@ haythos/
   adapters/
     model/anthropic    # Messages API, API key
     model/openai       # OpenAI-compatible base URL + key
-    model/claudesdk    # client to sidecar/claude-sdk
+    model/claudesdk    # official claude CLI (`claude -p`), one Step per call, no Node
     channel/discord
     channel/ws
     store/sqlite       # event log + action ledger
@@ -40,9 +40,9 @@ haythos/
     vault/file
     config             # YAML config loader
     testfakes          # in-memory fakes of the ports, tests only
-    runtime/acp        # planned: generic ACP client; each runtime (OpenCode, Codex via codex-acp, …) is a config entry
+    runtime/acp        # planned: generic ACP client; each runtime that speaks ACP (OpenCode, Goose, …) is a config entry
     runtime/claudecli  # planned: Claude Code over stream-json + its control protocol, no Node
-  sidecar/claude-sdk/  # TypeScript, one Step per call, stdio JSON-RPC
+    runtime/codexapp   # planned: native `codex app-server`, reusing the acp JSON-RPC client
   jobs/                # job definitions (YAML)
   skills/              # SKILL.md files (agentskills.io format)
   config/
@@ -62,17 +62,17 @@ Dependency rule: `core` imports nothing from `app` or `adapters`. `app` imports 
 | `Vault` | `Resolve(handle) (secret, error)` | file |
 | `Brain` | `Search`, `Think`, `Put` (M2) | gbrain |
 | `Decider` | `Decide` -> answer + confidence (M2) | jev, model fallback |
-| `Runtime` | `Name`, `Capabilities`, `Start` -> `Session` with `Send`, `Approve`, `Events`, `Stop`; events are ACP-shaped (planned) | acp, claudecli |
+| `Runtime` | `Name`, `Capabilities`, `Start` -> `Session` with `Send`, `Approve`, `Events`, `Stop`; events are ACP-shaped (planned) | acp, claudecli, codexapp |
 
 Not interfaces: scheduler, policy, contract, task state machine (single implementation each). User input enters by adapters calling `app.HandleInput` directly.
 
 ## Non-negotiable rules
 
 1. **Two execution paths, nothing in between.** Alfred's own chat runs on the kernel's loop in Go: every provider only implements `Step`, and no provider runs its own tool loop for Alfred. Heavy work is delegated to a runtime through the `Runtime` port. The kernel does not rebuild a runtime's tools or loop, and the kernel's loop does not grow tools to compete with one.
-2. **Every tool call on the kernel's loop goes through the tool gateway.** Gateway order: allowlist → tier → taint → approval (if needed) → ledger `dispatching` → resolve secrets → execute → ledger result → event. A runtime session is not gated per tool call: it runs full auto in a local terminal session with the user's own permissions, except for the guarded actions listed in config (deletes, ssh, …), which the runtime must ask for. The kernel records the session's events, relays those requests to the user and answers them through `Session.Approve`, never by typing into the session. A runtime process gets `HAYTHOS_TASK` and `HAYTHOS_SESSION` in its environment; anything it reports back addresses the session through them, never through a shared file. There is no sandbox; isolation is out of scope until the user asks for it.
+2. **Every tool call on the kernel's loop goes through the tool gateway.** Gateway order: allowlist → tier → taint → approval (if needed) → ledger `dispatching` → resolve secrets → execute → ledger result → event. A runtime session is not gated per tool call: it runs full auto in a local terminal session with the user's own permissions, except that every shell command (and every read of a credential path) is asked of the kernel. The kernel's runtime guard policy decides each request against the guarded list in config (deletes, ssh, …): allow, relay to the user, or deny, and answers through `Session.Approve`, never by typing into the session. The kernel records the session's events. A runtime process gets `HAYTHOS_TASK` and `HAYTHOS_SESSION` in its environment; anything it reports back addresses the session through them, never through a shared file. There is no sandbox; isolation is out of scope until the user asks for it.
 3. **Secrets never enter model context, logs, events, or brain.** The model only sees handles like `secret://github`.
 4. **Tool output is data, not instructions.** Content from Slack, Jira, PRs, web, or files marks the task as tainted. The one exception is source code the owner opened in chat (`file.read` on a known source extension, `file.list` names): it is a trusted source, so saving to memory after reading code needs no approval. Documents, text, config and unknown file types still taint (owner decision, 2026-11-11).
-5. **No OAuth impersonation.** Claude subscription use goes only through the official Agent SDK (sidecar). Never send requests pretending to be Claude Code.
+5. **No OAuth impersonation.** Claude subscription use goes only through the official `claude` CLI, run as a process (the Node sidecar was removed on 2026-11-09). Never send requests pretending to be Claude Code.
 6. **Non-idempotent writes are never blindly retried.**
 7. **Targets (repos, channels, recipients) come from config, never hardcoded.**
 
@@ -111,7 +111,7 @@ Taint: once untrusted content enters a task's context, any write whose target di
 
 Approval binding: an approval stores tool, target, args hash, expiry, and policy version. The gateway revalidates all of them at execution time; any mismatch voids the approval.
 
-Tiers, taint, approval binding and the action ledger cover the kernel's loop only. A runtime session runs full auto. The guarded-action list comes from config; each runtime's config entry (acp) or adapter (claudecli) translates it into that runtime's own permission rules, and a guarded action is relayed to the user on the task's origin channel. The runtime enforces this, not the kernel, so it is a guard rail and not a guarantee.
+Tiers, taint, approval binding and the action ledger cover the kernel's loop only. A runtime session runs full auto for file reads and edits. Each runtime is configured to ask for every shell command; `core/policy` decides each request against the guarded-action list from config, and a guarded action is relayed to the user on the task's origin channel. The decision is the kernel's, but it matches command text and the runtime is the one that stops, so it is a guard rail and not a guarantee.
 
 Starter guarded list: deletes (`rm`, `git clean`, `git reset --hard`, dropping a table or database), remote access (`ssh`, `scp`, `rsync` to another host), `sudo`, force push and push to the default branch, and reading credentials (the vault, `~/.ssh`, `.env` files).
 
