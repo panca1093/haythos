@@ -233,6 +233,8 @@ func Replay(events []Event) (Snapshot, error) {
 			case RoleAssistant:
 				s.Steps++
 			}
+		case EvCheckRun:
+			s.Tainted = true
 		case EvUsage:
 			var u Usage
 			if err := json.Unmarshal(e.Payload, &u); err != nil {
