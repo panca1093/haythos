@@ -400,8 +400,24 @@ func (a *App) concludeDelegated(ctx context.Context, id string, d Delegation, be
 	in := contract.Input{Stop: string(r.res.stop), Rejected: r.rejected, Changed: after != before}
 	v := contract.Evaluate(in)
 	if v.Pass && len(d.Checks) > 0 {
-		if in.Checks, err = a.runChecks(ctx, id, d); err != nil {
+		checkCtx, stop := context.WithCancel(ctx)
+		cancelled := make(chan bool, 1)
+		go func() {
+			select {
+			case <-r.live.cancel:
+				stop()
+				cancelled <- true
+			case <-checkCtx.Done():
+				cancelled <- false
+			}
+		}()
+		in.Checks, err = a.runChecks(checkCtx, id, d)
+		stop()
+		if err != nil {
 			return err
+		}
+		if <-cancelled {
+			return a.fail(ctx, id, "cancelled")
 		}
 		v = contract.Evaluate(in)
 	}
@@ -446,7 +462,7 @@ func (a *App) runChecks(ctx context.Context, id string, d Delegation) ([]contrac
 			res.Err, rec.Err = truncate(err.Error(), 200), truncate(err.Error(), 200)
 		}
 		rec.DurationMS = a.d.Clock().Sub(start).Milliseconds()
-		if _, err := a.d.Events.Append(ctx, id, task.EvCheckRun, rec); err != nil {
+		if _, err := a.d.Events.Append(context.WithoutCancel(ctx), id, task.EvCheckRun, rec); err != nil {
 			return nil, fmt.Errorf("append check run: %w", err)
 		}
 		out = append(out, res)

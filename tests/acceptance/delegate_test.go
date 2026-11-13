@@ -25,6 +25,8 @@ type delegateRig struct {
 	ran      [][]string
 	env      []string
 	checkOut string
+	// checkWait, when set, runs inside RunCheck before it returns.
+	checkWait func(ctx context.Context)
 }
 
 func newDelegateRig(t *testing.T, script func(r *delegateRig) []testfakes.RuntimeStep) *delegateRig {
@@ -47,7 +49,13 @@ func newDelegateRig(t *testing.T, script func(r *delegateRig) []testfakes.Runtim
 		Models: map[string]app.Model{}, Events: st, Ledger: st, Notifier: r.notifier, Vault: testfakes.Vault{},
 		Clock: r.clock.Now, ApprovalTTL: time.Hour, Runtimes: map[string]app.Runtime{"rt": r.runtime}, Guard: guard,
 		WorkdirState: func(context.Context, string) (string, error) { return r.state, nil },
-		RunCheck: func(_ context.Context, _ string, argv, env []string, _ time.Duration) (int, string, error) {
+		RunCheck: func(ctx context.Context, _ string, argv, env []string, _ time.Duration) (int, string, error) {
+			if r.checkWait != nil {
+				r.checkWait(ctx)
+				if ctx.Err() != nil {
+					return -1, "", ctx.Err()
+				}
+			}
 			r.ran, r.env = append(r.ran, argv), env
 			return 0, r.checkOut, nil
 		},
@@ -245,5 +253,47 @@ func TestDelegatedCancelRacingApprovalKeepsTheLogReplayable(t *testing.T) {
 		if _, err := r.app.Snapshot(context.Background(), res.id); err != nil {
 			t.Fatalf("iteration %d: replay: %v", i, err)
 		}
+	}
+}
+
+func TestDelegatedCancelStopsRunningChecks(t *testing.T) {
+	r := newDelegateRig(t, func(r *delegateRig) []testfakes.RuntimeStep { return []testfakes.RuntimeStep{r.changeWorkdir()} })
+	started := make(chan struct{})
+	r.checkWait = func(ctx context.Context) {
+		close(started)
+		select {
+		case <-ctx.Done():
+		case <-time.After(10 * time.Second):
+		}
+	}
+	type result struct {
+		id  string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		id, err := r.run(app.Check{Name: "slow", Argv: []string{"sleep"}, Timeout: time.Hour})
+		done <- result{id, err}
+	}()
+	<-started
+	var taskID string
+	for deadline := time.Now().Add(5 * time.Second); taskID == "" && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if ids, err := r.store.TasksIn(context.Background(), task.Running); err == nil && len(ids) == 1 {
+			taskID = ids[0]
+		}
+	}
+	if err := r.app.CancelDelegated(context.Background(), taskID); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if s := r.snap(res.id); s.State != task.Failed || s.Reason != "cancelled" {
+			t.Errorf("state = %s (%s), want failed: cancelled", s.State, s.Reason)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("cancel did not stop the running check")
 	}
 }
