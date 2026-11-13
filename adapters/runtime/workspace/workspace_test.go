@@ -60,6 +60,7 @@ func TestStateFingerprint(t *testing.T) {
 		{"edit a tracked file", func() { writeFile(t, dir, "a.txt", "two\n") }},
 		{"edit the same dirty file again", func() { writeFile(t, dir, "a.txt", "three\n") }},
 		{"add an untracked file", func() { writeFile(t, dir, "new.txt", "x") }},
+		{"edit an untracked file", func() { writeFile(t, dir, "new.txt", "y") }},
 		{"commit everything", func() { gitIn(t, dir, "add", "."); gitIn(t, dir, "commit", "-qm", "second") }},
 	}
 	seen := map[string]string{clean: "clean"}
@@ -165,4 +166,20 @@ func TestRunCheckTimeoutKillsTheProcessGroup(t *testing.T) {
 		}
 	}
 	t.Errorf("child %d survived the timeout", pid)
+}
+
+func TestStateRunsNoRepoConfiguredCommands(t *testing.T) {
+	dir := newRepo(t)
+	marker := filepath.Join(t.TempDir(), "ran")
+	hook := filepath.Join(t.TempDir(), "fsmonitor.sh")
+	if err := os.WriteFile(hook, []byte("#!/bin/sh\ntouch "+marker+"\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	gitIn(t, dir, "config", "core.fsmonitor", hook)
+	if _, err := State(context.Background(), dir); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Error("State executed core.fsmonitor from the repo config")
+	}
 }

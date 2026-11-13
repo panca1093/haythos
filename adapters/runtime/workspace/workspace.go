@@ -10,6 +10,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -42,10 +43,41 @@ func State(ctx context.Context, dir string) (string, error) {
 			return "", err
 		}
 	}
+	if err := hashUntracked(ctx, dir, h); err != nil {
+		return "", err
+	}
 	return strings.TrimSpace(string(head)) + ":" + hex.EncodeToString(h.Sum(nil))[:16], nil
 }
 
+// hashUntracked adds the content of untracked files, which status lists by name only.
+func hashUntracked(ctx context.Context, dir string, h io.Writer) error {
+	names, err := git(ctx, dir, nil, "ls-files", "-z", "--others", "--exclude-standard")
+	if err != nil {
+		return err
+	}
+	for _, name := range strings.Split(string(names), "\x00") {
+		if name == "" {
+			continue
+		}
+		full := filepath.Join(dir, name)
+		if fi, err := os.Lstat(full); err != nil || !fi.Mode().IsRegular() {
+			continue
+		}
+		f, err := os.Open(full)
+		if err != nil {
+			continue
+		}
+		_, err = io.Copy(h, f)
+		_ = f.Close()
+		if err != nil {
+			return fmt.Errorf("hash untracked %s: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func git(ctx context.Context, dir string, sink io.Writer, args ...string) ([]byte, error) {
+	args = append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}, args...)
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // fixed git subcommands from this file
 	cmd.Dir = dir
 	cmd.Env = append(baseEnv(), "GIT_OPTIONAL_LOCKS=0")
@@ -55,7 +87,7 @@ func git(ctx context.Context, dir string, sink io.Writer, args ...string) ([]byt
 		cmd.Stdout = sink
 	}
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[0], err, strings.TrimSpace(errBuf.String()))
+		return nil, fmt.Errorf("git %s: %w: %s", args[4], err, strings.TrimSpace(errBuf.String()))
 	}
 	return out.Bytes(), nil
 }
