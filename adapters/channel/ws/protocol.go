@@ -18,6 +18,7 @@ const (
 	TypeDecide       = "approval.decide"
 	TypeSessions     = "sessions"
 	TypeModel        = "model"
+	TypeRunJob       = "job.run"
 	TypeWelcome      = "welcome"
 	TypeHistory      = "history"
 	TypeNotice       = "notice"
@@ -50,6 +51,11 @@ type Decide struct {
 	Approve    bool   `json:"approve"`
 }
 
+// RunJob starts a configured job by name; its notices go to the job's own channels, not to this connection.
+type RunJob struct {
+	Name string `json:"name"`
+}
+
 type Sessions struct{}
 
 type SelectModel struct {
@@ -74,6 +80,11 @@ func (f Input) MarshalJSON() ([]byte, error) {
 func (f Decide) MarshalJSON() ([]byte, error) {
 	type plain Decide
 	return typed(TypeDecide, plain(f))
+}
+
+func (f RunJob) MarshalJSON() ([]byte, error) {
+	type plain RunJob
+	return typed(TypeRunJob, plain(f))
 }
 
 func (Sessions) MarshalJSON() ([]byte, error) { return typed(TypeSessions, struct{}{}) }
@@ -112,6 +123,7 @@ type clientFrame struct {
 	TaskID     string `json:"task_id"`
 	ApprovalID string `json:"approval_id"`
 	Approve    bool   `json:"approve"`
+	Name       string `json:"name"`
 }
 
 // Approval is what a client may see of an approval request: never tool arguments beyond the preview.

@@ -95,6 +95,14 @@ func run(args []string) error {
 			return runStatus(ctx, home, os.Stdout)
 		}
 		return runStop(ctx, home, os.Stdout)
+	case "run-job":
+		if len(rest) == 1 {
+			ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+			defer stop()
+			if handled, err := runJobRemote(ctx, home, rest[0], os.Stdout, time.Second); handled {
+				return err
+			}
+		}
 	case "chat", "sessions":
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 		defer stop()
