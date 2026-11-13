@@ -54,10 +54,16 @@ var (
 	defaultAsk   = credentialAsk()
 )
 
+// credentialAsk also guards the runtimes' own config: a planted settings.local.json could grant itself a Bash allow rule.
 func credentialAsk() []string {
 	var rules []string
 	for _, tool := range []string{"Read", "Grep", "Glob"} {
 		for _, p := range []string{"**/.env*", "~/.ssh/**", "~/.aws/**", "~/.netrc", "~/.git-credentials", "~/.gnupg/**"} {
+			rules = append(rules, tool+"("+p+")")
+		}
+	}
+	for _, tool := range []string{"Edit", "Write"} {
+		for _, p := range []string{"**/.claude/**", "**/.codex/**", "**/opencode.json"} {
 			rules = append(rules, tool+"("+p+")")
 		}
 	}

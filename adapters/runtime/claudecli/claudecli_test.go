@@ -264,6 +264,13 @@ func TestSettingsNeverAllowBash(t *testing.T) {
 			}
 		}
 	}
+	for _, tool := range []string{"Edit", "Write"} {
+		for _, p := range []string{"**/.claude/**", "**/.codex/**", "**/opencode.json"} {
+			if rule := tool + "(" + p + ")"; !slices.Contains(got.Permissions.Ask, rule) {
+				t.Errorf("ask rules lack %s", rule)
+			}
+		}
+	}
 	if _, err := New(Config{Allow: []string{"Read", "Bash"}}).Start(context.Background(), app.RuntimeStart{Workdir: t.TempDir()}); err == nil {
 		t.Error("Start accepted a Bash allow rule")
 	}
