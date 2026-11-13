@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/panca/haythos/adapters/channel/ws"
+	"github.com/panca/haythos/app"
 )
 
 type jobRecorder struct {
@@ -71,4 +72,14 @@ func TestRunJobRemote(t *testing.T) {
 			t.Errorf("handled=%v err=%v, want to fall back to a local run", handled, err)
 		}
 	})
+}
+
+func TestRefuseDelegatedInProcess(t *testing.T) {
+	jobs := []app.Job{{Name: "plain"}, {Name: "delegated", Runtime: "oc"}}
+	if err := refuseDelegatedInProcess(jobs, "plain"); err != nil {
+		t.Errorf("plain job refused: %v", err)
+	}
+	if err := refuseDelegatedInProcess(jobs, "delegated"); err == nil {
+		t.Error("delegated job accepted in the in-process fallback")
+	}
 }

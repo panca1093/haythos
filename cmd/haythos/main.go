@@ -279,6 +279,9 @@ func run(args []string) error {
 		if err := a.RestoreSettings(ctx); err != nil {
 			return err
 		}
+		if err := refuseDelegatedInProcess(jobs, rest[0]); err != nil {
+			return err
+		}
 		_, err := a.RunJob(ctx, rest[0])
 		return err
 	case "serve":

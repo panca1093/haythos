@@ -8,7 +8,18 @@ import (
 	"time"
 
 	"github.com/panca/haythos/adapters/channel/ws"
+	"github.com/panca/haythos/app"
 )
+
+// refuseDelegatedInProcess: a delegated job asks for approvals, and this process has no channel to deliver them or tick to expire them.
+func refuseDelegatedInProcess(jobs []app.Job, name string) error {
+	for _, j := range jobs {
+		if j.Name == name && j.Runtime != "" {
+			return fmt.Errorf("job %q is delegated to a runtime and needs a running kernel for its approvals: start `haythos serve` and run it again", name)
+		}
+	}
+	return nil
+}
 
 const runJobDialWait = 2 * time.Second
 
