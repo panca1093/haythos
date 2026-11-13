@@ -348,8 +348,21 @@ func (r *delegatedRun) ask(ctx context.Context, p PermissionRequest, rule string
 	return r.abandon(ctx, ap.ID)
 }
 
-// abandon returns a task whose pending approval will never be answered to running, so it can fail.
+// abandon returns a task whose pending approval will never be answered to running, so it can fail; a decision that landed first wins.
 func (r *delegatedRun) abandon(ctx context.Context, approvalID string) error {
+	unlock := r.a.lock(r.id)
+	defer unlock()
+	select {
+	case <-r.live.decide:
+	default:
+	}
+	s, err := r.a.Snapshot(ctx, r.id)
+	if err != nil {
+		return err
+	}
+	if s.State != task.WaitingApproval {
+		return nil
+	}
 	if _, err := r.a.d.Events.Append(ctx, r.id, task.EvApprovalDecided, approvalDecided{ID: approvalID, Approved: false}); err != nil {
 		return fmt.Errorf("append approval decision: %w", err)
 	}

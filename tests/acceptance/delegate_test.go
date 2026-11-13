@@ -221,3 +221,29 @@ func TestDelegatedGuards(t *testing.T) {
 		<-done
 	})
 }
+
+func TestDelegatedCancelRacingApprovalKeepsTheLogReplayable(t *testing.T) {
+	for i := range 100 {
+		r := newDelegateRig(t, func(r *delegateRig) []testfakes.RuntimeStep {
+			return []testfakes.RuntimeStep{askStep("q1", "execute", "rm x"), r.changeWorkdir()}
+		})
+		type result struct {
+			id  string
+			err error
+		}
+		done := make(chan result, 1)
+		go func() { id, err := r.run(); done <- result{id, err} }()
+		for deadline := time.Now().Add(5 * time.Second); len(r.notifier.Of(app.NoticeApproval)) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		}
+		n := r.notifier.Of(app.NoticeApproval)[0]
+		go func() { _ = r.app.HandleApproval(context.Background(), n.TaskID, n.Approval.Approval.ID, true) }()
+		_ = r.app.CancelDelegated(context.Background(), n.TaskID)
+		res := <-done
+		if res.err != nil {
+			t.Fatalf("iteration %d: run: %v", i, res.err)
+		}
+		if _, err := r.app.Snapshot(context.Background(), res.id); err != nil {
+			t.Fatalf("iteration %d: replay: %v", i, err)
+		}
+	}
+}
