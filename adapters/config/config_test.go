@@ -328,3 +328,35 @@ func writeJob(t *testing.T, body string) string {
 	write(t, dir, "j.yaml", body)
 	return dir
 }
+
+func TestExampleRuntimesBlockAndJobLoad(t *testing.T) {
+	b, err := os.ReadFile("../../config/haythos.example.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var block []string
+	in := false
+	for _, line := range strings.Split(string(b), "\n") {
+		if line == "# runtimes:" {
+			in = true
+		}
+		if in {
+			block = append(block, strings.TrimPrefix(strings.TrimPrefix(line, "#"), " "))
+		}
+	}
+	if len(block) == 0 {
+		t.Fatal("no commented runtimes block in the example config")
+	}
+	path := write(t, t.TempDir(), "haythos.yaml", string(b)+"\n"+strings.Join(block, "\n")+"\n")
+	m, err := LoadMain(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m.Runtimes["opencode"].Kind != "acp" || m.Runtimes["claude"].Kind != "claudecli" {
+		t.Fatalf("runtimes = %+v", m.Runtimes)
+	}
+	jobs, err := LoadJobs("../../jobs/examples", m.Runtimes)
+	if err != nil || len(jobs) != 1 || jobs[0].Runtime != "claude" || jobs[0].Trigger.Cron != "" || !jobs[0].Trigger.Manual {
+		t.Fatalf("example job = %+v, err = %v, want a manual job on the claude alias", jobs, err)
+	}
+}
