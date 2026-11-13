@@ -61,3 +61,93 @@ Measured with CLI 2.1.322: token usage from real calls, and request bodies recor
 - **Live check through the kernel** (three-step job, real token, temporary database): input 5264 / 5847 / 6450 tokens, cache read 0 / 5262 / 5843 (0% / 89% / 90%).
 - **Across messages** (same day): a follow-up message now replays the earlier task's own messages unchanged (M2B-1 amended), so its first step extends the last prompt of the previous message. Live check, two messages with a file read: 53% / 55% on the first message, **94%** on the second message's first step.
 - **Still open.** The CLI adds the Claude account's email to every prompt in its own context block.
+
+## 8. Runtime spike (2026-11-13)
+Phase 0 of `docs/plans/2026-11-13-runtime-acp.md`. Code: `tests/spike/` (`//go:build integration`; `SPIKE_OUT=<dir>` writes the full frame transcript per test). Run: `go test -tags integration ./tests/spike/ -run 'TestOpencodeACP|TestClaude|TestCodex' -v`. Versions: opencode 2.1.3, claude 2.1.323 (haiku), codex-cli 0.166.0. Every runtime ran in a fresh `git init` scratch repo; child env was PATH, HOME, HAYTHOS_TASK, HAYTHOS_SESSION plus **USER** (see surprises). Prompts: append a line to README, then `rm victim.txt` with the answer denied.
+
+### opencode (`opencode acp`)
+Newline-delimited JSON-RPC 2.0 on stdio. Trimmed transcript:
+```
+-> initialize {protocolVersion:1, clientCapabilities:{fs:{readTextFile:false,writeTextFile:false}, terminal:false}}
+<- result {protocolVersion:1, agentInfo:{name:"OpenCode",version:"2.1.3"}, authMethods:[{id:"opencode-login"}],
+           agentCapabilities:{loadSession:true, promptCapabilities:{image:true,embeddedContext:true},
+             mcpCapabilities:{http:true,sse:false}, sessionCapabilities:{fork,list,resume,close,delete,additionalDirectories}}}
+-> session/new {cwd, mcpServers:[]}
+<- result {sessionId:"ses_…", configOptions:[{id:"model",category:"model",type:"select",currentValue,options:[…]},
+                                             {id:"mode",category:"mode",currentValue:"build",options:[build,…]}]}
+-> session/set_model                 <- error -32601 Method not found
+-> session/set_config_option {sessionId, configId:"model", value:"opencode/deepseek-v4.1-flash-free"}   <- result {configOptions}
+-> session/prompt {sessionId, prompt:[{type:"text",text:"Append the line …"}]}
+<- session/update agent_thought_chunk | tool_call {kind:"execute",status:"pending"} | tool_call_update {status:"in_progress"|"completed"|"failed", title:"printf … >> README.md", rawInput}
+<- session/update agent_message_chunk {messageId, content:{type:"text",text:"done"}} | usage_update {used,size,cost} | available_commands_update
+<- result {stopReason:"end_turn", usage:{inputTokens:7741,outputTokens:133,cachedReadTokens:19840,totalTokens:27737}}
+```
+- Stop reasons seen: `end_turn`; **`cancelled` after a rejected permission** (the whole turn ends, the model gets no chance to explain).
+- Guarded action: the agent sends a **request** `session/request_permission {sessionId, toolCall:{toolCallId,name:"shell",title:"rm victim.txt",kind:"execute",rawInput:{command,cwd}}, options:[{optionId:"once",kind:"allow_once"},{optionId:"always",kind:"allow_always"},{optionId:"reject",kind:"reject_once"}]}`; the reply is `{outcome:{outcome:"selected",optionId:"reject"}}`. Rejected: `victim.txt` survived, `tool_call_update status:"failed"`, then `stopReason:"cancelled"`. The model's own update of the title only carries the command once the tool is `in_progress`.
+- **Guard config:** yes, with config only. `OPENCODE_CONFIG_CONTENT` (JSON, read from the env) with `permission.bash: {"*":"allow","rm *":"ask","git reset --hard*":"ask","ssh *":"ask","sudo *":"ask","git push --force*":"ask"}`, `edit:"allow"`, `read:{"*":"allow","*.env":"ask"}`. The README append ran with no prompt; `rm victim.txt` asked. Not verified: that a compound `cd x && rm y` or a `cat .env` through bash is caught (only `rm` and the plain append were probed); the `read` ask rule for `.env` and `~/.ssh` was not exercised; the opencode default with no config was not run.
+- Spec check (agentclientprotocol.com, 2026-11-13): docs are under `protocol/v1`; baseline methods `initialize`, `authenticate`, `session/new`, `session/prompt`, `session/cancel`, `session/request_permission`; optional `session/load`, `session/set_mode`. The docs say `session/set_mode` "will be removed in a future version" in favour of Session Config Options, and `session/set_model` is not in the docs. opencode agrees: **`session/set_model` does not exist, model and mode are `configOptions` set through `session/set_config_option`** (opencode returns the full `configOptions` list again).
+- Auth: the default model (`opencode/gemini-4-hydrogen`) failed with `-32603 provider.quota` (Console balance) and `openai/*` with `-32000 Authentication required`. A free zen model worked. A deepseek key lives in the owner's env; it was deliberately not forwarded into the child env. Auth failures come back as an error response to `session/prompt`, not a stop reason.
+
+### claude (stream-json both ways)
+Args: `-p --input-format stream-json --output-format stream-json --verbose --permission-prompt-tool stdio --model haiku --setting-sources "" --no-session-persistence --settings '<json>'`. `--permission-prompt-tool` is accepted although it is not in `--help` (help lists `--permission-prompts host|none`, default `host`).
+```
+-> {"type":"control_request","request_id":"init-1","request":{"subtype":"initialize"}}
+<- {"type":"control_response","response":{"subtype":"success","request_id":"init-1","response":{"commands":[…],"models":[…]}}}
+-> {"type":"user","message":{"role":"user","content":[{"type":"text","text":"Run `rm victim.txt` …"}]}}
+<- {"type":"system","subtype":"init","session_id":…,"tools":[…]}            (arrives after the first user message, not after initialize)
+<- {"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"rm victim.txt"}}]}}
+<- {"type":"control_request","request_id":"9279…","request":{"subtype":"can_use_tool","tool_name":"Bash","display_name":"Bash",
+     "input":{"command":"rm victim.txt","description":"…"},"decision_reason_type":"rule","decision_reason_rule_source":"flagSettings","tool_use_id":"toolu_…"}}
+-> {"type":"control_response","response":{"subtype":"success","request_id":"9279…","response":{"behavior":"deny","message":"denied by spike"}}}
+<- {"type":"result","subtype":"success","is_error":false,"stop_reason":"end_turn","terminal_reason":"completed","num_turns":2,"result":"The command was denied…"}
+```
+- Allow reply: `{"behavior":"allow","updatedInput":<the input>}`. Result frames seen: `subtype:success, stop_reason:end_turn, terminal_reason:completed`; after an interrupt `subtype:error_during_execution, is_error:true, stop_reason:tool_use, terminal_reason:aborted_streaming`.
+- **Deny keeps the turn going**: the model sees the denial message and answers (unlike opencode's `cancelled`). A denied turn is a normal `success` result, so the contract (diff present) is what has to catch it.
+- Interrupt: `{"type":"control_request","request_id":"int-1","request":{"subtype":"interrupt"}}` → `control_response {still_queued:[]}`, a `user` frame "[Request interrupted by user]", then the `result` above. The process stays alive and the stdin loop is still usable (a `commands_changed` system frame follows). Caveat: the test raced a tool the CLI blocked on its own (standalone `sleep 60`), so interrupt of a long-running tool was not isolated.
+- **Open question 1 (guard translation), tested:**
+  - Permission mode `default` (or `acceptEdits`) + `permissions.allow:["Bash","Read","Edit","Write"]` + `permissions.ask:["Bash(rm *)","Bash(git reset --hard*)","Bash(ssh *)","Bash(sudo *)","Bash(git push --force*)","Read(./.env)","Read(~/.ssh/**)"]` via `--settings`: README edit with **no** `can_use_tool`; `rm victim.txt` (the model sent `cd "<dir>" && rm victim.txt`, so compound commands are matched per subcommand) **asked**; the `Read` tool on `.env` **asked**. So full auto except a list works with ask rules alone.
+  - **`bypassPermissions` ignores `ask` rules**: `rm victim.txt` ran with no request and the file was deleted (scratch repo only). Do not use bypass for the runtime path.
+  - `Read(./.env)` does **not** cover `cat .env` through Bash: in a fresh session the model printed the file and nothing was asked. Adding `Bash(*.env*)` and `Bash(*.ssh*)` ask rules made it ask. A `PreToolUse` hook (command printing `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"ask","permissionDecisionReason":"…"}}` for any Bash input matching `\.env|\.ssh`) also made it ask, and the request still arrived as `can_use_tool`. **Answer: no hook is needed for the starter list; ask rules cover it. Reading credentials through arbitrary shell commands is only best-effort pattern matching (rules or a hook, same strength).** Not verified: `ssh`, `sudo`, `git reset --hard` and force push were not run (only `rm` and `.env`), and the user's real `~/.claude` settings were switched off (`--setting-sources ""`), so interaction with the owner's own allow rules is untested.
+
+### codex (`codex app-server`, native)
+JSON-RPC on stdio; frames omit `"jsonrpc":"2.0"`. Trimmed transcript:
+```
+-> initialize {clientInfo:{name,version}, capabilities:{experimentalApi:true}}   <- result {codexHome, platformOs, userAgent}
+-> notification {"method":"initialized"}
+-> thread/start {cwd, approvalPolicy:"untrusted", sandbox:"workspace-write", ephemeral:true}   <- result {thread:{id}, approvalPolicy, sandbox:{type:"workspaceWrite",…}}
+-> turn/start {threadId, input:[{type:"text",text:"…"}]}
+<- thread/started, turn/started {turn:{status:"inProgress"}}, item/started, item/agentMessage/delta, item/completed, thread/tokenUsage/updated, hook/started …
+<- REQUEST item/commandExecution/requestApproval {id:0, params:{kind:"command", command:"/bin/zsh -lc 'rm victim.txt'", cwd, itemId, turnId,
+     availableDecisions:["accept",{acceptWithExecpolicyAmendment:{…}},"cancel"], proposedExecpolicyAmendment:["rm","victim.txt"]}}
+-> {"id":0,"result":{"decision":"decline"}}        <- serverRequest/resolved, item/completed {status:"declined"}
+<- turn/completed {turn:{status:"completed", durationMs:9626, items:[{type:"agentMessage",text:"Not done: the shell command was rejec…"}]}}
+```
+- Turn end = `turn/completed`; its `status` was `completed` also after a decline (same shape as claude: a decline is not a stop reason). Other server requests in the schema: `item/fileChange/requestApproval`, `item/permissions/requestApproval`.
+- `decline` is accepted although `availableDecisions` only listed `accept`/`cancel`: the item ended `declined` and `victim.txt` survived. Decision names come from the generated schema (`codex app-server generate-json-schema --experimental`): `accept`, `acceptForSession`, `acceptWithExecpolicyAmendment`, `decline`, `cancel`.
+- **Guard config:** `approvalPolicy` is `untrusted | on-request | never` (+ granular object), `sandbox` is `read-only | workspace-write | danger-full-access`. `untrusted` asks for almost every command (the README append asked too), so it is not "full auto except a list". What works: **exec-policy rules** in `<cwd>/.codex/rules/*.rules` (project trusted via `-c 'projects."<dir>".trust_level="trusted"'`): `prefix_rule(pattern=["rm"], decision="prompt", justification="guarded: delete")` with `approvalPolicy:"on-request"` and `sandbox:"danger-full-access"`. The README append ran with no request; `rm victim.txt` asked with `reason: "… requires approval: guarded: delete"` and `availableDecisions:["accept","cancel"]`. Not verified: the same rules from `$CODEX_HOME/rules` (would need an isolated CODEX_HOME with the owner's login, not done), the other starter patterns, reading `.env`/`~/.ssh` (a prefix rule on the executable cannot see file arguments of `cat`; a rule `["cat", ".env"]` would be exact-prefix only), and `turn/interrupt`.
+- Not isolated: the child used the owner's real `~/.codex`; its hooks ran (15 `hook/started` frames) and 46 `mcpServer/startupStatus/updated` notifications arrived. A production adapter needs an isolated `CODEX_HOME` as in section 6.
+
+### Codex path: codex-acp vs native `codex app-server`
+Research only for codex-acp (nothing installed; the repos' GitHub pages fetched 2026-11-13, so details below are what those pages say):
+- `zed-industries/codex-acp` is **archived (read-only since 2026-07-22)**; development moved to `agentclientprotocol/codex-acp`, "built on the new Codex App Server". That repo is **Node/TypeScript** (npm scripts, vitest), run with `npx -y @agentclientprotocol/codex-acp` or a global npm install; it bundles a compatible `@openai/codex` dependency (`CODEX_PATH` overrides it) and can be built into standalone binaries (`npm run bundle:all`). The older Zed one was a Rust binary. Release cadence and latest version: not verified (the releases section was empty in the fetch; release-please plus `@preview` tags on every push to main suggest fast-moving). 81 open issues, 646 commits.
+- Permissions: modes `read-only`, `workspace-write`, `agent`, `agent-full-access`, `permission-profile:<id>`; requests surface as ACP `session/request_permission`. Details not verified.
+- Cost comparison:
+
+| | codex-acp via `runtime/acp` | native `codex app-server` |
+|---|---|---|
+| Kernel code | one config entry (command, args, mode map) | a third adapter `runtime/codexappserver` (~JSON-RPC client + mapping; the client loop is the same as `acp`, the method names and approval shapes differ) |
+| New dependency on the host | Node + npm package (the sidecar was removed on 2026-11-09 to get rid of Node), or a self-built bundle | none: the `codex` binary already installed |
+| Moving parts | ACP adapter wrapping app-server wrapping the model | app-server only |
+| Guard | `session/request_permission` + mode map; the guard-rule translation is codex-acp's own mode names (coarse) | exec-policy `prompt` rules in `.codex/rules` + `on-request` + `danger-full-access`, tested; finer than modes |
+| Maturity | unverified, young repo that just changed owners | the protocol is marked experimental by Codex (`generate-json-schema --experimental`), pinned by the installed version |
+
+Recommendation: **native `codex app-server` as a third adapter, after phases 2 and 3**, not codex-acp. The adapter would reuse the stdio JSON-RPC client written for `acp`, so the cost is a mapping layer (`item/*` and `turn/*` to the `RuntimeEvent` kinds, `item/commandExecution/requestApproval` to `permission_request`, `Approve` answering with `accept`/`decline`). It avoids a Node dependency and an unverified adapter, and the guard translation was tested here. This contradicts the plan's "start with codex-acp" and open question 3 (decision 1 said two adapters; this makes three), so it needs the owner's decision. If a third adapter is rejected, codex-acp stays the fallback and would need its own spike (Node install, permission modes) that was not done.
+
+### Surprises / for the plan
+1. Claude on macOS needs **`USER`** in the child env to find its keychain login (`PATH`+`HOME` alone gives "Not logged in"); the `CLAUDE_CODE_OAUTH_TOKEN` path used by `claudesdk` avoids it. Add `USER` (not a secret) to the child-env list, or document the token path.
+2. ACP model/mode switching is `session/set_config_option`, not `session/set_model`/`set_mode`; the port's `Model, Mode` fields should map to config option ids discovered in `session/new`.
+3. opencode ends a rejected turn with `stopReason:"cancelled"`; claude and codex continue the turn. `RunDelegated` must not read `cancelled` as a user cancel when it came from our own reject.
+4. `bypassPermissions` ignores claude `ask` rules: never the runtime mode.
+5. Claude's `Read(.env)` rule does not guard `cat .env`; every runtime's credential-read guard is pattern-matching on commands and is a guard rail, as rule 2 already says.
+6. Claude's `system init` frame arrives after the first user message; the `initialize` control response carries `commands` and `models` before it.
+7. Not run: `session/load`/resume on any runtime, images, session cancel (`session/cancel`) on opencode, `turn/interrupt` on codex, and long-running multi-turn behaviour.
