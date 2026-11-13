@@ -6,12 +6,14 @@ import (
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/runtime/acp"
 	"github.com/panca/haythos/adapters/runtime/claudecli"
+	"github.com/panca/haythos/adapters/runtime/codexapp"
 	"github.com/panca/haythos/core/policy"
 )
 
 func TestBuildRuntimes(t *testing.T) {
 	cfg := config.Main{Runtimes: map[string]config.Runtime{
 		"oc": {Kind: "acp", Command: "opencode", Args: []string{"acp"}},
+		"cx": {Kind: "codexapp", Command: "codex"},
 		"cc": {Kind: "claudecli", Command: "claude", Model: "haiku", Guard: []policy.GuardRule{{Name: "no-curl", Kinds: []string{policy.KindExecute}, Command: true, Pattern: `^curl\b`, Action: policy.Deny}}},
 	}}
 	rts, guards, err := buildRuntimes(cfg)
@@ -24,6 +26,9 @@ func TestBuildRuntimes(t *testing.T) {
 	if _, ok := rts["cc"].(*claudecli.Runtime); !ok {
 		t.Errorf("cc = %T, want a claudecli runtime", rts["cc"])
 	}
+	if _, ok := rts["cx"].(*codexapp.Runtime); !ok || rts["cx"].Name() != "cx" {
+		t.Errorf("cx = %T, want a codexapp runtime named after its alias", rts["cx"])
+	}
 	req := func(text string) policy.GuardRequest {
 		return policy.GuardRequest{Kind: policy.KindExecute, Text: text}
 	}
@@ -33,6 +38,7 @@ func TestBuildRuntimes(t *testing.T) {
 	}{
 		{"oc", "rm -rf x", policy.Ask},
 		{"oc", "curl example.test", policy.Allow},
+		{"cx", "rm -rf x", policy.Ask},
 		{"cc", "rm -rf x", policy.Ask},
 		{"cc", "curl example.test", policy.Deny},
 	} {

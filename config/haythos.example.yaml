@@ -40,3 +40,8 @@ discord:
 #     model: haiku
 #     workdirs:
 #       scratch: /absolute/path/to/scratch-repo
+#   codex:
+#     kind: codexapp        # native `codex app-server`; each session gets a throwaway CODEX_HOME with only auth.json linked
+#     command: codex
+#     workdirs:
+#       scratch: /absolute/path/to/scratch-repo

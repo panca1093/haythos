@@ -53,7 +53,7 @@ type Runtime struct {
 }
 
 // RuntimeKinds are the kinds buildRuntimes in cmd/haythos can construct.
-var RuntimeKinds = []string{"acp", "claudecli"}
+var RuntimeKinds = []string{"acp", "claudecli", "codexapp"}
 
 func (r Runtime) GuardRules() []policy.GuardRule {
 	if r.StarterGuard != nil && !*r.StarterGuard {
