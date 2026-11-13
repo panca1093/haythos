@@ -138,6 +138,12 @@ func (a *App) sweepApproval(ctx context.Context, id string) error {
 	if a.d.Clock().Before(rec.Approval.Expiry) {
 		return a.notifyApproval(ctx, id, rec)
 	}
+	if live, ok := a.live.Load(id); ok {
+		return a.answerDelegated(ctx, id, live.(*delegated), rec, false)
+	}
+	if s.Created.Runtime != "" {
+		return nil
+	}
 	if err := a.setState(ctx, id, task.Running, "approval expired"); err != nil {
 		return err
 	}

@@ -72,6 +72,7 @@ type App struct {
 	gw       *gateway.Gateway
 	paused   atomic.Bool
 	locks    sync.Map
+	live     sync.Map
 	settings map[string]setting
 }
 
@@ -235,6 +236,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := a.failLostSessions(ctx); err != nil {
+		return err
+	}
+
 	for _, st := range []task.State{task.Pending, task.Running} {
 		ids, err := a.d.Events.TasksIn(ctx, st)
 		if err != nil {
@@ -384,6 +389,9 @@ func (a *App) run(ctx context.Context, id string) error {
 		if err != nil {
 			return err
 		}
+		if s.Created.Runtime != "" && !s.State.Terminal() {
+			return fmt.Errorf("run task %s: %w", id, ErrDelegated)
+		}
 		switch s.State {
 		case task.Done, task.Failed, task.WaitingApproval, task.Watching:
 			return nil
@@ -524,6 +532,12 @@ func (a *App) HandleApproval(ctx context.Context, taskID, approvalID string, app
 	req, ok := findRequest(events, approvalID)
 	if !ok {
 		return fmt.Errorf("approval %s not found on task %s", approvalID, taskID)
+	}
+	if live, ok := a.live.Load(taskID); ok {
+		return a.answerDelegated(ctx, taskID, live.(*delegated), req, approve)
+	}
+	if s.Created.Runtime != "" {
+		return fmt.Errorf("task %s: its runtime session is gone: %w", taskID, ErrDelegated)
 	}
 	if _, err := a.d.Events.Append(ctx, taskID, task.EvApprovalDecided, approvalDecided{ID: approvalID, Approved: approve}); err != nil {
 		return fmt.Errorf("append approval decision: %w", err)
