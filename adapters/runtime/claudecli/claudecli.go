@@ -51,8 +51,18 @@ type Config struct {
 
 var (
 	defaultAllow = []string{"Read", "Edit", "Write", "Glob", "Grep", "NotebookEdit"}
-	defaultAsk   = []string{"Read(./.env)", "Read(~/.ssh/**)"}
+	defaultAsk   = credentialAsk()
 )
+
+func credentialAsk() []string {
+	var rules []string
+	for _, tool := range []string{"Read", "Grep", "Glob"} {
+		for _, p := range []string{"**/.env*", "~/.ssh/**", "~/.aws/**", "~/.netrc", "~/.git-credentials", "~/.gnupg/**"} {
+			rules = append(rules, tool+"("+p+")")
+		}
+	}
+	return rules
+}
 
 type Runtime struct{ cfg Config }
 

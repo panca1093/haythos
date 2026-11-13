@@ -29,7 +29,7 @@ discord:
 #     mode: ""
 #     pass_env: []
 #     env:
-#       - 'OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"ask"},"edit":"allow","read":{"*":"allow"}}}'
+#       - 'OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"ask"},"edit":{"*":"allow","*opencode.json":"ask","*.opencode/*":"ask"},"read":{"*":"allow","*.env":"ask","*.env.*":"ask","*/.ssh/*":"ask","*/.aws/*":"ask","*/.netrc":"ask","*/.git-credentials":"ask","*/.gnupg/*":"ask"}}}'
 #     workdirs:
 #       scratch: /absolute/path/to/scratch-repo
 #     guard:

@@ -11,8 +11,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/go-cmp/cmp"
-
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/tests/runtimecontract"
 )
@@ -259,8 +257,12 @@ func TestSettingsNeverAllowBash(t *testing.T) {
 			t.Errorf("allow rule %q lets a shell command skip the guard", a)
 		}
 	}
-	if diff := cmp.Diff([]string{"Read(./.env)", "Read(~/.ssh/**)"}, got.Permissions.Ask); diff != "" {
-		t.Errorf("ask rules (-want +got):\n%s", diff)
+	for _, tool := range []string{"Read", "Grep", "Glob"} {
+		for _, p := range []string{"**/.env*", "~/.ssh/**", "~/.aws/**", "~/.netrc", "~/.git-credentials", "~/.gnupg/**"} {
+			if rule := tool + "(" + p + ")"; !slices.Contains(got.Permissions.Ask, rule) {
+				t.Errorf("ask rules lack %s", rule)
+			}
+		}
 	}
 	if _, err := New(Config{Allow: []string{"Read", "Bash"}}).Start(context.Background(), app.RuntimeStart{Workdir: t.TempDir()}); err == nil {
 		t.Error("Start accepted a Bash allow rule")
