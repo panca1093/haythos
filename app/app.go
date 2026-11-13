@@ -61,6 +61,8 @@ type Deps struct {
 	Runtimes map[string]Runtime
 	// Guard decides every permission request of a delegated session; the zero Guard allows all.
 	Guard policy.Guard
+	// Guards override Guard for the runtime aliases they name.
+	Guards map[string]policy.Guard
 	// WorkdirState fingerprints a workdir (HEAD plus uncommitted changes); a different value after a session means it changed.
 	WorkdirState func(ctx context.Context, dir string) (string, error)
 	// RunCheck runs argv in dir with env added to a minimal base; err is a start error or a timeout.
@@ -71,6 +73,7 @@ type App struct {
 	d        Deps
 	gw       *gateway.Gateway
 	paused   atomic.Bool
+	bg       sync.WaitGroup
 	locks    sync.Map
 	live     sync.Map
 	settings map[string]setting
@@ -750,6 +753,9 @@ func truncate(s string, n int) string {
 
 func (a *App) RunJob(ctx context.Context, name string) (string, error) {
 	for _, j := range a.d.Jobs {
+		if j.Name == name && j.Runtime != "" {
+			return a.RunDelegated(ctx, j, delegationOf(j))
+		}
 		if j.Name == name {
 			id, err := a.CreateTask(ctx, j, "Run the scheduled job: "+j.Name)
 			if err != nil {

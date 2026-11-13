@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 	"unicode/utf8"
 
@@ -68,6 +69,9 @@ type checkRun struct {
 type contractVerdict struct {
 	Pass   bool   `json:"pass"`
 	Reason string `json:"reason,omitempty"`
+	// Before and After are the workdir fingerprints around the session.
+	Before string `json:"before"`
+	After  string `json:"after"`
 }
 
 type delegatedDecision struct{ approve bool }
@@ -90,14 +94,9 @@ func (f delegateFailure) Error() string { return f.reason }
 
 // RunDelegated runs job on a runtime and blocks until the task is done or failed.
 func (a *App) RunDelegated(ctx context.Context, job Job, d Delegation) (string, error) {
-	rt, ok := a.d.Runtimes[d.Runtime]
-	switch {
-	case !ok:
-		return "", fmt.Errorf("run delegated: runtime %q is not configured", d.Runtime)
-	case a.d.WorkdirState == nil:
-		return "", errors.New("run delegated: no workdir probe configured")
-	case len(d.Checks) > 0 && a.d.RunCheck == nil:
-		return "", errors.New("run delegated: checks declared but no check runner configured")
+	rt, err := a.delegateTarget(d)
+	if err != nil {
+		return "", err
 	}
 	job.Runtime = d.Runtime
 	id, err := a.createTask(ctx, newID(job.Name), job, d.Prompt, d.ReplyTo, d.Workdir)
@@ -105,6 +104,26 @@ func (a *App) RunDelegated(ctx context.Context, job Job, d Delegation) (string, 
 		return "", err
 	}
 	return id, a.runDelegated(ctx, id, rt, d)
+}
+
+func (a *App) delegateTarget(d Delegation) (Runtime, error) {
+	rt, ok := a.d.Runtimes[d.Runtime]
+	switch {
+	case !ok:
+		return nil, fmt.Errorf("run delegated: runtime %q is not configured", d.Runtime)
+	case a.d.WorkdirState == nil:
+		return nil, errors.New("run delegated: no workdir probe configured")
+	case len(d.Checks) > 0 && a.d.RunCheck == nil:
+		return nil, errors.New("run delegated: checks declared but no check runner configured")
+	}
+	return rt, nil
+}
+
+func (a *App) guardFor(alias string) policy.Guard {
+	if g, ok := a.d.Guards[alias]; ok {
+		return g
+	}
+	return a.d.Guard
 }
 
 // CancelDelegated stops the live session of a delegated task; the task then fails as cancelled.
@@ -142,7 +161,7 @@ func (a *App) runDelegated(ctx context.Context, id string, rt Runtime, d Delegat
 		return fmt.Errorf("append runtime session: %w", err)
 	}
 
-	r := &delegatedRun{a: a, id: id, sess: sess, live: live, sendDone: make(chan sendResult, 1)}
+	r := &delegatedRun{a: a, id: id, alias: d.Runtime, sess: sess, live: live, sendDone: make(chan sendResult, 1)}
 	go func() {
 		stop, err := sess.Send(ctx, d.Prompt)
 		r.sendDone <- sendResult{stop, err}
@@ -166,6 +185,7 @@ func (a *App) runDelegated(ctx context.Context, id string, rt Runtime, d Delegat
 type delegatedRun struct {
 	a        *App
 	id       string
+	alias    string
 	sess     RuntimeSession
 	live     *delegated
 	sendDone chan sendResult
@@ -266,7 +286,7 @@ func (r *delegatedRun) record(ctx context.Context, ev RuntimeEvent) error {
 }
 
 func (r *delegatedRun) permission(ctx context.Context, p PermissionRequest) error {
-	v := r.a.d.Guard.Verdict(policy.GuardRequest{Kind: p.Kind, Text: p.Text})
+	v := r.a.guardFor(r.alias).Verdict(policy.GuardRequest{Kind: p.Kind, Text: p.Text})
 	if _, err := r.a.d.Events.Append(ctx, r.id, task.EvGuardVerdict, guardVerdict{RequestID: p.RequestID, Tool: p.Tool, Kind: p.Kind, Action: v.Action, Rule: v.Rule}); err != nil {
 		return fmt.Errorf("append guard verdict: %w", err)
 	}
@@ -372,7 +392,7 @@ func (a *App) concludeDelegated(ctx context.Context, id string, d Delegation, be
 		}
 		v = contract.Evaluate(in)
 	}
-	if _, err := a.d.Events.Append(ctx, id, task.EvContract, contractVerdict{Pass: v.Pass, Reason: v.Reason}); err != nil {
+	if _, err := a.d.Events.Append(ctx, id, task.EvContract, contractVerdict{Pass: v.Pass, Reason: v.Reason, Before: before, After: after}); err != nil {
 		return fmt.Errorf("append contract verdict: %w", err)
 	}
 	if !v.Pass {
@@ -385,7 +405,20 @@ func (a *App) concludeDelegated(ctx context.Context, id string, d Delegation, be
 	if text == "" {
 		text = "The delegated session finished."
 	}
-	return a.notify(ctx, id, "final", Notice{Kind: NoticeMessage, Text: capResult(text)})
+	return a.notify(ctx, id, "final", Notice{Kind: NoticeMessage, Text: capResult(text) + verdictLine(in.Checks)})
+}
+
+// verdictLine is the closing line of a passed delegated task; the fingerprints are in the contract event.
+func verdictLine(checks []contract.Check) string {
+	line := "\n\nVerdict: pass, the workdir changed"
+	if len(checks) > 0 {
+		names := make([]string, len(checks))
+		for i, c := range checks {
+			names[i] = c.Name
+		}
+		line += "; checks passed: " + strings.Join(names, ", ")
+	}
+	return line + "."
 }
 
 // runChecks runs the declared checks in order and stops at the first failure.

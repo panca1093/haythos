@@ -73,7 +73,13 @@ func (a *App) Tick(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
-		if in.run {
+		if in.run && j.Runtime != "" {
+			if err := a.launchDelegated(ctx, id, j); err != nil {
+				errs = append(errs, fmt.Errorf("launch %s: %w", id, err))
+				continue
+			}
+			in.run = false
+		} else if in.run {
 			if _, err := a.createTask(ctx, id, j, in.text, "", ""); err != nil {
 				errs = append(errs, err)
 				continue
