@@ -31,6 +31,7 @@ import (
 	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
 	"github.com/panca/haythos/adapters/model/openai"
+	"github.com/panca/haythos/adapters/runtime/workspace"
 	"github.com/panca/haythos/adapters/store/sqlite"
 	muxtools "github.com/panca/haythos/adapters/tools"
 	"github.com/panca/haythos/adapters/tools/local"
@@ -246,11 +247,17 @@ func run(args []string) error {
 		blockedChatModel = chatGPTSubModel
 		slog.Warn("subscription chat alias conflicts with a configured model", "model", chatGPTSubModel)
 	}
+	runtimes, guards, err := buildRuntimes(cfg)
+	if err != nil {
+		return err
+	}
 	a := app.New(app.Deps{
 		Models: models, DefaultJob: dj, Jobs: jobs, Tools: allTools, Events: store, Ledger: store, Brain: brain,
 		Notifier: notifier, Vault: vault, Policy: pol, ModelSelector: selector,
 		Windows: windows(cfg), CompactAt: cfg.CompactAt, BlockedChatModel: blockedChatModel,
+		Runtimes: runtimes, Guards: guards, WorkdirState: workspace.State, RunCheck: workspace.RunCheck,
 	})
+	defer a.Wait()
 	jobtools.Register(tools, a)
 	switch cmd {
 	case "run-job":
