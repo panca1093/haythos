@@ -3,12 +3,18 @@ package tui
 import (
 	"context"
 	"fmt"
+	"regexp"
 	"slices"
 	"strings"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
+	"charm.land/bubbles/v2/key"
+	"charm.land/bubbles/v2/textarea"
+	tea "charm.land/bubbletea/v2"
+	"charm.land/glamour/v2"
+	"charm.land/glamour/v2/ansi"
+	"charm.land/glamour/v2/styles"
+	"charm.land/lipgloss/v2"
 
 	"github.com/panca/haythos/adapters/channel/ws"
 )
@@ -66,8 +72,9 @@ type model struct {
 	opts          Options
 	state         string
 	pending       []ws.Pending
-	input         []rune
-	cursor        int
+	input         textarea.Model
+	md            *glamour.TermRenderer
+	mdWidth       int
 	width, height int
 	// modelName, context and window feed the status line.
 	modelName, modelAlias   string
@@ -99,7 +106,6 @@ var (
 	warnStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6c07b"))
 	okStyle   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7fbf7f"))
 	ruleStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("#4a525c"))
-	curStyle  = lipgloss.NewStyle().Reverse(true)
 	userBox   = lipgloss.NewStyle().Background(lipgloss.Color("#26333d")).Foreground(lipgloss.Color("#cfe0f5"))
 	cardStyle = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).BorderForeground(lipgloss.Color("#4a525c")).Padding(0, 1)
 	askStyle  = lipgloss.NewStyle().Border(lipgloss.ThickBorder(), false, false, false, true).BorderForeground(lipgloss.Color("#e6c07b")).PaddingLeft(1)
@@ -107,8 +113,36 @@ var (
 
 // New is the chat screen for one conversation; quitting it never stops the kernel.
 func New(c Conn, opts Options) tea.Model {
-	return &model{conn: c, opts: opts, state: "idle", width: 80, height: 24, now: time.Now,
+	return &model{conn: c, opts: opts, state: "idle", width: 80, height: 24, now: time.Now, input: newInput(80),
 		startingModel: opts.Model != "", summary: Summary{Conv: opts.Conv, Started: time.Now()}}
+}
+
+const maxInputRows = 10
+
+// newInput is a growing multi-line prompt; Enter sends, so newlines come from Shift/Alt+Enter or Ctrl+J.
+func newInput(width int) textarea.Model {
+	t := textarea.New()
+	t.ShowLineNumbers = false
+	t.CharLimit, t.MaxWidth = 0, 0
+	t.DynamicHeight, t.MinHeight, t.MaxHeight = true, 1, maxInputRows
+	t.Placeholder = "tanya Alfred…"
+	t.SetPromptFunc(2, func(p textarea.PromptInfo) string {
+		if p.LineNumber == 0 {
+			return "› "
+		}
+		return "  "
+	})
+	t.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("shift+enter", "alt+enter", "ctrl+j"))
+	s := textarea.DefaultDarkStyles()
+	s.Focused.CursorLine = lipgloss.NewStyle()
+	s.Focused.Prompt = userStyle
+	s.Focused.Placeholder = dimStyle
+	s.Cursor.Color = accent
+	t.SetStyles(s)
+	t.SetVirtualCursor(false)
+	t.SetWidth(width)
+	t.Focus()
+	return t
 }
 
 // SummaryOf returns the exit summary of a model New returned.
@@ -188,6 +222,11 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width, m.height = msg.Width, msg.Height
+		m.input.SetWidth(max(msg.Width, 20))
+	case tea.PasteMsg:
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
 	case frameMsg:
 		return m, tea.Batch(m.onFrame(ws.Frame(msg)), m.read())
 	case tickMsg:
@@ -211,7 +250,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.selectingModel = false
 		}
 		return m, m.print(errStyle.Render("Tidak bisa menghubungi Alfred: " + msg.err.Error()))
-	case tea.KeyMsg:
+	case tea.KeyPressMsg:
 		return m.onKey(msg)
 	}
 	return m, nil
@@ -352,15 +391,15 @@ func isExit(text string) bool {
 	return false
 }
 
-func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if k.Type == tea.KeyCtrlC {
+func (m *model) onKey(k tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if k.String() == "ctrl+c" {
 		return m, tea.Quit
 	}
 	if len(m.pending) > 0 {
-		if k.Type == tea.KeyRunes && len(k.Runes) == 1 && (k.Runes[0] == 'y' || k.Runes[0] == 'n') {
+		if k.Text == "y" || k.Text == "n" {
 			p := m.pending[0]
 			m.pending = m.pending[1:]
-			approve := k.Runes[0] == 'y'
+			approve := k.Text == "y"
 			verdict := "  ✗ ditolak: "
 			if approve {
 				verdict = "  ✓ diizinkan: "
@@ -375,45 +414,47 @@ func (m *model) onKey(k tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	if len(m.modelOptions) > 0 {
-		return m, m.pickModel(k.Type)
+		return m, m.pickModel(k.String())
 	}
-	if m.edit(k) {
+	if k.String() != "enter" {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(k)
+		return m, cmd
+	}
+	if v := m.input.Value(); strings.HasSuffix(v, `\`) {
+		m.input.SetValue(strings.TrimSuffix(v, `\`) + "\n")
 		return m, nil
 	}
-	switch k.Type {
-	case tea.KeyEnter:
-		text := strings.TrimSpace(string(m.input))
-		if (m.selectingModel || m.startingModel) && !isExit(text) {
-			return m, nil
-		}
-		m.input, m.cursor = nil, 0
-		switch {
-		case text == "":
-			return m, nil
-		case isExit(text):
-			return m, tea.Quit
-		case strings.Fields(text)[0] == "/model":
-			name := strings.TrimSpace(strings.TrimPrefix(text, "/model"))
-			m.selectingModel = true
-			return m, m.sendCmd(ws.SelectModel{Model: name})
-		}
-		m.title(text)
-		m.summary.UserMessages++
-		m.state = "running"
-		return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text, Model: m.modelAlias}), m.work())
+	text := strings.TrimSpace(m.input.Value())
+	if (m.selectingModel || m.startingModel) && !isExit(text) {
+		return m, nil
 	}
-	return m, nil
+	m.input.Reset()
+	switch {
+	case text == "":
+		return m, nil
+	case isExit(text):
+		return m, tea.Quit
+	case strings.Fields(text)[0] == "/model":
+		name := strings.TrimSpace(strings.TrimPrefix(text, "/model"))
+		m.selectingModel = true
+		return m, m.sendCmd(ws.SelectModel{Model: name})
+	}
+	m.title(text)
+	m.summary.UserMessages++
+	m.state = "running"
+	return m, tea.Batch(m.print(m.userLine(text)), m.sendCmd(ws.Input{Conv: m.opts.Conv, Text: text, Model: m.modelAlias}), m.work())
 }
 
-func (m *model) pickModel(key tea.KeyType) tea.Cmd {
+func (m *model) pickModel(key string) tea.Cmd {
 	switch key {
-	case tea.KeyUp:
+	case "up":
 		m.modelCursor = max(0, m.modelCursor-1)
-	case tea.KeyDown:
+	case "down":
 		m.modelCursor = min(len(m.modelOptions)-1, m.modelCursor+1)
-	case tea.KeyEsc:
+	case "esc":
 		m.modelOptions, m.modelLabels = nil, nil
-	case tea.KeyEnter:
+	case "enter":
 		name := m.modelOptions[m.modelCursor]
 		m.modelOptions, m.modelLabels = nil, nil
 		m.selectingModel = true
@@ -466,72 +507,6 @@ func elapsed(d time.Duration) string {
 	return fmt.Sprintf("%dm %02ds", s/60, s%60)
 }
 
-// edit applies line-editing keys the way a shell prompt does; Cmd+Backspace arrives as Ctrl+U.
-func (m *model) edit(k tea.KeyMsg) bool {
-	in, c := m.input, m.cursor
-	switch {
-	case k.Type == tea.KeyRunes && k.Alt && len(k.Runes) == 1 && k.Runes[0] == 'b', k.Type == tea.KeyLeft && k.Alt, k.Type == tea.KeyCtrlLeft:
-		m.cursor = wordStart(in, c)
-	case k.Type == tea.KeyRunes && k.Alt && len(k.Runes) == 1 && k.Runes[0] == 'f', k.Type == tea.KeyRight && k.Alt, k.Type == tea.KeyCtrlRight:
-		m.cursor = wordEnd(in, c)
-	case k.Type == tea.KeyRunes:
-		m.insert(k.Runes)
-	case k.Type == tea.KeySpace:
-		m.insert([]rune{' '})
-	case k.Type == tea.KeyLeft:
-		m.cursor = max(0, c-1)
-	case k.Type == tea.KeyRight:
-		m.cursor = min(len(in), c+1)
-	case k.Type == tea.KeyHome, k.Type == tea.KeyCtrlA:
-		m.cursor = 0
-	case k.Type == tea.KeyEnd, k.Type == tea.KeyCtrlE:
-		m.cursor = len(in)
-	case k.Type == tea.KeyBackspace && k.Alt, k.Type == tea.KeyCtrlW:
-		m.cut(wordStart(in, c), c)
-	case k.Type == tea.KeyBackspace:
-		m.cut(max(0, c-1), c)
-	case k.Type == tea.KeyDelete:
-		m.cut(c, min(len(in), c+1))
-	case k.Type == tea.KeyCtrlU:
-		m.cut(0, c)
-	case k.Type == tea.KeyCtrlK:
-		m.cut(c, len(in))
-	default:
-		return false
-	}
-	return true
-}
-
-func (m *model) insert(r []rune) {
-	m.input = append(m.input[:m.cursor], append(r, m.input[m.cursor:]...)...)
-	m.cursor += len(r)
-}
-
-func (m *model) cut(from, to int) {
-	m.input = append(m.input[:from:from], m.input[to:]...)
-	m.cursor = from
-}
-
-func wordStart(in []rune, c int) int {
-	for c > 0 && in[c-1] == ' ' {
-		c--
-	}
-	for c > 0 && in[c-1] != ' ' {
-		c--
-	}
-	return c
-}
-
-func wordEnd(in []rune, c int) int {
-	for c < len(in) && in[c] == ' ' {
-		c++
-	}
-	for c < len(in) && in[c] != ' ' {
-		c++
-	}
-	return c
-}
-
 // Clean strips terminal control characters from text that is printed as-is.
 func Clean(s string) string { return clean(s) }
 
@@ -572,7 +547,7 @@ func (m *model) userLine(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	return "\n" + userBox.Width(max(m.width, 20)).Render("› "+clean(text))
+	return "\n" + userBox.Width(max(m.width, 20)).Render("› "+strings.ReplaceAll(clean(text), "\n", "\n  "))
 }
 
 // alfredLine starts after a blank line; wrapped lines hang under the text, not under the dot.
@@ -580,8 +555,48 @@ func (m *model) alfredLine(text string) string {
 	if strings.TrimSpace(text) == "" {
 		return ""
 	}
-	body := lipgloss.NewStyle().Width(max(m.width-2, 18)).Render(text)
-	return "\n" + dotStyle.Render("●") + " " + strings.ReplaceAll(body, "\n", "\n  ")
+	return "\n" + dotStyle.Render("●") + " " + strings.ReplaceAll(m.markdown(text), "\n", "\n  ")
+}
+
+var (
+	oscSeq      = regexp.MustCompile("\x1b\\][^\x07\x1b]*(?:\x07|\x1b\\\\)")
+	trailingPad = regexp.MustCompile("(?:\x1b\\[[0-9;]*m| )+$")
+)
+
+// markdown styles an answer for the terminal; OSC sequences are dropped so a link can never hide its target.
+func (m *model) markdown(text string) string {
+	w := max(m.width-2, 18)
+	if m.md == nil || m.mdWidth != w {
+		r, err := glamour.NewTermRenderer(glamour.WithStyles(markdownStyle()), glamour.WithWordWrap(w))
+		if err != nil {
+			return lipgloss.NewStyle().Width(w).Render(text)
+		}
+		m.md, m.mdWidth = r, w
+	}
+	out, err := m.md.Render(text)
+	if err != nil {
+		return lipgloss.NewStyle().Width(w).Render(text)
+	}
+	lines := strings.Split(oscSeq.ReplaceAllString(out, ""), "\n")
+	for i, l := range lines {
+		if trailingPad.MatchString(l) {
+			lines[i] = trailingPad.ReplaceAllString(l, "") + "\x1b[m"
+		}
+	}
+	return strings.Trim(strings.Join(lines, "\n"), "\n")
+}
+
+// markdownStyle is glamour's dark theme without its document margin, so answers line up under the dot.
+func markdownStyle() ansi.StyleConfig {
+	c := styles.DarkStyleConfig
+	zero := uint(0)
+	c.Document.Margin = &zero
+	c.Document.BlockPrefix, c.Document.BlockSuffix = "", ""
+	c.Document.Color = nil
+	for _, h := range []*ansi.StyleBlock{&c.H2, &c.H3, &c.H4, &c.H5, &c.H6} {
+		h.Prefix = ""
+	}
+	return c
 }
 
 func modelLabel(f ws.Frame) string {
@@ -610,11 +625,11 @@ func shortPath(dir, home string) string {
 	return dir
 }
 
-func (m *model) View() string {
+func (m *model) View() tea.View {
 	w := max(m.width, 20)
 	rule := ruleStyle.Render(strings.Repeat("─", w))
 	if len(m.modelOptions) > 0 && len(m.pending) == 0 {
-		return strings.Join([]string{m.modelPickerView(), rule, m.status()}, "\n")
+		return tea.NewView(strings.Join([]string{m.modelPickerView(), rule, m.status()}, "\n"))
 	}
 	var parts []string
 	if len(m.pending) > 0 {
@@ -633,14 +648,21 @@ func (m *model) View() string {
 	if m.busy() {
 		parts = append(parts, "", m.working())
 	}
-	prompt := userStyle.Render("› ") + m.inputView()
+	parts = append(parts, rule)
+	above := strings.Count(strings.Join(parts, "\n"), "\n") + 1
+	var cursor *tea.Cursor
+	prompt := m.input.View()
 	if len(m.pending) > 0 {
 		prompt = userStyle.Render("› ") + dimStyle.Render("(menunggu izin…)")
 	} else if m.selectingModel {
 		prompt = dimStyle.Render("Menyiapkan model…")
+	} else if cursor = m.input.Cursor(); cursor != nil {
+		cursor.Y += above
 	}
-	parts = append(parts, rule, prompt, rule, m.status())
-	return strings.Join(parts, "\n")
+	parts = append(parts, prompt, rule, m.status())
+	v := tea.NewView(strings.Join(parts, "\n"))
+	v.Cursor = cursor
+	return v
 }
 
 func (m *model) modelPickerView() string {
@@ -667,19 +689,6 @@ func (m *model) modelPickerView() string {
 	}
 	rows = append(rows, dimStyle.Render("↑/↓ pilih · Enter konfirmasi · Esc batal"))
 	return strings.Join(rows, "\n")
-}
-
-// inputView draws the text with a block cursor; an empty input shows the cursor over the placeholder.
-func (m *model) inputView() string {
-	if len(m.input) == 0 {
-		ph := []rune("tanya Alfred…")
-		return curStyle.Render(string(ph[0])) + dimStyle.Render(string(ph[1:]))
-	}
-	before, at, after := string(m.input[:m.cursor]), " ", ""
-	if m.cursor < len(m.input) {
-		at, after = string(m.input[m.cursor]), string(m.input[m.cursor+1:])
-	}
-	return before + curStyle.Render(at) + after
 }
 
 func (m *model) status() string {

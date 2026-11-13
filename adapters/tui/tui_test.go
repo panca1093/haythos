@@ -8,7 +8,8 @@ import (
 	"testing"
 	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
+	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/ansi"
 
 	"github.com/panca/haythos/adapters/channel/ws"
 )
@@ -53,14 +54,18 @@ func feed(m tea.Model, f ws.Frame) tea.Model {
 
 func typeText(m tea.Model, s string) tea.Model {
 	for _, r := range s {
-		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m, _ = m.Update(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
 	return m
 }
 
-func enter(m tea.Model) (tea.Model, tea.Cmd) { return m.Update(tea.KeyMsg{Type: tea.KeyEnter}) }
+func enter(m tea.Model) (tea.Model, tea.Cmd) { return m.Update(tea.KeyPressMsg{Code: tea.KeyEnter}) }
 
-func printed(m tea.Model) string { return strings.Join(m.(*model).printed, "\n") }
+func printedRaw(m tea.Model) string { return strings.Join(m.(*model).printed, "\n") }
+
+func printed(m tea.Model) string { return ansi.Strip(printedRaw(m)) }
+
+func view(m tea.Model) string { return ansi.Strip(m.View().Content) }
 
 // drain runs a command tree, ignoring commands that block on the connection.
 func drain(cmd tea.Cmd) []tea.Msg {
@@ -113,8 +118,8 @@ func TestModelCommandSendsSelectionWithoutCreatingChatMessage(t *testing.T) {
 		t.Errorf("model command counted as a chat message")
 	}
 	m = feed(m, ws.Frame{Type: ws.TypeModel, Model: "chatgpt-sub"})
-	if !strings.Contains(m.View(), "chatgpt-sub") {
-		t.Errorf("selected model missing from status: %s", m.View())
+	if !strings.Contains(view(m), "chatgpt-sub") {
+		t.Errorf("selected model missing from status: %s", view(m))
 	}
 }
 
@@ -134,11 +139,11 @@ func TestModelPickerSelectsByNameAndCanCancel(t *testing.T) {
 	}
 	m = feed(m, choices)
 	for _, want := range []string{"Sonnet", "GPT Test", "↑/↓", "Esc"} {
-		if !strings.Contains(m.View(), want) {
+		if !strings.Contains(view(m), want) {
 			t.Errorf("picker is missing %q", want)
 		}
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyDown})
 	m, cmd = enter(m)
 	drain(cmd)
 	if got := conn.frames(); len(got) != 2 || got[0] != (ws.SelectModel{}) || got[1] != (ws.SelectModel{Model: "chatgpt-sub/gpt-test"}) {
@@ -148,10 +153,10 @@ func TestModelPickerSelectsByNameAndCanCancel(t *testing.T) {
 	m, cmd = enter(typeText(m, "/model"))
 	drain(cmd)
 	m = feed(m, choices)
-	m, cmd = m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	m, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	drain(cmd)
-	if strings.Contains(m.View(), "GPT Test") || len(conn.frames()) != 3 {
-		t.Fatalf("Esc did not close picker without selecting: %s, %+v", m.View(), conn.frames())
+	if strings.Contains(view(m), "GPT Test") || len(conn.frames()) != 3 {
+		t.Fatalf("Esc did not close picker without selecting: %s, %+v", view(m), conn.frames())
 	}
 }
 
@@ -215,8 +220,8 @@ func TestWelcomePrintsTheCard(t *testing.T) {
 		}
 	}
 	for _, never := range []string{"kernel", "dirty", "+aa"} {
-		if strings.Contains(out+m.View(), never) {
-			t.Errorf("screen shows %q:\n%s\n%s", never, out, m.View())
+		if strings.Contains(out+view(m), never) {
+			t.Errorf("screen shows %q:\n%s\n%s", never, out, view(m))
 		}
 	}
 }
@@ -259,6 +264,9 @@ func TestMessagesAreSeparatedAndWrapped(t *testing.T) {
 	m, _ = m.Update(tea.WindowSizeMsg{Width: 40, Height: 30})
 	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: "hi", Answer: "a long answer from Alfred that has to wrap across more than one line"}}})
 	p := m.(*model).printed
+	for i := range p {
+		p[i] = ansi.Strip(p[i])
+	}
 	if len(p) != 2 || !strings.HasPrefix(p[0], "\n") || !strings.HasPrefix(p[1], "\n") {
 		t.Fatalf("each message should start after a blank line: %q", p)
 	}
@@ -322,13 +330,13 @@ func TestApprovalBlock(t *testing.T) {
 	t.Parallel()
 	m, c := start(t)
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "ap1", Tool: "discord.post", Target: "#infra", Tier: 2, Preview: "deploy done"}})
-	view := m.View()
+	screen := view(m)
 	for _, want := range []string{"Butuh izin", "tier 2", "discord.post → #infra", "deploy done", "[y] izinkan", "[n] tolak"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("approval view lacks %q:\n%s", want, view)
+		if !strings.Contains(screen, want) {
+			t.Errorf("approval view lacks %q:\n%s", want, screen)
 		}
 	}
-	m, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m, cmd := m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
 	drain(cmd)
 	var d ws.Decide
 	for _, f := range c.frames() {
@@ -339,25 +347,25 @@ func TestApprovalBlock(t *testing.T) {
 	if d.TaskID != "t1" || d.ApprovalID != "ap1" || !d.Approve {
 		t.Fatalf("decide = %+v", d)
 	}
-	if strings.Contains(m.View(), "Butuh izin") {
-		t.Fatalf("approval still shown after deciding:\n%s", m.View())
+	if strings.Contains(view(m), "Butuh izin") {
+		t.Fatalf("approval still shown after deciding:\n%s", view(m))
 	}
 }
 
 func TestViewIsInputAndStatusOnly(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
-	view := m.View()
+	screen := view(m)
 	for _, want := range []string{"›", "anya Alfred…", "ctx --"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("view lacks %q:\n%s", want, view)
+		if !strings.Contains(screen, want) {
+			t.Errorf("view lacks %q:\n%s", want, screen)
 		}
 	}
-	if strings.Contains(view, "exit") {
-		t.Errorf("view still explains how to exit:\n%s", view)
+	if strings.Contains(screen, "exit") {
+		t.Errorf("view still explains how to exit:\n%s", screen)
 	}
-	if lines := strings.Count(view, "\n") + 1; lines > 6 {
-		t.Fatalf("idle view is %d lines; the transcript belongs in the scrollback:\n%s", lines, view)
+	if lines := strings.Count(screen, "\n") + 1; lines > 6 {
+		t.Fatalf("idle view is %d lines; the transcript belongs in the scrollback:\n%s", lines, screen)
 	}
 }
 
@@ -366,10 +374,10 @@ func TestStatusShowsModelAndContextUse(t *testing.T) {
 	m, _ := start(t)
 	m = feed(m, ws.Frame{Type: ws.TypeWelcome, Version: opts.Version, Model: "opus", DefaultModel: "claude-sub"})
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hi", Context: 38000, Window: 1000000, Cached: 35000})
-	view := m.View()
+	screen := view(m)
 	for _, want := range []string{"opus", "ctx 38k/1M", "▰▱▱▱▱▱▱▱▱▱", "cache 35k"} {
-		if !strings.Contains(view, want) {
-			t.Errorf("status lacks %q:\n%s", want, view)
+		if !strings.Contains(screen, want) {
+			t.Errorf("status lacks %q:\n%s", want, screen)
 		}
 	}
 }
@@ -377,8 +385,8 @@ func TestStatusShowsModelAndContextUse(t *testing.T) {
 func TestStatusShowsNoContextBeforeFirstAnswer(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
-	if view := m.View(); !strings.Contains(view, "ctx --") {
-		t.Fatalf("status lacks %q:\n%s", "ctx --", view)
+	if screen := view(m); !strings.Contains(screen, "ctx --") {
+		t.Fatalf("status lacks %q:\n%s", "ctx --", screen)
 	}
 }
 
@@ -391,43 +399,169 @@ func TestKilo(t *testing.T) {
 	}
 }
 
-func key(m tea.Model, k tea.KeyMsg) tea.Model {
+func press(m tea.Model, k tea.KeyPressMsg) tea.Model {
 	m, _ = m.Update(k)
 	return m
 }
 
+func runes(s string) tea.KeyPressMsg { return tea.KeyPressMsg{Code: []rune(s)[0], Text: s} }
+
 func TestLineEditing(t *testing.T) {
 	t.Parallel()
-	left := tea.KeyMsg{Type: tea.KeyLeft}
+	left := tea.KeyPressMsg{Code: tea.KeyLeft}
 	for _, tc := range []struct {
 		name       string
-		keys       []tea.KeyMsg
+		keys       []tea.KeyPressMsg
 		want       string
 		wantCursor int
 	}{
 		{"typing", nil, "halo dunia", 10},
-		{"left then insert", []tea.KeyMsg{left, left, left, left, left, {Type: tea.KeyRunes, Runes: []rune("x")}}, "halo xdunia", 6},
-		{"home and end", []tea.KeyMsg{{Type: tea.KeyHome}, {Type: tea.KeyRunes, Runes: []rune(">")}, {Type: tea.KeyEnd}}, ">halo dunia", 11},
-		{"ctrl+a ctrl+e", []tea.KeyMsg{{Type: tea.KeyCtrlA}, {Type: tea.KeyDelete}, {Type: tea.KeyCtrlE}}, "alo dunia", 9},
-		{"cmd+backspace clears to start", []tea.KeyMsg{left, left, {Type: tea.KeyCtrlU}}, "ia", 0},
-		{"ctrl+k clears to end", []tea.KeyMsg{{Type: tea.KeyCtrlA}, {Type: tea.KeyCtrlK}}, "", 0},
-		{"option+backspace deletes a word", []tea.KeyMsg{{Type: tea.KeyBackspace, Alt: true}}, "halo ", 5},
-		{"ctrl+w deletes a word", []tea.KeyMsg{{Type: tea.KeyCtrlW}}, "halo ", 5},
-		{"option+left moves a word", []tea.KeyMsg{{Type: tea.KeyLeft, Alt: true}, {Type: tea.KeyRunes, Runes: []rune("_")}}, "halo _dunia", 6},
-		{"backspace at cursor", []tea.KeyMsg{left, {Type: tea.KeyBackspace}}, "halo duna", 8},
+		{"left then insert", []tea.KeyPressMsg{left, left, left, left, left, runes("x")}, "halo xdunia", 6},
+		{"home and end", []tea.KeyPressMsg{{Code: tea.KeyHome}, runes(">"), {Code: tea.KeyEnd}}, ">halo dunia", 11},
+		{"ctrl+a ctrl+e", []tea.KeyPressMsg{{Code: 'a', Mod: tea.ModCtrl}, {Code: tea.KeyDelete}, {Code: 'e', Mod: tea.ModCtrl}}, "alo dunia", 9},
+		{"cmd+backspace clears to start", []tea.KeyPressMsg{left, left, {Code: 'u', Mod: tea.ModCtrl}}, "ia", 0},
+		{"ctrl+k clears to end", []tea.KeyPressMsg{{Code: 'a', Mod: tea.ModCtrl}, {Code: 'k', Mod: tea.ModCtrl}}, "", 0},
+		{"option+backspace deletes a word", []tea.KeyPressMsg{{Code: tea.KeyBackspace, Mod: tea.ModAlt}}, "halo ", 5},
+		{"ctrl+w deletes a word", []tea.KeyPressMsg{{Code: 'w', Mod: tea.ModCtrl}}, "halo ", 5},
+		{"option+left moves a word", []tea.KeyPressMsg{{Code: tea.KeyLeft, Mod: tea.ModAlt}, runes("_")}, "halo _dunia", 6},
+		{"backspace at cursor", []tea.KeyPressMsg{left, {Code: tea.KeyBackspace}}, "halo duna", 8},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			m, _ := start(t)
 			m = typeText(m, "halo dunia")
 			for _, k := range tc.keys {
-				m = key(m, k)
+				m = press(m, k)
 			}
-			mm := m.(*model)
-			if string(mm.input) != tc.want || mm.cursor != tc.wantCursor {
-				t.Fatalf("input = %q cursor %d, want %q cursor %d", string(mm.input), mm.cursor, tc.want, tc.wantCursor)
+			in := m.(*model).input
+			if in.Value() != tc.want || in.Column() != tc.wantCursor {
+				t.Fatalf("input = %q cursor %d, want %q cursor %d", in.Value(), in.Column(), tc.want, tc.wantCursor)
 			}
 		})
+	}
+}
+
+func TestNewlineKeysInsertALineInsteadOfSending(t *testing.T) {
+	t.Parallel()
+	for name, k := range map[string]tea.KeyPressMsg{
+		"shift+enter": {Code: tea.KeyEnter, Mod: tea.ModShift},
+		"alt+enter":   {Code: tea.KeyEnter, Mod: tea.ModAlt},
+		"ctrl+j":      {Code: 'j', Mod: tea.ModCtrl},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			m, c := start(t)
+			m = typeText(press(typeText(m, "satu"), k), "dua")
+			if got := m.(*model).input.Value(); got != "satu\ndua" {
+				t.Fatalf("input = %q, want two lines", got)
+			}
+			if len(c.frames()) != 0 {
+				t.Fatalf("%s sent the message: %+v", name, c.frames())
+			}
+			_, cmd := enter(m)
+			drain(cmd)
+			if got := c.frames(); len(got) != 1 || got[0].(ws.Input).Text != "satu\ndua" {
+				t.Fatalf("frames = %+v, want both lines sent together", got)
+			}
+		})
+	}
+}
+
+func TestBackslashEnterInsertsANewline(t *testing.T) {
+	t.Parallel()
+	m, c := start(t)
+	m, cmd := enter(typeText(m, `satu\`))
+	drain(cmd)
+	m = typeText(m, "dua")
+	if got := m.(*model).input.Value(); got != "satu\ndua" || len(c.frames()) != 0 {
+		t.Fatalf("input = %q, frames = %+v; want a newline in place of the backslash and nothing sent", got, c.frames())
+	}
+}
+
+func TestMultilineInputGrowsAndWraps(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m, _ = m.Update(tea.WindowSizeMsg{Width: 30, Height: 30})
+	m = typeText(m, "kalimat panjang yang harus pindah ke baris berikutnya")
+	m = typeText(press(m, tea.KeyPressMsg{Code: 'j', Mod: tea.ModCtrl}), "lagi")
+	v := view(m)
+	for _, l := range strings.Split(v, "\n") {
+		if ansi.StringWidth(l) > 30 {
+			t.Fatalf("line wider than the terminal: %q", l)
+		}
+	}
+	if !strings.Contains(v, "lagi") || !strings.Contains(v, "kalimat") {
+		t.Fatalf("input not fully shown:\n%s", v)
+	}
+}
+
+func TestViewPutsTheTerminalCursorInTheInput(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = typeText(m, "hi")
+	v := m.View()
+	if v.Cursor == nil {
+		t.Fatal("no terminal cursor; the input should use the real, blinking cursor")
+	}
+	lines := strings.Split(ansi.Strip(v.Content), "\n")
+	if v.Cursor.Y >= len(lines) || !strings.HasPrefix(lines[v.Cursor.Y], "› hi") || v.Cursor.X != 4 {
+		t.Fatalf("cursor at %d,%d; want just after %q:\n%s", v.Cursor.X, v.Cursor.Y, "› hi", ansi.Strip(v.Content))
+	}
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t", Approval: &ws.Approval{ID: "a", Tool: "x", Target: "y"}})
+	if m.View().Cursor != nil {
+		t.Fatal("cursor shown while the input waits for an approval")
+	}
+}
+
+func TestAnswerMarkdownIsRendered(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "pakai **tebal**, *miring* dan `kode`"})
+	out := printed(m)
+	for _, want := range []string{"tebal", "miring", "kode"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("answer lacks %q:\n%s", want, out)
+		}
+	}
+	for _, raw := range []string{"**", "`", "*miring*"} {
+		if strings.Contains(out, raw) {
+			t.Errorf("markdown %q left unrendered:\n%s", raw, out)
+		}
+	}
+	if !strings.Contains(printedRaw(m), "\x1b[") {
+		t.Error("answer has no styling")
+	}
+}
+
+func TestAnswerLinksAreNotTerminalHyperlinks(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "[bank](http://evil.example)"})
+	if strings.Contains(printedRaw(m), "\x1b]") {
+		t.Fatalf("answer carries an OSC hyperlink: %q", printedRaw(m))
+	}
+	if !strings.Contains(printed(m), "evil.example") {
+		t.Fatalf("link target hidden from the owner: %s", printed(m))
+	}
+}
+
+func TestMultilineUserMessageHangsUnderThePrompt(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeHistory, Turns: []ws.Turn{{User: "satu\ndua"}}})
+	lines := strings.Split(strings.TrimPrefix(printed(m), "\n"), "\n")
+	if len(lines) < 2 || !strings.HasPrefix(lines[0], "› satu") || !strings.HasPrefix(lines[1], "  dua") {
+		t.Fatalf("user message lines = %q", lines)
+	}
+}
+
+func TestAnswerHeadingsDropTheHashes(t *testing.T) {
+	t.Parallel()
+	m, _ := start(t)
+	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "## Judul\n\n### Sub\n\nisi"})
+	out := printed(m)
+	if strings.Contains(out, "#") || !strings.Contains(out, "Judul") || !strings.Contains(out, "Sub") {
+		t.Fatalf("headings = %q", out)
 	}
 }
 
@@ -463,7 +597,7 @@ func TestControlSequencesAreStrippedFromUntrustedText(t *testing.T) {
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: evil})
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t", Approval: &ws.Approval{ID: "a", Tool: "x", Target: evil, Preview: evil}})
 	m = typeText(m, "hi")
-	out := printed(m) + m.View()
+	out := printedRaw(m) + m.View().Content
 	for _, bad := range []string{"\x07", "\u009b", "\x1b]"} {
 		if strings.Contains(out, bad) {
 			t.Errorf("output contains %q", bad)
@@ -484,14 +618,14 @@ func TestWorkingIndicatorWhileWaiting(t *testing.T) {
 	now := time.Date(2026, 11, 10, 20, 0, 0, 0, time.UTC)
 	m, _ := start(t)
 	m = withClock(m, &now)
-	if strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator shown while idle:\n%s", m.View())
+	if strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator shown while idle:\n%s", view(m))
 	}
 	m, _ = enter(typeText(m, "hi"))
 	if !m.(*model).ticking {
 		t.Fatal("sending a message must start the indicator ticker")
 	}
-	first := m.View()
+	first := view(m)
 	if !strings.Contains(first, workVerbs[0]+"…") || !strings.Contains(first, "(0s)") {
 		t.Fatalf("indicator missing after send:\n%s", first)
 	}
@@ -500,13 +634,13 @@ func TestWorkingIndicatorWhileWaiting(t *testing.T) {
 	if next == nil {
 		t.Fatal("ticker must keep running while waiting")
 	}
-	later := m.View()
+	later := view(m)
 	if !strings.Contains(later, workVerbs[1]+"…") || !strings.Contains(later, "(5s)") || later == first {
 		t.Fatalf("indicator did not advance:\n%s", later)
 	}
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "hello"})
-	if strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator still shown after the answer:\n%s", m.View())
+	if strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator still shown after the answer:\n%s", view(m))
 	}
 	if _, cmd := m.Update(tickMsg{}); cmd != nil {
 		t.Fatal("ticker must stop once idle")
@@ -517,9 +651,9 @@ func TestWorkingIndicatorHasABlankLineAbove(t *testing.T) {
 	t.Parallel()
 	m, _ := start(t)
 	m, _ = enter(typeText(m, "hi"))
-	lines := strings.Split(m.View(), "\n")
+	lines := strings.Split(view(m), "\n")
 	if len(lines) < 2 || strings.TrimSpace(lines[0]) != "" || !strings.Contains(lines[1], workVerbs[0]+"…") {
-		t.Fatalf("want a blank line, then the indicator, at the top of the live area:\n%s", m.View())
+		t.Fatalf("want a blank line, then the indicator, at the top of the live area:\n%s", view(m))
 	}
 }
 
@@ -530,12 +664,12 @@ func TestWorkingIndicatorPausesForApproval(t *testing.T) {
 	m = withClock(m, &now)
 	m, _ = enter(typeText(m, "post it"))
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "approval.request", TaskID: "t1", Approval: &ws.Approval{ID: "a1", Tool: "discord.post", Target: "c", Tier: 2}})
-	if strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator shown while waiting for the owner:\n%s", m.View())
+	if strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator shown while waiting for the owner:\n%s", view(m))
 	}
-	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	if !m.(*model).ticking || !strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator must resume after approving:\n%s", m.View())
+	m, _ = m.Update(tea.KeyPressMsg{Code: 'y', Text: "y"})
+	if !m.(*model).ticking || !strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator must resume after approving:\n%s", view(m))
 	}
 }
 
@@ -565,8 +699,8 @@ func TestWorkingIndicatorStopsOnEveryOutcome(t *testing.T) {
 			m, _ := start(t)
 			m, _ = enter(typeText(m, "hi"))
 			m, _ = m.Update(tc.msg)
-			if strings.Contains(m.View(), "…  (") {
-				t.Fatalf("indicator still shown after %s:\n%s", tc.name, m.View())
+			if strings.Contains(view(m), "…  (") {
+				t.Fatalf("indicator still shown after %s:\n%s", tc.name, view(m))
 			}
 		})
 	}
@@ -580,16 +714,16 @@ func TestWorkingIndicatorWaitsForEveryMessageInFlight(t *testing.T) {
 	m, _ = enter(typeText(m, "one"))
 	now = now.Add(3 * time.Second)
 	m, _ = enter(typeText(m, "two"))
-	if !strings.Contains(m.View(), "(3s)") {
-		t.Fatalf("a second message must not reset the timer:\n%s", m.View())
+	if !strings.Contains(view(m), "(3s)") {
+		t.Fatalf("a second message must not reset the timer:\n%s", view(m))
 	}
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "answer one"})
-	if !strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator gone while the second message is still running:\n%s", m.View())
+	if !strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator gone while the second message is still running:\n%s", view(m))
 	}
 	m = feed(m, ws.Frame{Type: ws.TypeNotice, Kind: "message.done", Text: "answer two"})
-	if strings.Contains(m.View(), "…  (") {
-		t.Fatalf("indicator still shown after both answers:\n%s", m.View())
+	if strings.Contains(view(m), "…  (") {
+		t.Fatalf("indicator still shown after both answers:\n%s", view(m))
 	}
 }
 
@@ -603,8 +737,8 @@ func TestErrorsNotAboutAMessageKeepTheIndicator(t *testing.T) {
 		m, _ := start(t)
 		m, _ = enter(typeText(m, "hi"))
 		m, _ = m.Update(msg)
-		if !strings.Contains(m.View(), "…  (") {
-			t.Fatalf("indicator hidden by %+v:\n%s", msg, m.View())
+		if !strings.Contains(view(m), "…  (") {
+			t.Fatalf("indicator hidden by %+v:\n%s", msg, view(m))
 		}
 	}
 }
