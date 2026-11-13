@@ -158,7 +158,7 @@ func run(args []string) error {
 	if err != nil {
 		return err
 	}
-	jobs, err := config.LoadJobs(*jobsDir)
+	jobs, err := config.LoadJobs(*jobsDir, cfg.Runtimes)
 	if err != nil {
 		return err
 	}

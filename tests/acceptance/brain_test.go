@@ -168,7 +168,7 @@ func (r *p3Rig) boot() {
 	}
 	r.t.Cleanup(func() { _ = st.Close() })
 	r.store = st
-	all, err := config.LoadJobs("../../jobs")
+	all, err := config.LoadJobs("../../jobs", nil)
 	if err != nil {
 		r.t.Fatalf("load jobs: %v", err)
 	}

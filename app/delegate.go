@@ -19,6 +19,9 @@ var ErrDelegated = errors.New("task is delegated to a runtime")
 const (
 	cancelGrace    = 10 * time.Second
 	maxCheckOutput = 8 << 10
+
+	DefaultCheckTimeout = 10 * time.Minute
+	MaxCheckTimeout     = time.Hour
 )
 
 // Check is a command the kernel runs after the session; Argv is never a shell string.

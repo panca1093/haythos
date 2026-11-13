@@ -119,6 +119,11 @@ type Job struct {
 	BrainSource string
 	// Runtime is the alias of the runtime this job delegates to; empty runs on the kernel's loop.
 	Runtime string
+	// Workdir, RuntimeModel, RuntimeMode and Checks apply only when Runtime is set; Workdir is already resolved from config.
+	Workdir      string
+	RuntimeModel string
+	RuntimeMode  string
+	Checks       []Check
 }
 
 type Input struct {
