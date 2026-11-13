@@ -117,6 +117,8 @@ type Job struct {
 	Silent bool
 	// BrainSource is the provenance stamped on brain writes from this job's tasks.
 	BrainSource string
+	// Runtime is the alias of the runtime this job delegates to; empty runs on the kernel's loop.
+	Runtime string
 }
 
 type Input struct {

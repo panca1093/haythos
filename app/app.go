@@ -56,6 +56,15 @@ type Deps struct {
 	BlockedChatModel string
 	// Brain is optional; nil disables recall and brain tools.
 	Brain Brain
+
+	// Runtimes are the runtimes a task can be delegated to, by alias.
+	Runtimes map[string]Runtime
+	// Guard decides every permission request of a delegated session; the zero Guard allows all.
+	Guard policy.Guard
+	// WorkdirState fingerprints a workdir (HEAD plus uncommitted changes); a different value after a session means it changed.
+	WorkdirState func(ctx context.Context, dir string) (string, error)
+	// RunCheck runs argv in dir with env added to a minimal base; err is a start error or a timeout.
+	RunCheck func(ctx context.Context, dir string, argv, env []string, limit time.Duration) (exit int, output string, err error)
 }
 
 type App struct {
@@ -305,7 +314,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.Runtime}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
