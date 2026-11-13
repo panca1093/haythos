@@ -114,6 +114,11 @@ const (
 	EvApprovalRequested EventType = "approval.requested"
 	EvApprovalDecided   EventType = "approval.decided"
 	EvNoticeSent        EventType = "notice.sent"
+	EvRuntimeSession    EventType = "runtime.session"
+	EvRuntimeEvent      EventType = "runtime.event"
+	EvGuardVerdict      EventType = "runtime.guard"
+	EvCheckRun          EventType = "runtime.check"
+	EvContract          EventType = "runtime.contract"
 )
 
 type Created struct {
@@ -131,6 +136,8 @@ type Created struct {
 	Silent bool `json:"silent,omitempty"`
 	// Workdir is the folder an interactive chat was opened in; read tools may only look inside it.
 	Workdir string `json:"workdir,omitempty"`
+	// Runtime is the alias of the runtime a delegated task runs on; empty for tasks on the kernel's loop.
+	Runtime string `json:"runtime,omitempty"`
 }
 
 type StateChange struct {
@@ -226,6 +233,8 @@ func Replay(events []Event) (Snapshot, error) {
 			case RoleAssistant:
 				s.Steps++
 			}
+		case EvCheckRun:
+			s.Tainted = true
 		case EvUsage:
 			var u Usage
 			if err := json.Unmarshal(e.Payload, &u); err != nil {

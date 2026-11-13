@@ -352,6 +352,7 @@ type nopHandler struct{}
 
 func (nopHandler) HandleInput(context.Context, app.Input) (string, error)     { return "", nil }
 func (nopHandler) HandleApproval(context.Context, string, string, bool) error { return nil }
+func (nopHandler) RunJob(context.Context, string) (string, error)             { return "", nil }
 func (nopHandler) ConversationView(context.Context, string) (app.ConversationView, error) {
 	return app.ConversationView{}, nil
 }

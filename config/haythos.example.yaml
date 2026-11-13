@@ -15,3 +15,33 @@ claude_cli:
 
 discord:
   owner_id: ""
+
+# Runtimes run heavy work as processes; a job picks one with `runtime: { alias, workdir }` (see jobs/examples/).
+# workdirs maps a name to an absolute folder: jobs name the folder, they never carry a path.
+# Every permission request goes through the guard: policy.StarterRules plus your `guard` rules
+# (action: ask | deny; `starter_guard: false` drops the starter list). Matching is on text, so it is a guard rail, not a sandbox.
+# runtimes:
+#   opencode:
+#     kind: acp             # must be made to ask: OPENCODE_CONFIG_CONTENT with permission.bash ask in env (checked), or `commands_ask: true` for another runtime
+#     command: opencode
+#     args: [acp]
+#     model: ""
+#     mode: ""
+#     pass_env: []
+#     env:
+#       - 'OPENCODE_CONFIG_CONTENT={"permission":{"bash":{"*":"ask"},"edit":{"*":"allow","*opencode.json":"ask","*.opencode/*":"ask"},"read":{"*":"allow","*.env":"ask","*.env.*":"ask","*/.ssh/*":"ask","*/.aws/*":"ask","*/.netrc":"ask","*/.git-credentials":"ask","*/.gnupg/*":"ask"}}}'
+#     workdirs:
+#       scratch: /absolute/path/to/scratch-repo
+#     guard:
+#       - { name: no-curl, kinds: [execute], command: true, pattern: '^curl\b', action: deny }
+#   claude:
+#     kind: claudecli
+#     command: claude
+#     model: haiku
+#     workdirs:
+#       scratch: /absolute/path/to/scratch-repo
+#   codex:
+#     kind: codexapp        # native `codex app-server`; each session gets a throwaway CODEX_HOME with only auth.json linked
+#     command: codex
+#     workdirs:
+#       scratch: /absolute/path/to/scratch-repo

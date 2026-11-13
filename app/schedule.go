@@ -73,7 +73,13 @@ func (a *App) Tick(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
-		if in.run {
+		if in.run && j.Runtime != "" {
+			if err := a.launchDelegated(ctx, id, j); err != nil {
+				errs = append(errs, fmt.Errorf("launch %s: %w", id, err))
+				continue
+			}
+			in.run = false
+		} else if in.run {
 			if _, err := a.createTask(ctx, id, j, in.text, "", ""); err != nil {
 				errs = append(errs, err)
 				continue
@@ -137,6 +143,12 @@ func (a *App) sweepApproval(ctx context.Context, id string) error {
 	}
 	if a.d.Clock().Before(rec.Approval.Expiry) {
 		return a.notifyApproval(ctx, id, rec)
+	}
+	if live, ok := a.live.Load(id); ok {
+		return a.answerDelegated(ctx, id, live.(*delegated), rec, false)
+	}
+	if s.Created.Runtime != "" {
+		return nil
 	}
 	if err := a.setState(ctx, id, task.Running, "approval expired"); err != nil {
 		return err

@@ -117,6 +117,13 @@ type Job struct {
 	Silent bool
 	// BrainSource is the provenance stamped on brain writes from this job's tasks.
 	BrainSource string
+	// Runtime is the alias of the runtime this job delegates to; empty runs on the kernel's loop.
+	Runtime string
+	// Workdir, RuntimeModel, RuntimeMode and Checks apply only when Runtime is set; Workdir is already resolved from config.
+	Workdir      string
+	RuntimeModel string
+	RuntimeMode  string
+	Checks       []Check
 }
 
 type Input struct {
@@ -145,4 +152,80 @@ type ModelSelector interface {
 	List(ctx context.Context) ([]ModelChoice, error)
 	Current() string
 	Select(ctx context.Context, value string) error
+}
+
+type StopReason string
+
+const (
+	StopEndTurn         StopReason = "end_turn"
+	StopMaxTokens       StopReason = "max_tokens"
+	StopMaxTurnRequests StopReason = "max_turn_requests"
+	StopRefusal         StopReason = "refusal"
+	StopCancelled       StopReason = "cancelled"
+)
+
+type RuntimeCaps struct {
+	Resume bool
+	Images bool
+	Modes  []string
+}
+
+type RuntimeStart struct {
+	TaskID, SessionID string
+	Workdir           string
+	Model, Mode       string
+	// ResumeRef is the runtime's own session id; empty starts a new session.
+	ResumeRef string
+}
+
+type RuntimeEventKind string
+
+const (
+	RuntimeMessage           RuntimeEventKind = "message"
+	RuntimeThought           RuntimeEventKind = "thought"
+	RuntimeToolCall          RuntimeEventKind = "tool_call"
+	RuntimeToolCallUpdate    RuntimeEventKind = "tool_call_update"
+	RuntimePlan              RuntimeEventKind = "plan"
+	RuntimePermissionRequest RuntimeEventKind = "permission_request"
+	RuntimeMode              RuntimeEventKind = "mode"
+	RuntimeStop              RuntimeEventKind = "stop"
+)
+
+// PermissionRequest is a runtime asking to run one guarded step; Text is what the guard policy matches on.
+type PermissionRequest struct {
+	RequestID string `json:"request_id"`
+	Tool      string `json:"tool"`
+	// Kind is the ACP tool kind: execute, read, edit, delete, ...
+	Kind string `json:"kind"`
+	// Text is the shell command or the path the request acts on.
+	Text           string `json:"text"`
+	AllowOptionID  string `json:"allow_option_id"`
+	RejectOptionID string `json:"reject_option_id"`
+}
+
+// RuntimeEvent is one ACP-shaped event of a session. message and thought events are chunks.
+type RuntimeEvent struct {
+	Kind RuntimeEventKind `json:"kind"`
+	// ID is the message id or tool call id the event belongs to; empty when the runtime has none.
+	ID         string             `json:"id,omitempty"`
+	Text       string             `json:"text,omitempty"`
+	ToolKind   string             `json:"tool_kind,omitempty"`
+	Status     string             `json:"status,omitempty"`
+	Permission *PermissionRequest `json:"permission,omitempty"`
+	Stop       StopReason         `json:"stop,omitempty"`
+}
+
+type Runtime interface {
+	Name() string
+	Capabilities() RuntimeCaps
+	Start(ctx context.Context, req RuntimeStart) (RuntimeSession, error)
+}
+
+// RuntimeSession: Send returns only after the turn's events, the closing stop included, were handed to Events.
+type RuntimeSession interface {
+	Ref() string
+	Send(ctx context.Context, prompt string) (StopReason, error)
+	Approve(ctx context.Context, requestID, optionID string) error
+	Events() <-chan RuntimeEvent
+	Stop(ctx context.Context) error
 }

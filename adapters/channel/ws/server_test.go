@@ -26,6 +26,7 @@ type fakeHandler struct {
 	mu        sync.Mutex
 	inputs    []app.Input
 	decisions []string
+	jobs      []string
 	views     map[string]app.ConversationView
 	convs     []app.ConversationSummary
 	origins   map[string]string
@@ -48,6 +49,13 @@ func (h *fakeHandler) HandleApproval(_ context.Context, taskID, approvalID strin
 	defer h.mu.Unlock()
 	h.decisions = append(h.decisions, taskID+"/"+approvalID)
 	return h.failWith
+}
+
+func (h *fakeHandler) RunJob(_ context.Context, name string) (string, error) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.jobs = append(h.jobs, name)
+	return "task-job", h.failWith
 }
 
 func (h *fakeHandler) ConversationView(_ context.Context, replyTo string) (app.ConversationView, error) {
@@ -420,6 +428,35 @@ func TestHandlerErrorsAreNotSentToClients(t *testing.T) {
 				t.Fatalf("error message = %q, want %q", f.Message, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunJobFrame(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.send(ws.RunJob{Name: "fix-readme"})
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		h.mu.Lock()
+		got := append([]string(nil), h.jobs...)
+		h.mu.Unlock()
+		if len(got) == 1 && got[0] == "fix-readme" {
+			return
+		}
+	}
+	t.Fatalf("jobs = %v, want fix-readme", h.jobs)
+}
+
+func TestRunJobErrorIsGeneric(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	h.failWith = errors.New("job /private/path not found")
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.send(ws.RunJob{Name: "nope"})
+	if f := c.expect(ws.TypeError); f.Message != "job failed" {
+		t.Errorf("message = %q, want the generic job failed", f.Message)
 	}
 }
 

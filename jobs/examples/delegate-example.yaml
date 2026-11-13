@@ -1,0 +1,13 @@
+# Copy to jobs/ and adjust to use it. Manual only: start it with `haythos run-job delegate-example`.
+# runtime.alias and runtime.workdir must exist under runtimes in config/haythos.yaml.
+name: delegate-example
+goal: >
+  In this repository, add a short "Usage" section to README.md. Do not touch other files.
+trigger:
+  manual: true
+runtime:
+  alias: claude
+  workdir: scratch
+  # model and mode default to the runtime's own entry
+checks:
+  - { name: git-diff-clean-of-conflicts, argv: [git, diff, --check], timeout: 1m }

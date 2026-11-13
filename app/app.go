@@ -56,13 +56,26 @@ type Deps struct {
 	BlockedChatModel string
 	// Brain is optional; nil disables recall and brain tools.
 	Brain Brain
+
+	// Runtimes are the runtimes a task can be delegated to, by alias.
+	Runtimes map[string]Runtime
+	// Guard decides every permission request of a delegated session; the zero Guard allows all.
+	Guard policy.Guard
+	// Guards override Guard for the runtime aliases they name.
+	Guards map[string]policy.Guard
+	// WorkdirState fingerprints a workdir (HEAD plus uncommitted changes); a different value after a session means it changed.
+	WorkdirState func(ctx context.Context, dir string) (string, error)
+	// RunCheck runs argv in dir with env added to a minimal base; err is a start error or a timeout.
+	RunCheck func(ctx context.Context, dir string, argv, env []string, limit time.Duration) (exit int, output string, err error)
 }
 
 type App struct {
 	d        Deps
 	gw       *gateway.Gateway
 	paused   atomic.Bool
+	bg       sync.WaitGroup
 	locks    sync.Map
+	live     sync.Map
 	settings map[string]setting
 }
 
@@ -226,6 +239,10 @@ func (a *App) Start(ctx context.Context) error {
 		}
 	}
 
+	if err := a.failLostSessions(ctx); err != nil {
+		return err
+	}
+
 	for _, st := range []task.State{task.Pending, task.Running} {
 		ids, err := a.d.Events.TasksIn(ctx, st)
 		if err != nil {
@@ -305,7 +322,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.Runtime}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -374,6 +391,9 @@ func (a *App) run(ctx context.Context, id string) error {
 		s, err := a.Snapshot(ctx, id)
 		if err != nil {
 			return err
+		}
+		if s.Created.Runtime != "" && !s.State.Terminal() {
+			return fmt.Errorf("run task %s: %w", id, ErrDelegated)
 		}
 		switch s.State {
 		case task.Done, task.Failed, task.WaitingApproval, task.Watching:
@@ -515,6 +535,12 @@ func (a *App) HandleApproval(ctx context.Context, taskID, approvalID string, app
 	req, ok := findRequest(events, approvalID)
 	if !ok {
 		return fmt.Errorf("approval %s not found on task %s", approvalID, taskID)
+	}
+	if live, ok := a.live.Load(taskID); ok {
+		return a.answerDelegated(ctx, taskID, live.(*delegated), req, approve)
+	}
+	if s.Created.Runtime != "" {
+		return fmt.Errorf("task %s: its runtime session is gone: %w", taskID, ErrDelegated)
 	}
 	if _, err := a.d.Events.Append(ctx, taskID, task.EvApprovalDecided, approvalDecided{ID: approvalID, Approved: approve}); err != nil {
 		return fmt.Errorf("append approval decision: %w", err)
@@ -727,6 +753,9 @@ func truncate(s string, n int) string {
 
 func (a *App) RunJob(ctx context.Context, name string) (string, error) {
 	for _, j := range a.d.Jobs {
+		if j.Name == name && j.Runtime != "" {
+			return a.RunDelegated(ctx, j, delegationOf(j))
+		}
 		if j.Name == name {
 			id, err := a.CreateTask(ctx, j, "Run the scheduled job: "+j.Name)
 			if err != nil {

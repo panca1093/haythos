@@ -34,6 +34,7 @@ const (
 type Handler interface {
 	HandleInput(ctx context.Context, in app.Input) (string, error)
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
+	RunJob(ctx context.Context, name string) (string, error)
 	ConversationView(ctx context.Context, replyTo string) (app.ConversationView, error)
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
 	TaskOrigin(ctx context.Context, taskID string) (string, error)
@@ -255,6 +256,11 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		}
 		s.background(kernel, c, "approval", func(ctx context.Context) error {
 			return s.h.HandleApproval(ctx, f.TaskID, f.ApprovalID, f.Approve)
+		})
+	case TypeRunJob:
+		s.background(kernel, c, "job", func(ctx context.Context) error {
+			_, err := s.h.RunJob(ctx, f.Name)
+			return err
 		})
 	case TypeSessions:
 		convs, err := s.h.Conversations(ctx, Prefix)

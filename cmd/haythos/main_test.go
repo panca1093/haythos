@@ -45,6 +45,7 @@ func runJobFixture(t *testing.T) (dir string, args []string) {
 	t.Helper()
 	dir = t.TempDir()
 	t.Setenv("HAYTHOS_VAULT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
+	t.Setenv("HAYTHOS_HOME", dir)
 	cfg := "db: " + filepath.Join(dir, "h.db") + "\nvault: " + filepath.Join(dir, "v.enc") + "\n" +
 		"default_model: claude-api\nmodels:\n  claude-api: { kind: anthropic, model: m, secret: anthropic }\n"
 	if err := os.WriteFile(filepath.Join(dir, "haythos.yaml"), []byte(cfg), 0o600); err != nil {

@@ -2,10 +2,13 @@ package config
 
 import (
 	"bytes"
+	"cmp"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 
@@ -30,6 +33,38 @@ type MCPServer struct {
 	Trusted bool     `yaml:"trusted"`
 }
 
+// Runtime is one entry of the runtimes block: how to start a runtime and which folders and guard rules apply to it.
+type Runtime struct {
+	Kind    string   `yaml:"kind"`
+	Command string   `yaml:"command"`
+	Args    []string `yaml:"args"`
+	// Model and Mode are defaults; a job may override them.
+	Model string `yaml:"model"`
+	Mode  string `yaml:"mode"`
+	// PassEnv names variables copied from the kernel's environment; Env is extra KEY=VALUE.
+	PassEnv []string `yaml:"pass_env"`
+	Env     []string `yaml:"env"`
+	// CommandsAsk is the owner's statement that an acp runtime asks before every shell command; opencode is checked from its env instead.
+	CommandsAsk bool `yaml:"commands_ask"`
+	// ConfigOptions maps "model" and "mode" to the runtime's config option ids (acp only).
+	ConfigOptions map[string]string `yaml:"config_options"`
+	// Workdirs maps a name jobs refer to onto an absolute folder; nothing else is a valid workdir.
+	Workdirs map[string]string `yaml:"workdirs"`
+	// Guard rules are added to policy.StarterRules unless StarterGuard is false.
+	Guard        []policy.GuardRule `yaml:"guard"`
+	StarterGuard *bool              `yaml:"starter_guard"`
+}
+
+// RuntimeKinds are the kinds buildRuntimes in cmd/haythos can construct.
+var RuntimeKinds = []string{"acp", "claudecli", "codexapp"}
+
+func (r Runtime) GuardRules() []policy.GuardRule {
+	if r.StarterGuard != nil && !*r.StarterGuard {
+		return r.Guard
+	}
+	return append(policy.StarterRules(), r.Guard...)
+}
+
 type Main struct {
 	DB           string           `yaml:"db"`
 	Vault        string           `yaml:"vault"`
@@ -52,6 +87,7 @@ type Main struct {
 	Discord struct {
 		OwnerID string `yaml:"owner_id"`
 	} `yaml:"discord"`
+	Runtimes map[string]Runtime `yaml:"runtimes"`
 }
 
 func decode(path string, out any) error {
@@ -95,7 +131,76 @@ func LoadMain(path string) (Main, error) {
 		}
 		seen[sv.Name] = true
 	}
+	for alias, rt := range m.Runtimes {
+		if err := validRuntime(alias, &rt, m.ClaudeCLI.Command); err != nil {
+			return m, fmt.Errorf("%s: %w", path, err)
+		}
+		m.Runtimes[alias] = rt
+	}
 	return m, nil
+}
+
+func validRuntime(alias string, rt *Runtime, claudeCommand string) error {
+	switch {
+	case alias == "" || strings.ContainsAny(alias, ". \t"):
+		return fmt.Errorf("runtime alias %q must not be empty or contain dots or spaces", alias)
+	case !contains(RuntimeKinds, rt.Kind):
+		return fmt.Errorf("runtime %s has unknown kind %q (want one of %s)", alias, rt.Kind, strings.Join(RuntimeKinds, ", "))
+	}
+	if rt.Command == "" && rt.Kind == "claudecli" {
+		rt.Command = claudeCommand
+	}
+	if rt.Command == "" {
+		return fmt.Errorf("runtime %s needs a command", alias)
+	}
+	for _, kv := range rt.Env {
+		if !strings.Contains(kv, "=") {
+			return fmt.Errorf("runtime %s: env entry %q must be KEY=VALUE", alias, kv)
+		}
+	}
+	switch {
+	case rt.Kind == "claudecli" && len(rt.Env) > 0:
+		return fmt.Errorf("runtime %s: claudecli ignores env, use pass_env", alias)
+	case rt.Kind != "acp" && rt.Mode != "":
+		return fmt.Errorf("runtime %s: %s has no modes, drop mode", alias, rt.Kind)
+	}
+	if rt.Kind == "acp" && !rt.CommandsAsk && !opencodeAsksForBash(rt.Env) {
+		return fmt.Errorf("runtime %s: an acp runtime must be made to ask before shell commands: set OPENCODE_CONFIG_CONTENT with permission.bash ask in env, or commands_ask: true for another runtime", alias)
+	}
+	for name, dir := range rt.Workdirs {
+		if name == "" || !filepath.IsAbs(dir) {
+			return fmt.Errorf("runtime %s: workdir %q must map to an absolute path, got %q", alias, name, dir)
+		}
+	}
+	if _, err := policy.NewGuard(rt.GuardRules()); err != nil {
+		return fmt.Errorf("runtime %s: %w", alias, err)
+	}
+	return nil
+}
+
+func opencodeAsksForBash(env []string) bool {
+	const key = "OPENCODE_CONFIG_CONTENT="
+	for _, kv := range env {
+		raw, ok := strings.CutPrefix(kv, key)
+		if !ok {
+			continue
+		}
+		var c struct {
+			Permission struct {
+				Bash json.RawMessage `json:"bash"`
+			} `json:"permission"`
+		}
+		if json.Unmarshal([]byte(raw), &c) != nil {
+			return false
+		}
+		var plain string
+		var byPattern map[string]string
+		if json.Unmarshal(c.Permission.Bash, &plain) == nil {
+			return plain == "ask"
+		}
+		return json.Unmarshal(c.Permission.Bash, &byPattern) == nil && byPattern["*"] == "ask"
+	}
+	return false
 }
 
 func LoadPolicy(path string) (policy.Policy, error) {
@@ -145,10 +250,23 @@ type jobFile struct {
 	Silent    bool        `yaml:"silent"`
 	// BrainSource is the provenance the kernel stamps on brain writes from this job.
 	BrainSource string `yaml:"brain_source"`
+	// Runtime delegates the job to a configured runtime; Workdir is a name from that runtime's workdirs.
+	Runtime *struct {
+		Alias   string `yaml:"alias"`
+		Workdir string `yaml:"workdir"`
+		Model   string `yaml:"model"`
+		Mode    string `yaml:"mode"`
+	} `yaml:"runtime"`
+	// Checks are authored here and in config only; chat-created jobs cannot carry them.
+	Checks []struct {
+		Name    string        `yaml:"name"`
+		Argv    []string      `yaml:"argv"`
+		Timeout time.Duration `yaml:"timeout"`
+	} `yaml:"checks"`
 }
 
-// LoadJobs reads every *.yaml in dir.
-func LoadJobs(dir string) ([]app.Job, error) {
+// LoadJobs reads every *.yaml in dir; runtimes resolve the runtime alias and workdir name of delegated jobs.
+func LoadJobs(dir string, runtimes map[string]Runtime) ([]app.Job, error) {
 	paths, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
 	if err != nil {
 		return nil, fmt.Errorf("list jobs: %w", err)
@@ -158,6 +276,17 @@ func LoadJobs(dir string) ([]app.Job, error) {
 		var f jobFile
 		if err := decode(p, &f); err != nil {
 			return nil, err
+		}
+		if f.Runtime != nil {
+			j, err := delegatedJob(p, f, runtimes)
+			if err != nil {
+				return nil, err
+			}
+			jobs = append(jobs, j)
+			continue
+		}
+		if len(f.Checks) > 0 {
+			return nil, fmt.Errorf("%s: checks need a runtime", p)
 		}
 		if f.Name == "" || f.Goal == "" || len(f.Tools) == 0 {
 			return nil, fmt.Errorf("%s: name, goal and tools are required", p)
@@ -178,6 +307,36 @@ func LoadJobs(dir string) ([]app.Job, error) {
 		})
 	}
 	return jobs, nil
+}
+
+func delegatedJob(path string, f jobFile, runtimes map[string]Runtime) (app.Job, error) {
+	rt, ok := runtimes[f.Runtime.Alias]
+	if !ok {
+		return app.Job{}, fmt.Errorf("%s: runtime %q is not defined in the config runtimes", path, f.Runtime.Alias)
+	}
+	dir, ok := rt.Workdirs[f.Runtime.Workdir]
+	if f.Name == "" || f.Goal == "" || !ok {
+		return app.Job{}, fmt.Errorf("%s: a delegated job needs name, goal and a workdir name listed under runtimes.%s.workdirs, got %q", path, f.Runtime.Alias, f.Runtime.Workdir)
+	}
+	j := app.Job{
+		Name: f.Name, Goal: strings.TrimSpace(f.Goal), Trigger: f.Trigger, DeliverTo: f.DeliverTo, Silent: f.Silent,
+		Runtime: f.Runtime.Alias, Workdir: dir,
+		RuntimeModel: cmp.Or(f.Runtime.Model, rt.Model), RuntimeMode: cmp.Or(f.Runtime.Mode, rt.Mode),
+	}
+	seen := map[string]bool{}
+	for _, c := range f.Checks {
+		switch {
+		case c.Name == "" || seen[c.Name]:
+			return app.Job{}, fmt.Errorf("%s: check names must be set and unique, got %q", path, c.Name)
+		case len(c.Argv) == 0 || c.Argv[0] == "":
+			return app.Job{}, fmt.Errorf("%s: check %s needs an argv list", path, c.Name)
+		case c.Timeout < 0 || c.Timeout > app.MaxCheckTimeout:
+			return app.Job{}, fmt.Errorf("%s: check %s timeout must be within %s", path, c.Name, app.MaxCheckTimeout)
+		}
+		seen[c.Name] = true
+		j.Checks = append(j.Checks, app.Check{Name: c.Name, Argv: c.Argv, Timeout: cmp.Or(c.Timeout, app.DefaultCheckTimeout)})
+	}
+	return j, nil
 }
 
 func contains(xs []string, x string) bool {
