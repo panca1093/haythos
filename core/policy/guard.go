@@ -63,7 +63,7 @@ func NewGuard(rules []GuardRule) (Guard, error) {
 	return g, nil
 }
 
-const gitPrefix = `^git(?:\s+-[Cc]\s+\S+)*\s+`
+const gitPrefix = `^git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+|--\S+|-[pP]))*\s+`
 
 // StarterRules is the guarded list of CLAUDE.md; matching is on text, so it is a guard rail and not a guarantee.
 func StarterRules() []GuardRule {
@@ -71,7 +71,7 @@ func StarterRules() []GuardRule {
 	return []GuardRule{
 		{Name: "delete", Kinds: []string{KindDelete}},
 		{Name: "delete", Kinds: exec, Command: true, Pattern: `^(?:rm|rmdir|unlink|shred|trash)(?:\s|$)`},
-		{Name: "delete", Kinds: exec, Command: true, Pattern: `^find\b.*(?:\s-delete\b|-exec\s+rm\b)`},
+		{Name: "delete", Kinds: exec, Command: true, Pattern: `^find\b.*(?:\s-delete\b|-exec(?:dir)?\s+(?:\S*/)?rm\b)`},
 		{Name: "delete", Kinds: exec, Command: true, Pattern: gitPrefix + `clean\b`},
 		{Name: "delete", Kinds: exec, Command: true, Pattern: gitPrefix + `reset\b.*--hard\b`},
 		{Name: "delete", Kinds: exec, Pattern: `(?i)\bdrop\s+(?:table|database|schema)\b`},
@@ -110,7 +110,7 @@ func (g Guard) Verdict(req GuardRequest) GuardVerdict {
 
 func (r compiledRule) matches(req GuardRequest, segs []string) bool {
 	if !r.Command {
-		return r.re.MatchString(req.Text)
+		return r.re.MatchString(req.Text) || r.re.MatchString(quoteStrip.Replace(req.Text))
 	}
 	return slices.ContainsFunc(segs, r.re.MatchString)
 }
@@ -118,8 +118,22 @@ func (r compiledRule) matches(req GuardRequest, segs []string) bool {
 var (
 	segmentSplit = regexp.MustCompile("&&|\\|\\||[;|&\\n()`]")
 	envAssign    = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*=`)
-	wrappers     = []string{"sudo", "doas", "env", "command", "nohup", "time", "exec", "xargs", "nice", "builtin"}
+	shellCFlag   = regexp.MustCompile(`^-[a-z]*c[a-z]*$`)
+	quoteStrip   = strings.NewReplacer(`\`, "", `"`, "", `'`, "")
 	shells       = []string{"bash", "sh", "zsh", "dash"}
+	keywords     = []string{"if", "then", "elif", "else", "while", "until", "do", "!", "{", "coproc"}
+	// wrappers run the rest of the line; the value lists the options that consume the next word.
+	wrappers = map[string][]string{
+		"sudo":    {"-u", "-g", "-h", "-p", "-C", "-T", "-r", "-t", "-U"},
+		"doas":    {"-u", "-C"},
+		"env":     {"-u", "-C", "-S", "--unset", "--chdir"},
+		"command": nil, "nohup": nil, "builtin": nil,
+		"time":    {"-f", "-o"},
+		"exec":    {"-a"},
+		"xargs":   {"-n", "-I", "-P", "-L", "-s", "-d", "-E", "-a"},
+		"nice":    {"-n"},
+		"timeout": {"-s", "-k"},
+	}
 )
 
 const maxShellDepth = 3
@@ -128,25 +142,45 @@ const maxShellDepth = 3
 func commandSegments(text string, depth int) []string {
 	var out []string
 	for _, seg := range segmentSplit.Split(text, -1) {
-		words := strings.Fields(seg)
+		raw := strings.Fields(seg)
+		words := make([]string, len(raw))
+		for i, w := range raw {
+			words[i] = quoteStrip.Replace(w)
+		}
 		for len(words) > 0 && envAssign.MatchString(words[0]) {
-			words = words[1:]
+			raw, words = raw[1:], words[1:]
 		}
 		for len(words) > 0 {
-			words[0] = path.Base(strings.TrimLeft(words[0], `\"'`))
+			words[0] = path.Base(words[0])
 			out = append(out, strings.Join(words, " "))
-			if slices.Contains(shells, words[0]) && depth < maxShellDepth {
-				if i := slices.Index(words, "-c"); i >= 0 && i+1 < len(words) {
-					payload := strings.Trim(strings.Join(words[i+1:], " "), `"'`)
-					out = append(out, commandSegments(payload, depth+1)...)
+			if depth < maxShellDepth {
+				payload := ""
+				if slices.Contains(shells, words[0]) {
+					if i := slices.IndexFunc(words[1:], shellCFlag.MatchString); i >= 0 && i+2 < len(raw) {
+						payload = strings.Join(raw[i+2:], " ")
+					}
+				} else if words[0] == "eval" {
+					payload = strings.Join(raw[1:], " ")
+				}
+				if payload != "" {
+					out = append(out, commandSegments(strings.Trim(payload, `"'`), depth+1)...)
 				}
 			}
-			if !slices.Contains(wrappers, words[0]) {
+			opts, isWrapper := wrappers[words[0]]
+			if !isWrapper && words[0] != "eval" && !slices.Contains(keywords, words[0]) {
 				break
 			}
-			words = words[1:]
+			name := words[0]
+			raw, words = raw[1:], words[1:]
 			for len(words) > 0 && (strings.HasPrefix(words[0], "-") || envAssign.MatchString(words[0])) {
-				words = words[1:]
+				takesValue := slices.Contains(opts, words[0])
+				raw, words = raw[1:], words[1:]
+				if takesValue && len(words) > 0 {
+					raw, words = raw[1:], words[1:]
+				}
+			}
+			if name == "timeout" && len(words) > 0 {
+				raw, words = raw[1:], words[1:]
 			}
 		}
 	}
