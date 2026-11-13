@@ -158,6 +158,12 @@ func validRuntime(alias string, rt *Runtime, claudeCommand string) error {
 			return fmt.Errorf("runtime %s: env entry %q must be KEY=VALUE", alias, kv)
 		}
 	}
+	switch {
+	case rt.Kind == "claudecli" && len(rt.Env) > 0:
+		return fmt.Errorf("runtime %s: claudecli ignores env, use pass_env", alias)
+	case rt.Kind != "acp" && rt.Mode != "":
+		return fmt.Errorf("runtime %s: %s has no modes, drop mode", alias, rt.Kind)
+	}
 	if rt.Kind == "acp" && !rt.CommandsAsk && !opencodeAsksForBash(rt.Env) {
 		return fmt.Errorf("runtime %s: an acp runtime must be made to ask before shell commands: set OPENCODE_CONFIG_CONTENT with permission.bash ask in env, or commands_ask: true for another runtime", alias)
 	}

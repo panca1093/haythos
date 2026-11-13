@@ -283,6 +283,9 @@ func TestRuntimesRejectBadEntries(t *testing.T) {
 		"opencode bash allowed":      "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":\"allow\"}}'] }\n",
 		"opencode bash star allowed": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"allow\"}}}'] }\n",
 		"opencode config not json":   "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT=nope'] }\n",
+		"claudecli env":              "  a: { kind: claudecli, command: x, env: ['A=b'] }\n",
+		"claudecli mode":             "  a: { kind: claudecli, command: x, mode: build }\n",
+		"codexapp mode":              "  a: { kind: codexapp, command: x, mode: build }\n",
 		"alias with dot":             "  a.b: { kind: acp, command: x, commands_ask: true }\n",
 	} {
 		t.Run(name, func(t *testing.T) {
