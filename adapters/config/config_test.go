@@ -221,6 +221,7 @@ runtimes:
   oc:
     kind: acp
     command: opencode
+    commands_ask: true
     args: [acp]
     model: m1
     mode: build
@@ -257,7 +258,7 @@ func TestRuntimesLoad(t *testing.T) {
 }
 
 func TestRuntimesAddToStarterGuard(t *testing.T) {
-	body := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n  oc:\n    kind: acp\n    command: x\n    guard: [{ name: extra, pattern: zzz }]\n"
+	body := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n  oc:\n    kind: acp\n    command: x\n    commands_ask: true\n    guard: [{ name: extra, pattern: zzz }]\n"
 	m, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", body))
 	if err != nil {
 		t.Fatal(err)
@@ -271,14 +272,18 @@ func TestRuntimesAddToStarterGuard(t *testing.T) {
 func TestRuntimesRejectBadEntries(t *testing.T) {
 	head := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n"
 	for name, body := range map[string]string{
-		"unknown kind":      "  a: { kind: telepathy, command: x }\n",
-		"acp without cmd":   "  a: { kind: acp }\n",
-		"relative workdir":  "  a: { kind: acp, command: x, workdirs: { w: rel/path } }\n",
-		"env without equal": "  a: { kind: acp, command: x, env: [NOEQUALS] }\n",
-		"bad guard regexp":  "  a: { kind: acp, command: x, guard: [{ name: r, pattern: '(' }] }\n",
-		"bad guard action":  "  a: { kind: acp, command: x, guard: [{ name: r, pattern: x, action: allow }] }\n",
-		"unknown field":     "  a: { kind: acp, command: x, shell: yes }\n",
-		"alias with dot":    "  a.b: { kind: acp, command: x }\n",
+		"unknown kind":               "  a: { kind: telepathy, command: x }\n",
+		"acp without cmd":            "  a: { kind: acp }\n",
+		"relative workdir":           "  a: { kind: acp, command: x, commands_ask: true, workdirs: { w: rel/path } }\n",
+		"env without equal":          "  a: { kind: acp, command: x, commands_ask: true, env: [NOEQUALS] }\n",
+		"bad guard regexp":           "  a: { kind: acp, command: x, commands_ask: true, guard: [{ name: r, pattern: '(' }] }\n",
+		"bad guard action":           "  a: { kind: acp, command: x, commands_ask: true, guard: [{ name: r, pattern: x, action: allow }] }\n",
+		"unknown field":              "  a: { kind: acp, command: x, commands_ask: true, shell: yes }\n",
+		"acp that never asks":        "  a: { kind: acp, command: x }\n",
+		"opencode bash allowed":      "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":\"allow\"}}'] }\n",
+		"opencode bash star allowed": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"allow\"}}}'] }\n",
+		"opencode config not json":   "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT=nope'] }\n",
+		"alias with dot":             "  a.b: { kind: acp, command: x, commands_ask: true }\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			if _, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", head+body)); err == nil {
@@ -358,5 +363,20 @@ func TestExampleRuntimesBlockAndJobLoad(t *testing.T) {
 	jobs, err := LoadJobs("../../jobs/examples", m.Runtimes)
 	if err != nil || len(jobs) != 1 || jobs[0].Runtime != "claude" || jobs[0].Trigger.Cron != "" || !jobs[0].Trigger.Manual {
 		t.Fatalf("example job = %+v, err = %v, want a manual job on the claude alias", jobs, err)
+	}
+}
+
+func TestACPAsksOnlyWhenConfiguredTo(t *testing.T) {
+	head := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n"
+	for name, body := range map[string]string{
+		"opencode bash star ask": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"ask\"}}}'] }\n",
+		"opencode bash ask":      "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":\"ask\"}}'] }\n",
+		"declared by the owner":  "  a: { kind: acp, command: goose, commands_ask: true }\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", head+body)); err != nil {
+				t.Error(err)
+			}
+		})
 	}
 }

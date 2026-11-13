@@ -22,7 +22,7 @@ discord:
 # (action: ask | deny; `starter_guard: false` drops the starter list). Matching is on text, so it is a guard rail, not a sandbox.
 # runtimes:
 #   opencode:
-#     kind: acp
+#     kind: acp             # must be made to ask: OPENCODE_CONFIG_CONTENT with permission.bash ask in env (checked), or `commands_ask: true` for another runtime
 #     command: opencode
 #     args: [acp]
 #     model: ""

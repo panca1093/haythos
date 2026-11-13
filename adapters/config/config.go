@@ -3,6 +3,7 @@ package config
 import (
 	"bytes"
 	"cmp"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -43,6 +44,8 @@ type Runtime struct {
 	// PassEnv names variables copied from the kernel's environment; Env is extra KEY=VALUE.
 	PassEnv []string `yaml:"pass_env"`
 	Env     []string `yaml:"env"`
+	// CommandsAsk is the owner's statement that an acp runtime asks before every shell command; opencode is checked from its env instead.
+	CommandsAsk bool `yaml:"commands_ask"`
 	// ConfigOptions maps "model" and "mode" to the runtime's config option ids (acp only).
 	ConfigOptions map[string]string `yaml:"config_options"`
 	// Workdirs maps a name jobs refer to onto an absolute folder; nothing else is a valid workdir.
@@ -155,6 +158,9 @@ func validRuntime(alias string, rt *Runtime, claudeCommand string) error {
 			return fmt.Errorf("runtime %s: env entry %q must be KEY=VALUE", alias, kv)
 		}
 	}
+	if rt.Kind == "acp" && !rt.CommandsAsk && !opencodeAsksForBash(rt.Env) {
+		return fmt.Errorf("runtime %s: an acp runtime must be made to ask before shell commands: set OPENCODE_CONFIG_CONTENT with permission.bash ask in env, or commands_ask: true for another runtime", alias)
+	}
 	for name, dir := range rt.Workdirs {
 		if name == "" || !filepath.IsAbs(dir) {
 			return fmt.Errorf("runtime %s: workdir %q must map to an absolute path, got %q", alias, name, dir)
@@ -164,6 +170,31 @@ func validRuntime(alias string, rt *Runtime, claudeCommand string) error {
 		return fmt.Errorf("runtime %s: %w", alias, err)
 	}
 	return nil
+}
+
+func opencodeAsksForBash(env []string) bool {
+	const key = "OPENCODE_CONFIG_CONTENT="
+	for _, kv := range env {
+		raw, ok := strings.CutPrefix(kv, key)
+		if !ok {
+			continue
+		}
+		var c struct {
+			Permission struct {
+				Bash json.RawMessage `json:"bash"`
+			} `json:"permission"`
+		}
+		if json.Unmarshal([]byte(raw), &c) != nil {
+			return false
+		}
+		var plain string
+		var byPattern map[string]string
+		if json.Unmarshal(c.Permission.Bash, &plain) == nil {
+			return plain == "ask"
+		}
+		return json.Unmarshal(c.Permission.Bash, &byPattern) == nil && byPattern["*"] == "ask"
+	}
+	return false
 }
 
 func LoadPolicy(path string) (policy.Policy, error) {
