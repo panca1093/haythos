@@ -34,6 +34,7 @@ const (
 type Handler interface {
 	HandleInput(ctx context.Context, in app.Input) (string, error)
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
+	CancelDelegated(ctx context.Context, taskID string) error
 	RunJob(ctx context.Context, name string) (string, error)
 	ConversationView(ctx context.Context, replyTo string) (app.ConversationView, error)
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
@@ -256,6 +257,16 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		}
 		s.background(kernel, c, "approval", func(ctx context.Context) error {
 			return s.h.HandleApproval(ctx, f.TaskID, f.ApprovalID, f.Approve)
+		})
+	case TypeCancel:
+		conv := s.convOf(c)
+		origin, err := s.h.TaskOrigin(ctx, f.TaskID)
+		if conv == "" || err != nil || origin != conv {
+			s.reply(c, errorFrame("cancel refused: it can only be sent from the conversation that started the task"))
+			return
+		}
+		s.background(kernel, c, "cancel", func(ctx context.Context) error {
+			return s.h.CancelDelegated(ctx, f.TaskID)
 		})
 	case TypeRunJob:
 		s.background(kernel, c, "job", func(ctx context.Context) error {
