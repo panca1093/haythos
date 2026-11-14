@@ -77,6 +77,7 @@ func hashUntracked(ctx context.Context, dir string, h io.Writer) error {
 }
 
 func git(ctx context.Context, dir string, sink io.Writer, args ...string) ([]byte, error) {
+	sub := subcommand(args)
 	args = append([]string{"-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null"}, args...)
 	cmd := exec.CommandContext(ctx, "git", args...) //nolint:gosec // fixed git subcommands from this file
 	cmd.Dir = dir
@@ -87,9 +88,22 @@ func git(ctx context.Context, dir string, sink io.Writer, args ...string) ([]byt
 		cmd.Stdout = sink
 	}
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("git %s: %w: %s", args[4], err, strings.TrimSpace(errBuf.String()))
+		return nil, fmt.Errorf("git %s: %w: %s", sub, err, strings.TrimSpace(errBuf.String()))
 	}
 	return out.Bytes(), nil
+}
+
+// subcommand is the first word of args that is not an option or an option's value.
+func subcommand(args []string) string {
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "-C" || args[i] == "-c":
+			i++
+		case !strings.HasPrefix(args[i], "-"):
+			return args[i]
+		}
+	}
+	return ""
 }
 
 // RunCheck runs argv without a shell in dir with PATH, HOME, USER and env only, and returns the tail of stdout and stderr together.

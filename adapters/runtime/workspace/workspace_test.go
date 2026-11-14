@@ -183,3 +183,23 @@ func TestStateRunsNoRepoConfiguredCommands(t *testing.T) {
 		t.Error("State executed core.fsmonitor from the repo config")
 	}
 }
+
+func TestGitErrorNamesTheSubcommand(t *testing.T) {
+	t.Parallel()
+	for name, args := range map[string][]string{
+		"plain":           {"bogus-cmd"},
+		"option first":    {"--no-pager", "bogus-cmd"},
+		"option with arg": {"-C", ".", "bogus-cmd"},
+		"no arguments":    {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := git(context.Background(), t.TempDir(), nil, args...)
+			if err == nil {
+				t.Fatal("no error")
+			}
+			if len(args) > 0 && !strings.Contains(err.Error(), "git bogus-cmd:") {
+				t.Errorf("error = %q, want it to name the subcommand bogus-cmd", err)
+			}
+		})
+	}
+}
