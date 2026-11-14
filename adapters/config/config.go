@@ -198,7 +198,15 @@ func opencodeAsksForBash(env []string) bool {
 		if json.Unmarshal(c.Permission.Bash, &plain) == nil {
 			return plain == "ask"
 		}
-		return json.Unmarshal(c.Permission.Bash, &byPattern) == nil && byPattern["*"] == "ask"
+		if json.Unmarshal(c.Permission.Bash, &byPattern) != nil || byPattern["*"] != "ask" {
+			return false
+		}
+		for _, action := range byPattern {
+			if action == "allow" {
+				return false
+			}
+		}
+		return true
 	}
 	return false
 }
