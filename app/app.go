@@ -76,6 +76,7 @@ type App struct {
 	bg       sync.WaitGroup
 	locks    sync.Map
 	live     sync.Map
+	workdirs sync.Map
 	settings map[string]setting
 }
 

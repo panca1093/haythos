@@ -297,3 +297,51 @@ func TestDelegatedCancelStopsRunningChecks(t *testing.T) {
 		t.Fatal("cancel did not stop the running check")
 	}
 }
+
+func TestDelegatedSecondSessionOnTheSameWorkdirFailsFast(t *testing.T) {
+	r := newDelegateRig(t, func(r *delegateRig) []testfakes.RuntimeStep { return []testfakes.RuntimeStep{testfakes.Hang()} })
+	first := make(chan string, 1)
+	go func() {
+		id, _ := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/w"})
+		first <- id
+	}()
+	for deadline := time.Now().Add(5 * time.Second); r.runtime.Sessions() == 0 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+	}
+	if r.runtime.Sessions() != 1 {
+		t.Fatal("first session never started")
+	}
+
+	id, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/w/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := r.snap(id)
+	if s.State != task.Failed || !strings.Contains(s.Reason, "workdir busy") {
+		t.Errorf("second task = %s %q, want failed with workdir busy", s.State, s.Reason)
+	}
+	if r.runtime.Sessions() != 1 {
+		t.Errorf("sessions = %d, want the second never started", r.runtime.Sessions())
+	}
+
+	firstID := ""
+	for deadline := time.Now().Add(5 * time.Second); firstID == "" && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
+		evs, _ := r.store.Since(context.Background(), 0)
+		for _, e := range evs {
+			if e.Type == task.EvCreated && e.TaskID != id {
+				firstID = e.TaskID
+			}
+		}
+	}
+	if err := r.app.CancelDelegated(context.Background(), firstID); err != nil {
+		t.Fatal(err)
+	}
+	<-first
+
+	id3, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/other"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if s := r.snap(id3); strings.Contains(s.Reason, "workdir busy") {
+		t.Errorf("another workdir was refused: %q", s.Reason)
+	}
+}
