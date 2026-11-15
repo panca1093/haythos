@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/panca/haythos/adapters/runtime/internal/eventq"
 	"github.com/panca/haythos/adapters/runtime/internal/jsonrpc"
 	"github.com/panca/haythos/app"
 )
@@ -126,7 +127,7 @@ func (r *Runtime) Start(ctx context.Context, req app.RuntimeStart) (app.RuntimeS
 		return nil, fmt.Errorf("start %s: %w", r.cfg.Name, err)
 	}
 	s := &session{
-		rt: r, cmd: cmd, stdin: stdin, events: make(chan app.RuntimeEvent, 256), dead: make(chan struct{}),
+		rt: r, cmd: cmd, stdin: stdin, events: eventq.New(256),
 		pending: map[string]json.RawMessage{},
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s, jsonrpc.Options{})
@@ -155,11 +156,7 @@ type session struct {
 	sid       string
 	replaying atomic.Bool
 
-	events    chan app.RuntimeEvent
-	dead      chan struct{}
-	deadOnce  sync.Once
-	emitMu    sync.RWMutex
-	evClosed  bool
+	events    *eventq.Queue
 	stopOnce  sync.Once
 	killOnce  sync.Once
 	pendingMu sync.Mutex
@@ -170,7 +167,7 @@ type session struct {
 }
 
 func (s *session) Ref() string                     { return s.sid }
-func (s *session) Events() <-chan app.RuntimeEvent { return s.events }
+func (s *session) Events() <-chan app.RuntimeEvent { return s.events.Events() }
 
 func (s *session) handshake(ctx context.Context, req app.RuntimeStart) error {
 	var init struct {
@@ -353,27 +350,9 @@ func permissionText(rawInput json.RawMessage, title string) string {
 	return title
 }
 
-func (s *session) emit(ev app.RuntimeEvent) {
-	s.emitMu.RLock()
-	defer s.emitMu.RUnlock()
-	if s.evClosed {
-		return
-	}
-	select {
-	case s.events <- ev:
-	case <-s.dead:
-	}
-}
+func (s *session) emit(ev app.RuntimeEvent) { s.events.Push(ev) }
 
-func (s *session) closeEvents() {
-	s.deadOnce.Do(func() { close(s.dead) })
-	s.emitMu.Lock()
-	defer s.emitMu.Unlock()
-	if !s.evClosed {
-		s.evClosed = true
-		close(s.events)
-	}
-}
+func (s *session) closeEvents() { s.events.Close() }
 
 // Send runs one prompt turn. One turn at a time per session.
 func (s *session) Send(ctx context.Context, prompt string) (app.StopReason, error) {
@@ -395,7 +374,7 @@ func (s *session) Send(ctx context.Context, prompt string) (app.StopReason, erro
 		return "", fmt.Errorf("session/prompt: %w", err)
 	}
 	stop := app.StopReason(res.StopReason)
-	s.emit(app.RuntimeEvent{Kind: app.RuntimeStop, Stop: stop})
+	_ = s.events.PushWait(ctx, app.RuntimeEvent{Kind: app.RuntimeStop, Stop: stop})
 	return stop, nil
 }
 

@@ -63,6 +63,9 @@ func NewGuard(rules []GuardRule) (Guard, error) {
 	return g, nil
 }
 
+// runtimeConfig is a path word that is the config of a runtime: .claude/, .codex/ or opencode.json.
+const runtimeConfig = `(?:\S*/)?(?:\.claude(?:/\S*)?|\.codex(?:/\S*)?|opencode\.json)(?:\s|$)`
+
 const gitPrefix = `^git(?:\s+(?:-[Cc]\s+\S+|--(?:git-dir|work-tree|namespace|exec-path|config-env)\s+\S+|--\S+|-[pP]))*\s+`
 
 // StarterRules is the guarded list of CLAUDE.md; matching is on text, so it is a guard rail and not a guarantee.
@@ -80,6 +83,11 @@ func StarterRules() []GuardRule {
 		{Name: "sudo", Kinds: exec, Command: true, Pattern: `^(?:sudo|doas)(?:\s|$)`},
 		{Name: "force-push", Kinds: exec, Command: true, Pattern: gitPrefix + `push\b.*(?:\s-f\b|\s--force(?:-with-lease)?\b|\s\+\S)`},
 		{Name: "default-branch-push", Kinds: exec, Command: true, Pattern: gitPrefix + `push\b.*\b(?:main|master)\b`},
+		{Name: "runtime-config", Kinds: exec, Command: true, Pattern: `>>?\s*` + runtimeConfig},
+		{Name: "runtime-config", Kinds: exec, Command: true, Pattern: `^tee\s(?:.*\s)?` + runtimeConfig},
+		{Name: "runtime-config", Kinds: exec, Command: true, Pattern: `^(?:cp|install|ln)\s.*\s` + strings.TrimSuffix(runtimeConfig, `(?:\s|$)`) + `$`},
+		{Name: "runtime-config", Kinds: exec, Command: true, Pattern: `^mv\s(?:.*\s)?` + runtimeConfig},
+		{Name: "runtime-config", Kinds: exec, Command: true, Pattern: `^sed\s(?:.*\s)?(?:-[a-zA-Z]*i|--in-place)\S*\s(?:.*\s)?` + runtimeConfig},
 		{Name: "credentials", Pattern: `(?:^|[\s/'"=:~])\.env(?:$|\.[\w.-]+|[\s'"/;|&)])|(?:^|[\s/'"=:~])\.ssh(?:$|[\s'"/;|&)])|\bid_(?:rsa|dsa|ecdsa|ed25519)\b|\.aws/credentials|\.netrc\b|\.gnupg\b|\.git-credentials`},
 	}
 }
@@ -138,6 +146,17 @@ var (
 
 const maxShellDepth = 3
 
+// shellPayloadStart skips the options that follow -c, so that `zsh -c -l 'rm x'` still finds the command string.
+func shellPayloadStart(raw []string, from int) int {
+	for from < len(raw)-1 && strings.HasPrefix(raw[from], "-") {
+		from++
+		if raw[from-1] == "-o" || raw[from-1] == "+o" {
+			from++
+		}
+	}
+	return min(from, len(raw)-1)
+}
+
 // commandSegments splits a shell line into commands and adds each with its wrappers peeled, e.g. "sudo rm x" gives "sudo rm x" and "rm x".
 func commandSegments(text string, depth int) []string {
 	var out []string
@@ -157,7 +176,7 @@ func commandSegments(text string, depth int) []string {
 				payload := ""
 				if slices.Contains(shells, words[0]) {
 					if i := slices.IndexFunc(words[1:], shellCFlag.MatchString); i >= 0 && i+2 < len(raw) {
-						payload = strings.Join(raw[i+2:], " ")
+						payload = strings.Join(raw[shellPayloadStart(raw, i+2):], " ")
 					}
 				} else if words[0] == "eval" {
 					payload = strings.Join(raw[1:], " ")

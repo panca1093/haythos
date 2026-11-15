@@ -26,6 +26,7 @@ type fakeHandler struct {
 	mu        sync.Mutex
 	inputs    []app.Input
 	decisions []string
+	cancels   []string
 	jobs      []string
 	views     map[string]app.ConversationView
 	convs     []app.ConversationSummary
@@ -48,6 +49,13 @@ func (h *fakeHandler) HandleApproval(_ context.Context, taskID, approvalID strin
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.decisions = append(h.decisions, taskID+"/"+approvalID)
+	return h.failWith
+}
+
+func (h *fakeHandler) CancelDelegated(_ context.Context, taskID string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.cancels = append(h.cancels, taskID)
 	return h.failWith
 }
 
@@ -288,6 +296,9 @@ func TestRejectsForeignOrigin(t *testing.T) {
 		{"approval of another tui conversation", "tui:me", ws.Decide{TaskID: "t-other", ApprovalID: "ap", Approve: true}},
 		{"approval of a discord task", "tui:me", ws.Decide{TaskID: "t-discord", ApprovalID: "ap", Approve: true}},
 		{"approval of an unknown task", "tui:me", ws.Decide{TaskID: "nope", ApprovalID: "ap", Approve: true}},
+		{"cancel of another tui conversation", "tui:me", ws.Cancel{TaskID: "t-other"}},
+		{"cancel of a discord task", "tui:me", ws.Cancel{TaskID: "t-discord"}},
+		{"cancel of an unknown task", "tui:me", ws.Cancel{TaskID: "nope"}},
 		{"subscribe to a discord channel", "", ws.Subscribe{Conv: "123456"}},
 	}
 	for _, tt := range tests {
@@ -304,6 +315,11 @@ func TestRejectsForeignOrigin(t *testing.T) {
 	}
 	if in, dec := h.calls(); in != 0 || dec != 0 {
 		t.Fatalf("handler called: %d inputs, %d decisions; want none", in, dec)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.cancels) != 0 {
+		t.Fatalf("handler cancelled %v; want none", h.cancels)
 	}
 }
 
@@ -323,6 +339,27 @@ func TestDecideOwnApproval(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("handler never got the decision")
+}
+
+func TestCancelOwnTask(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	h.origins["t-mine"] = "tui:me"
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.subscribe("tui:me")
+	c.send(ws.Cancel{TaskID: "t-mine"})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		got := append([]string(nil), h.cancels...)
+		h.mu.Unlock()
+		if len(got) == 1 && got[0] == "t-mine" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("handler never got the cancel")
 }
 
 func TestPublishOnlyToSubscribers(t *testing.T) {
@@ -412,6 +449,7 @@ func TestHandlerErrorsAreNotSentToClients(t *testing.T) {
 	}{
 		{"input", ws.Input{Conv: "tui:me", Text: "hi"}, "input failed"},
 		{"approval", ws.Decide{TaskID: "t-mine", ApprovalID: "ap", Approve: true}, "approval failed"},
+		{"cancel", ws.Cancel{TaskID: "t-mine"}, "cancel failed"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

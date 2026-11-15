@@ -15,7 +15,7 @@ import (
 	"github.com/panca/haythos/app"
 )
 
-const askEveryShell = `{"permission":{"bash":{"*":"ask"},"edit":"allow","read":{"*":"allow"}}}`
+const askEveryShell = `{"permission":{"execute":"deny","bash":{"*":"ask"},"edit":"allow","read":{"*":"allow"}}}`
 
 func scratchRepo(t *testing.T) string {
 	t.Helper()

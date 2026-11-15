@@ -483,3 +483,37 @@ func TestStopKillsTheProcessAndIsIdempotent(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 }
+
+func TestSlowConsumerGetsEveryEventAndSendWaitsForTheStop(t *testing.T) {
+	const chunks = 1000
+	texts := make([]string, chunks)
+	for i := range texts {
+		texts[i] = "c"
+	}
+	sess := startSession(t, helperConfig(t, runtimecontract.Script{Steps: []runtimecontract.Step{runtimecontract.Say(texts...)}}), app.RuntimeStart{})
+	type result struct {
+		stop app.StopReason
+		err  error
+	}
+	done := make(chan result, 1)
+	go func() {
+		stop, err := sess.Send(context.Background(), "go")
+		done <- result{stop, err}
+	}()
+	time.Sleep(300 * time.Millisecond)
+	got := 0
+	for ev := range sess.Events() {
+		got++
+		time.Sleep(50 * time.Microsecond)
+		if ev.Kind == app.RuntimeStop {
+			break
+		}
+	}
+	res := <-done
+	if res.err != nil || res.stop != app.StopEndTurn {
+		t.Fatalf("Send = %v, %v, want end_turn", res.stop, res.err)
+	}
+	if got != chunks+1 {
+		t.Fatalf("got %d events, want %d messages and the stop", got, chunks)
+	}
+}

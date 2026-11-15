@@ -20,6 +20,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/panca/haythos/adapters/runtime/internal/eventq"
 	"github.com/panca/haythos/adapters/runtime/internal/jsonrpc"
 	"github.com/panca/haythos/app"
 )
@@ -168,7 +169,7 @@ func (r *Runtime) Start(ctx context.Context, req app.RuntimeStart) (app.RuntimeS
 		return nil, fmt.Errorf("start %s: %w", r.cfg.Name, err)
 	}
 	s := &session{
-		rt: r, cmd: cmd, stdin: stdin, home: home, events: make(chan app.RuntimeEvent, 256), dead: make(chan struct{}),
+		rt: r, cmd: cmd, stdin: stdin, home: home, events: eventq.New(256),
 		pending: map[string]json.RawMessage{}, fileItems: map[string]string{},
 	}
 	s.conn = jsonrpc.NewConn(stdout, stdin, s, jsonrpc.Options{OmitVersion: true})
@@ -202,11 +203,7 @@ type session struct {
 
 	tid string
 
-	events    chan app.RuntimeEvent
-	dead      chan struct{}
-	deadOnce  sync.Once
-	emitMu    sync.RWMutex
-	evClosed  bool
+	events    *eventq.Queue
 	stopOnce  sync.Once
 	killOnce  sync.Once
 	stopped   atomic.Bool
@@ -223,7 +220,7 @@ type session struct {
 }
 
 func (s *session) Ref() string                     { return s.tid }
-func (s *session) Events() <-chan app.RuntimeEvent { return s.events }
+func (s *session) Events() <-chan app.RuntimeEvent { return s.events.Events() }
 
 func (s *session) handshake(ctx context.Context, req app.RuntimeStart) error {
 	err := s.conn.Call(ctx, "initialize", map[string]any{
@@ -427,27 +424,9 @@ func (s *session) Request(id json.RawMessage, method string, params json.RawMess
 	s.emit(app.RuntimeEvent{Kind: app.RuntimePermissionRequest, ID: p.ItemID, Text: req.Text, ToolKind: req.Kind, Permission: req})
 }
 
-func (s *session) emit(ev app.RuntimeEvent) {
-	s.emitMu.RLock()
-	defer s.emitMu.RUnlock()
-	if s.evClosed {
-		return
-	}
-	select {
-	case s.events <- ev:
-	case <-s.dead:
-	}
-}
+func (s *session) emit(ev app.RuntimeEvent) { s.events.Push(ev) }
 
-func (s *session) closeEvents() {
-	s.deadOnce.Do(func() { close(s.dead) })
-	s.emitMu.Lock()
-	defer s.emitMu.Unlock()
-	if !s.evClosed {
-		s.evClosed = true
-		close(s.events)
-	}
-}
+func (s *session) closeEvents() { s.events.Close() }
 
 // Send runs one turn and returns when turn/completed arrived. One turn at a time per session.
 func (s *session) Send(ctx context.Context, prompt string) (app.StopReason, error) {
@@ -494,7 +473,7 @@ func (s *session) Send(ctx context.Context, prompt string) (app.StopReason, erro
 	if res.err != nil {
 		return "", fmt.Errorf("turn: %w", res.err)
 	}
-	s.emit(app.RuntimeEvent{Kind: app.RuntimeStop, Stop: res.stop})
+	_ = s.events.PushWait(ctx, app.RuntimeEvent{Kind: app.RuntimeStop, Stop: res.stop})
 	return res.stop, nil
 }
 

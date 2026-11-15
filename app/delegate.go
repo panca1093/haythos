@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -143,6 +144,11 @@ func (a *App) runDelegated(ctx context.Context, id string, rt Runtime, d Delegat
 	if err := a.setState(ctx, id, task.Running, ""); err != nil {
 		return err
 	}
+	dir := filepath.Clean(d.Workdir)
+	if holder, busy := a.workdirs.LoadOrStore(dir, id); busy {
+		return a.fail(ctx, id, fmt.Sprintf("workdir busy: task %v is running a session in %s", holder, dir))
+	}
+	defer a.workdirs.Delete(dir)
 	before, err := a.d.WorkdirState(ctx, d.Workdir)
 	if err != nil {
 		return a.fail(ctx, id, truncate("probe workdir: "+err.Error(), maxFailReasonBytes))
