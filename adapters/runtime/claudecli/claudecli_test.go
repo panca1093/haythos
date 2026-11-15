@@ -271,6 +271,12 @@ func TestSettingsNeverAllowBash(t *testing.T) {
 			}
 		}
 	}
+	// claude runs read-only shell (cat, head, grep) without can_use_tool unless a Bash ask rule matches (FINDINGS §12).
+	for _, p := range []string{"*.env*", "*.ssh*", "*.aws*", "*.netrc*", "*.git-credentials*", "*.gnupg*"} {
+		if rule := "Bash(" + p + ")"; !slices.Contains(got.Permissions.Ask, rule) {
+			t.Errorf("ask rules lack %s", rule)
+		}
+	}
 	if _, err := New(Config{Allow: []string{"Read", "Bash"}}).Start(context.Background(), app.RuntimeStart{Workdir: t.TempDir()}); err == nil {
 		t.Error("Start accepted a Bash allow rule")
 	}

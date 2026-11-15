@@ -62,6 +62,10 @@ func credentialAsk() []string {
 			rules = append(rules, tool+"("+p+")")
 		}
 	}
+	// Read rules do not cover shell reads, and claude skips can_use_tool for commands it deems read-only (cat .env).
+	for _, p := range []string{"*.env*", "*.ssh*", "*.aws*", "*.netrc*", "*.git-credentials*", "*.gnupg*"} {
+		rules = append(rules, "Bash("+p+")")
+	}
 	for _, tool := range []string{"Edit", "Write"} {
 		for _, p := range []string{"**/.claude/**", "**/.codex/**", "**/opencode.json"} {
 			rules = append(rules, tool+"("+p+")")
