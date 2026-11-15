@@ -283,6 +283,8 @@ func TestRuntimesRejectBadEntries(t *testing.T) {
 		"opencode bash allowed":          "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":\"allow\"}}'] }\n",
 		"opencode bash star allowed":     "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"allow\"}}}'] }\n",
 		"opencode other pattern allowed": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"ask\",\"git *\":\"allow\"}}}'] }\n",
+		"opencode execute not denied":    "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"ask\"}}}'] }\n",
+		"opencode execute asks":          "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"execute\":\"ask\",\"bash\":{\"*\":\"ask\"}}}'] }\n",
 		"opencode config not json":       "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT=nope'] }\n",
 		"claudecli env":                  "  a: { kind: claudecli, command: x, env: ['A=b'] }\n",
 		"claudecli mode":                 "  a: { kind: claudecli, command: x, mode: build }\n",
@@ -299,7 +301,7 @@ func TestRuntimesRejectBadEntries(t *testing.T) {
 
 func TestOpencodeBashPatternsMayAskOrDenyButNotAllow(t *testing.T) {
 	head := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n"
-	body := "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"ask\",\"rm *\":\"deny\",\"ls\":\"ask\"}}}'] }\n"
+	body := "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"execute\":\"deny\",\"bash\":{\"*\":\"ask\",\"rm *\":\"deny\",\"ls\":\"ask\"}}}'] }\n"
 	if _, err := LoadMain(write(t, t.TempDir(), "haythos.yaml", head+body)); err != nil {
 		t.Errorf("rejected ask and deny patterns: %v", err)
 	}
@@ -381,8 +383,8 @@ func TestExampleRuntimesBlockAndJobLoad(t *testing.T) {
 func TestACPAsksOnlyWhenConfiguredTo(t *testing.T) {
 	head := "default_model: sub\nmodels: { sub: { kind: claudesdk } }\nruntimes:\n"
 	for name, body := range map[string]string{
-		"opencode bash star ask": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":{\"*\":\"ask\"}}}'] }\n",
-		"opencode bash ask":      "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"bash\":\"ask\"}}'] }\n",
+		"opencode bash star ask": "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"execute\":\"deny\",\"bash\":{\"*\":\"ask\"}}}'] }\n",
+		"opencode bash ask":      "  a: { kind: acp, command: x, env: ['OPENCODE_CONFIG_CONTENT={\"permission\":{\"execute\":\"deny\",\"bash\":\"ask\"}}'] }\n",
 		"declared by the owner":  "  a: { kind: acp, command: goose, commands_ask: true }\n",
 	} {
 		t.Run(name, func(t *testing.T) {

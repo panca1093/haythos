@@ -165,7 +165,7 @@ func validRuntime(alias string, rt *Runtime, claudeCommand string) error {
 		return fmt.Errorf("runtime %s: %s has no modes, drop mode", alias, rt.Kind)
 	}
 	if rt.Kind == "acp" && !rt.CommandsAsk && !opencodeAsksForBash(rt.Env) {
-		return fmt.Errorf("runtime %s: an acp runtime must be made to ask before shell commands: set OPENCODE_CONFIG_CONTENT with permission.bash ask in env, or commands_ask: true for another runtime", alias)
+		return fmt.Errorf("runtime %s: an acp runtime must be made to ask before shell commands: set OPENCODE_CONFIG_CONTENT with permission.bash ask and permission.execute deny in env, or commands_ask: true for another runtime", alias)
 	}
 	for name, dir := range rt.Workdirs {
 		if name == "" || !filepath.IsAbs(dir) {
@@ -187,10 +187,12 @@ func opencodeAsksForBash(env []string) bool {
 		}
 		var c struct {
 			Permission struct {
-				Bash json.RawMessage `json:"bash"`
+				Bash    json.RawMessage `json:"bash"`
+				Execute string          `json:"execute"`
 			} `json:"permission"`
 		}
-		if json.Unmarshal([]byte(raw), &c) != nil {
+		// "ask" has no effect on opencode's execute code tool, which reaches the network unprompted (FINDINGS §9).
+		if json.Unmarshal([]byte(raw), &c) != nil || c.Permission.Execute != "deny" {
 			return false
 		}
 		var plain string
