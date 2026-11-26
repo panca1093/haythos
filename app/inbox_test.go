@@ -304,64 +304,168 @@ func TestApprovalReleasesTheLane(t *testing.T) {
 	}
 }
 
-func TestInboxResumesAfterACrashBeforeAck(t *testing.T) {
-	db := t.TempDir() + "/haythos.db"
-	open := func(m app.Model, hook func(string) error) (*app.App, *sqlite.Store) {
-		st, err := sqlite.Open(db)
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = st.Close() })
-		return app.New(app.Deps{
-			Models:     map[string]app.Model{"default": m},
-			DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
-			Tools:      testfakes.NewTools(), Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
-			Policy: policy.Policy{Tiers: map[string]policy.Tier{}}, Hook: hook,
-		}), st
+// openSQLiteApp builds an App on the sqlite file db, as a restarted kernel would.
+func openSQLiteApp(t *testing.T, db string, m app.Model, tools app.Tools, pol policy.Policy, hook func(string) error) (*app.App, *sqlite.Store) {
+	t.Helper()
+	st, err := sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
 	}
-	crash := errors.New("simulated crash")
-	a1, _ := open(testfakes.NewModel(task.AssistantTurn{Text: "answer"}), func(p string) error {
-		if p == "inbox.before_ack" {
+	t.Cleanup(func() { _ = st.Close() })
+	return app.New(app.Deps{
+		Models:     map[string]app.Model{"default": m},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read", "note.write"}},
+		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy: pol, Hook: hook,
+	}), st
+}
+
+func crashAt(point string, crash error) func(string) error {
+	return func(p string) error {
+		if p == point {
 			return crash
 		}
 		return nil
-	})
+	}
+}
+
+// inboxAcks returns the task of every inbox.ack on the lane replyTo, in order.
+func inboxAcks(t *testing.T, events app.EventStore, replyTo string) []string {
+	t.Helper()
+	evs, err := events.Load(context.Background(), "inbox:"+replyTo)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var acks []string
+	for _, e := range evs {
+		if e.Type == "inbox.ack" {
+			var ack struct{ Task string }
+			_ = json.Unmarshal(e.Payload, &ack)
+			acks = append(acks, ack.Task)
+		}
+	}
+	return acks
+}
+
+// waitAcks waits until the lane replyTo holds n acks.
+func waitAcks(t *testing.T, events app.EventStore, replyTo string, n int) {
+	t.Helper()
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		if len(inboxAcks(t, events, replyTo)) >= n {
+			return
+		}
+	}
+	t.Fatalf("inbox %s never held %d acks", replyTo, n)
+}
+
+// userTasks maps every task id to the user text it was created with.
+func userTasks(t *testing.T, events app.EventStore) map[string]string {
+	t.Helper()
+	all, err := events.Since(context.Background(), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := map[string]string{}
+	created := map[string]bool{}
+	for _, e := range all {
+		switch e.Type {
+		case task.EvCreated:
+			created[e.TaskID] = true
+		case task.EvMessage:
+			var m task.Message
+			if created[e.TaskID] && json.Unmarshal(e.Payload, &m) == nil && m.Role == task.RoleUser && !m.Context {
+				out[e.TaskID] = m.Text
+			}
+		}
+	}
+	return out
+}
+
+func TestInboxResumesAfterACrashBeforeAck(t *testing.T) {
+	db := t.TempDir() + "/haythos.db"
+	read := task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)}
+	pol := policy.Policy{Tiers: map[string]policy.Tier{}}
+	crash := errors.New("simulated crash")
+	a1, _ := openSQLiteApp(t, db, testfakes.NewModel(task.AssistantTurn{Calls: []task.ToolCall{{ID: "r1", Name: "note.read", Args: json.RawMessage(`{}`)}}}),
+		testfakes.NewTools(read), pol, crashAt("app.after_tool_result", crash))
 	if _, err := a1.HandleInput(context.Background(), app.Input{Text: "hi", ReplyTo: "c1"}); !errors.Is(err, crash) {
 		t.Fatalf("handle input = %v, want the simulated crash", err)
 	}
 
-	a2, st := open(testfakes.NewModel(), nil)
+	a2, st := openSQLiteApp(t, db, testfakes.NewModel(task.AssistantTurn{Text: "answer"}), testfakes.NewTools(read), pol, nil)
 	if err := a2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var acks []string
-	for deadline := time.Now().Add(5 * time.Second); len(acks) == 0 && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		evs, err := st.Load(context.Background(), "inbox:c1")
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range evs {
-			if e.Type == "inbox.ack" {
-				var ack struct{ Task string }
-				_ = json.Unmarshal(e.Payload, &ack)
-				acks = append(acks, ack.Task)
-			}
+	waitAcks(t, st, "c1", 1)
+	tasks := userTasks(t, st)
+	acks := inboxAcks(t, st, "c1")
+	if len(tasks) != 1 || len(acks) != 1 || tasks[acks[0]] != "hi" {
+		t.Fatalf("tasks %v, acks %v; want one task and one ack for it", tasks, acks)
+	}
+	if s := snap(t, a2, acks[0]); s.State != task.Done {
+		t.Fatalf("task is %s, want done", s.State)
+	}
+}
+
+func TestInboxCrashKeepsTheCoalescingBoundary(t *testing.T) {
+	db := t.TempDir() + "/haythos.db"
+	pol := policy.Policy{Tiers: map[string]policy.Tier{}}
+	crash := errors.New("simulated crash")
+	m := newGateModel()
+	a1, st1 := openSQLiteApp(t, db, m, testfakes.NewTools(), pol, crashAt("inbox.before_ack", crash))
+	send := func(text string) chan error {
+		ch := make(chan error, 1)
+		go func() {
+			_, err := a1.HandleInput(context.Background(), app.Input{Text: text, ReplyTo: "c1"})
+			ch <- err
+		}()
+		return ch
+	}
+	one := send("one")
+	if got := recv(t, m.started); got != "one" {
+		t.Fatalf("first turn = %q, want one", got)
+	}
+	two := send("two")
+	waitQueued(t, st1, "c1", 2)
+	m.release <- task.AssistantTurn{Text: "answer one"}
+	for _, ch := range []chan error{one, two} {
+		if err := recv(t, ch); !errors.Is(err, crash) {
+			t.Fatalf("handle input = %v, want the simulated crash", err)
 		}
 	}
-	all, err := st.Since(context.Background(), 0)
-	if err != nil {
+
+	a2, st := openSQLiteApp(t, db, testfakes.NewModel(task.AssistantTurn{Text: "answer two"}), testfakes.NewTools(), pol, nil)
+	if err := a2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	var created []string
-	for _, e := range all {
-		if e.Type == task.EvCreated {
-			created = append(created, e.TaskID)
+	waitAcks(t, st, "c1", 2)
+	acks := inboxAcks(t, st, "c1")
+	tasks := userTasks(t, st)
+	if len(acks) != 2 || tasks[acks[0]] != "one" || tasks[acks[1]] != "two" {
+		t.Fatalf("acks %v over tasks %v; want one ack for the task of one, then one for two alone", acks, tasks)
+	}
+	ones := 0
+	for _, text := range tasks {
+		if strings.Contains(text, "one") {
+			ones++
 		}
 	}
-	if len(created) != 1 || len(acks) != 1 || acks[0] != created[0] {
-		t.Fatalf("tasks %v, acks %v; want one task and one ack for it", created, acks)
+	inbox, _ := st.Load(context.Background(), "inbox:c1")
+	takes := 0
+	for _, e := range inbox {
+		if e.Type == "inbox.take" {
+			takes++
+		}
 	}
-	if s := snap(t, a2, created[0]); s.State != task.Done {
-		t.Fatalf("task is %s, want done", s.State)
+	if takes != len(acks) {
+		t.Errorf("inbox.take events = %d, want one per ack (%d)", takes, len(acks))
+	}
+	if ones != 1 || len(tasks) != 2 {
+		t.Fatalf("tasks %v; want exactly one task with one and one with two", tasks)
+	}
+	for _, id := range acks {
+		if s := snap(t, a2, id); s.State != task.Done {
+			t.Errorf("task %s is %s, want done", id, s.State)
+		}
 	}
 }

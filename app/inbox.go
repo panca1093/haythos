@@ -14,6 +14,7 @@ import (
 const (
 	evInboxMsg       = task.EventType("inbox.msg")
 	evInboxAck       = task.EventType("inbox.ack")
+	evInboxTake      = task.EventType("inbox.take")
 	evInboxInterrupt = task.EventType("inbox.interrupt")
 	laneStreamPrefix = "inbox:"
 	stoppedAnswer    = "[stopped by the owner before finishing]"
@@ -33,6 +34,12 @@ type inboxMsg struct {
 }
 
 type inboxAck struct {
+	Through int64  `json:"through"`
+	Task    string `json:"task"`
+}
+
+// inboxTake fixes a turn's boundary before its task exists, so a resumed lane runs the same messages as the same task.
+type inboxTake struct {
 	Through int64  `json:"through"`
 	Task    string `json:"task"`
 }
@@ -138,10 +145,14 @@ func (a *App) drainOnce(ctx context.Context, replyTo string, l *lane) (bool, err
 	if err != nil {
 		return false, err
 	}
+	take, taken, err := openTake(events)
+	if err != nil {
+		return false, err
+	}
 	var last int64
 	var msgs []inboxMsg
 	for _, e := range events {
-		if e.Type != evInboxMsg || e.Cursor <= through {
+		if e.Type != evInboxMsg || e.Cursor <= through || (taken && e.Cursor > take.Through) {
 			continue
 		}
 		var m inboxMsg
@@ -160,6 +171,11 @@ func (a *App) drainOnce(ctx context.Context, replyTo string, l *lane) (bool, err
 	m := msgs[len(msgs)-1]
 	in := Input{Text: strings.Join(texts, "\n\n"), Model: m.Model, ReplyTo: replyTo, DM: m.DM, Workdir: m.Workdir}
 	id := fmt.Sprintf("chat-%d", last)
+	if taken {
+		last, id = take.Through, take.Task
+	} else if _, err := a.d.Events.Append(ctx, inboxStream(replyTo), evInboxTake, inboxTake{Through: last, Task: id}); err != nil {
+		return false, fmt.Errorf("append inbox take: %w", err)
+	}
 	if err := a.createInboxTask(ctx, id, in); err != nil {
 		return false, err
 	}
@@ -312,6 +328,24 @@ func (a *App) resumeLanes(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// openTake is the lane's last take when no ack follows it: a turn that started and was not acked.
+func openTake(events []task.Event) (inboxTake, bool, error) {
+	var take inboxTake
+	open := false
+	for _, e := range events {
+		switch e.Type {
+		case evInboxTake:
+			if err := json.Unmarshal(e.Payload, &take); err != nil {
+				return inboxTake{}, false, fmt.Errorf("decode inbox take %d: %w", e.Cursor, err)
+			}
+			open = true
+		case evInboxAck:
+			open = false
+		}
+	}
+	return take, open, nil
 }
 
 // lastAck is the lane's offset: the cursor its last ack covers.
