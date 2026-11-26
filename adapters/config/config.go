@@ -68,6 +68,7 @@ func (r Runtime) GuardRules() []policy.GuardRule {
 type Main struct {
 	DB           string           `yaml:"db"`
 	Vault        string           `yaml:"vault"`
+	Soul         string           `yaml:"soul"`
 	DefaultModel string           `yaml:"default_model"`
 	Models       map[string]Model `yaml:"models"`
 	// CompactAt is the share of a model's context window at which a conversation is compacted; 0 means 0.92.
@@ -253,8 +254,6 @@ type jobFile struct {
 	Mode      string      `yaml:"mode"`
 	Trigger   app.Trigger `yaml:"trigger"`
 	Budget    task.Budget `yaml:"budget"`
-	Collect   string      `yaml:"collect"`
-	NormalMsg string      `yaml:"normal_msg"`
 	Contract  string      `yaml:"contract"`
 	DeliverTo []string    `yaml:"deliver_to"`
 	Silent    bool        `yaml:"silent"`
@@ -307,12 +306,9 @@ func LoadJobs(dir string, runtimes map[string]Runtime) ([]app.Job, error) {
 		if f.Budget.Tokens == 0 || f.Budget.Steps == 0 {
 			return nil, fmt.Errorf("%s: budget tokens and steps are required", p)
 		}
-		if f.Collect != "" && !contains(f.Tools, f.Collect) {
-			return nil, fmt.Errorf("%s: collect tool %s must be in tools", p, f.Collect)
-		}
 		jobs = append(jobs, app.Job{
 			Name: f.Name, Goal: strings.TrimSpace(f.Goal), Model: f.Model, Tools: f.Tools,
-			Budget: f.Budget, Trigger: f.Trigger, Collect: f.Collect, NormalMsg: f.NormalMsg, DeliverTo: f.DeliverTo,
+			Budget: f.Budget, Trigger: f.Trigger, DeliverTo: f.DeliverTo,
 			Silent: f.Silent, BrainSource: f.BrainSource,
 		})
 	}

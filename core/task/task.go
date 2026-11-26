@@ -73,7 +73,6 @@ type ToolResult struct {
 	Content   string  `json:"content"`
 	IsError   bool    `json:"is_error,omitempty"`
 	Untrusted bool    `json:"untrusted,omitempty"`
-	Normal    bool    `json:"normal,omitempty"`
 	Images    []Image `json:"images,omitempty"`
 }
 
@@ -122,14 +121,12 @@ const (
 )
 
 type Created struct {
-	Job       string   `json:"job"`
-	Model     string   `json:"model"`
-	Tools     []string `json:"tools"`
-	Budget    Budget   `json:"budget"`
-	Collect   string   `json:"collect,omitempty"`
-	NormalMsg string   `json:"normal_msg,omitempty"`
-	ReplyTo   string   `json:"reply_to,omitempty"`
-	Targets   []string `json:"targets,omitempty"`
+	Job     string   `json:"job"`
+	Model   string   `json:"model"`
+	Tools   []string `json:"tools"`
+	Budget  Budget   `json:"budget"`
+	ReplyTo string   `json:"reply_to,omitempty"`
+	Targets []string `json:"targets,omitempty"`
 	// BrainSource is the provenance the kernel stamps on brain writes from this task; the model cannot set it.
 	BrainSource string `json:"brain_source,omitempty"`
 	// Silent suppresses the final and failure notices of this task.

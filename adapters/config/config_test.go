@@ -23,15 +23,21 @@ func write(t *testing.T, dir, name, body string) string {
 
 func TestShippedConfigLoads(t *testing.T) {
 	m, err := LoadMain("../../config/haythos.example.yaml")
-	if err != nil || len(m.Models) != 3 {
+	if err != nil || len(m.Models) != 3 || m.Soul != "config/SOUL.md" {
 		t.Fatalf("main: %+v err=%v", m, err)
 	}
 	p, err := LoadPolicy("../../config/policy.yaml")
-	if err != nil || p.Tiers["vmhealth.read"] != 0 || p.Version == "" {
+	if err != nil || p.Version == "" {
 		t.Fatalf("policy: %+v err=%v", p, err)
 	}
+	if _, ok := p.Tiers["vmhealth.read"]; ok {
+		t.Errorf("vmhealth.read should not be a policy tool")
+	}
+	if _, ok := p.Tiers["self.about"]; ok {
+		t.Errorf("self.about should not be a policy tool")
+	}
 	jobs, err := LoadJobs("../../jobs", nil)
-	if err != nil || len(jobs) != 3 || jobs[2].Name != "vm-health" || jobs[2].Collect != "vmhealth.read" || jobs[2].Trigger.Cron == "" {
+	if err != nil || len(jobs) != 2 {
 		t.Fatalf("jobs: %+v err=%v", jobs, err)
 	}
 	if jobs[0].Name != "brain-consolidate" || !jobs[0].Silent || jobs[0].BrainSource != "auto/consolidate" || jobs[1].Name != "brain-digest" {

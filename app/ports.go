@@ -103,14 +103,12 @@ type Trigger struct {
 }
 
 type Job struct {
-	Name      string
-	Goal      string
-	Model     string
-	Tools     []string
-	Budget    task.Budget
-	Trigger   Trigger
-	Collect   string
-	NormalMsg string
+	Name    string
+	Goal    string
+	Model   string
+	Tools   []string
+	Budget  task.Budget
+	Trigger Trigger
 	// DeliverTo are channel-adapter addresses for this job's notices; empty means the adapter's default.
 	DeliverTo []string
 	// Silent suppresses the task's final and failure notices.

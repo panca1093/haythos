@@ -1,5 +1,6 @@
 db: data/haythos.db
 vault: data/vault.enc
+soul: config/SOUL.md
 default_model: claude-api
 
 models:
