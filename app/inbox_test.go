@@ -469,3 +469,59 @@ func TestInboxCrashKeepsTheCoalescingBoundary(t *testing.T) {
 		}
 	}
 }
+
+// ctxTools blocks every Call until release or its ctx ends, like a real tool honoring cancellation.
+type ctxTools struct {
+	*testfakes.Tools
+	dispatched, release chan struct{}
+}
+
+func (c ctxTools) Call(ctx context.Context, call task.ToolCall) (task.ToolResult, error) {
+	close(c.dispatched)
+	select {
+	case <-c.release:
+		return task.ToolResult{CallID: call.ID, Content: "written"}, nil
+	case <-ctx.Done():
+		return task.ToolResult{CallID: call.ID}, ctx.Err()
+	}
+}
+
+func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
+	m := testfakes.NewModel(task.AssistantTurn{Calls: []task.ToolCall{{ID: "w1", Name: "note.write", Args: json.RawMessage(`{"to":"notes"}`)}}})
+	tools := ctxTools{testfakes.NewTools(task.ToolSpec{Name: "note.write", Write: true, TargetArg: "to", InputSchema: json.RawMessage(`{"type":"object"}`)}), make(chan struct{}), make(chan struct{})}
+	pol := policy.Policy{Tiers: map[string]policy.Tier{"note.write": policy.TierInternalWrite}, AutoWhenClean: []string{"note.write"}}
+	a, st := openSQLiteApp(t, t.TempDir()+"/haythos.db", m, tools, pol, nil)
+	done := make(chan sent, 1)
+	go func() {
+		id, err := a.HandleInput(context.Background(), app.Input{Text: "write a note", ReplyTo: "c1"})
+		done <- sent{id, err}
+	}()
+	recv(t, tools.dispatched)
+	if err := a.Interrupt(context.Background(), "c1"); err != nil {
+		t.Fatal(err)
+	}
+	close(tools.release)
+	s := recv(t, done)
+	if s.err != nil {
+		t.Fatal(s.err)
+	}
+	if row, ok, err := st.Get(context.Background(), s.id+"/w1"); err != nil || !ok || row.State != task.LedgerSucceeded {
+		t.Fatalf("ledger row = %+v (found %v, err %v), want the dispatch recorded as succeeded", row, ok, err)
+	}
+	sn := snap(t, a, s.id)
+	if sn.State != task.Failed || sn.Reason != "interrupted" {
+		t.Fatalf("task = %s (%s), want failed: interrupted", sn.State, sn.Reason)
+	}
+	var result bool
+	for _, h := range sn.History {
+		for _, r := range h.Results {
+			result = result || (r.CallID == "w1" && r.Content == "written")
+		}
+	}
+	if !result {
+		t.Errorf("history has no result for w1")
+	}
+	if m.Steps != 1 {
+		t.Errorf("model steps = %d, want no step after the interrupt", m.Steps)
+	}
+}

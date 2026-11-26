@@ -399,7 +399,8 @@ func (a *App) run(ctx context.Context, id string) error {
 		}
 
 		if calls := unresolved(s.History); len(calls) > 0 {
-			if err := a.execute(ctx, id, s, calls[0]); err != nil {
+			// An interrupt lands at the ctx check above; a dispatch already started must finish and reach the ledger.
+			if err := a.execute(context.WithoutCancel(ctx), id, s, calls[0]); err != nil {
 				return err
 			}
 			continue
