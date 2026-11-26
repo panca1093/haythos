@@ -525,3 +525,57 @@ func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
 		t.Errorf("model steps = %d, want no step after the interrupt", m.Steps)
 	}
 }
+
+func TestStartFinishesAStopInterruptedByACrash(t *testing.T) {
+	db := t.TempDir() + "/haythos.db"
+	pol := policy.Policy{Tiers: map[string]policy.Tier{}}
+	crash := errors.New("simulated crash")
+	m := newGateModel()
+	a1, _ := openSQLiteApp(t, db, m, testfakes.NewTools(), pol, crashAt("inbox.before_stop_state", crash))
+	done := make(chan error, 1)
+	go func() {
+		_, err := a1.HandleInput(context.Background(), app.Input{Text: "one", ReplyTo: "c1"})
+		done <- err
+	}()
+	recv(t, m.started)
+	if err := a1.Interrupt(context.Background(), "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := recv(t, done); !errors.Is(err, crash) {
+		t.Fatalf("handle input = %v, want the simulated crash", err)
+	}
+
+	m2 := testfakes.NewModel()
+	a2, st := openSQLiteApp(t, db, m2, testfakes.NewTools(), pol, nil)
+	if err := a2.Start(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	waitAcks(t, st, "c1", 1)
+	id := inboxAcks(t, st, "c1")[0]
+	if s := snap(t, a2, id); s.State != task.Failed || s.Reason != "interrupted" {
+		t.Fatalf("task = %s (%s), want failed: interrupted", s.State, s.Reason)
+	}
+	if m2.Steps != 0 {
+		t.Errorf("model steps after restart = %d, want the stopped task not resumed", m2.Steps)
+	}
+	conv, _ := st.Load(context.Background(), "conv:c1")
+	turns := 0
+	for _, e := range conv {
+		if e.Type == "conv.turn" && strings.Contains(string(e.Payload), id) {
+			turns++
+		}
+	}
+	if turns != 1 {
+		t.Errorf("conv.turn events for %s = %d, want 1", id, turns)
+	}
+	evs, _ := st.Load(context.Background(), id)
+	stops := 0
+	for _, e := range evs {
+		if e.Type == task.EvNoticeSent && strings.Contains(string(e.Payload), `"stopped"`) {
+			stops++
+		}
+	}
+	if stops != 1 {
+		t.Errorf("stopped notices = %d, want 1", stops)
+	}
+}

@@ -256,13 +256,55 @@ func (a *App) stopInterrupted(ctx context.Context, id string) error {
 	if s.State != task.Running {
 		return nil
 	}
-	if err := a.recordTurn(ctx, id, stoppedAnswer, true); err != nil {
+	recorded, err := a.hasConvTurn(ctx, s.Created.ReplyTo, id)
+	if err != nil {
+		return err
+	}
+	if !recorded {
+		if err := a.recordTurn(ctx, id, stoppedAnswer, true); err != nil {
+			return err
+		}
+	}
+	if err := a.hook("inbox.before_stop_state"); err != nil {
 		return err
 	}
 	if err := a.setState(ctx, id, task.Failed, "interrupted"); err != nil {
 		return err
 	}
 	return a.notify(ctx, id, "stopped", Notice{Kind: NoticeState, State: task.Failed, Reason: "interrupted", Text: "Stopped."})
+}
+
+func (a *App) hasConvTurn(ctx context.Context, replyTo, id string) (bool, error) {
+	events, err := a.d.Events.Load(ctx, convStream(replyTo))
+	if err != nil {
+		return false, fmt.Errorf("load conversation %s: %w", replyTo, err)
+	}
+	for _, e := range events {
+		var t convTurn
+		if e.Type == evConvTurn && json.Unmarshal(e.Payload, &t) == nil && t.Task == id {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
+// wasInterrupted reports whether the lane of task id recorded an interrupt for it.
+func (a *App) wasInterrupted(ctx context.Context, id string) (bool, error) {
+	s, err := a.Snapshot(ctx, id)
+	if err != nil || s.Created.ReplyTo == "" {
+		return false, err
+	}
+	events, err := a.d.Events.Load(ctx, inboxStream(s.Created.ReplyTo))
+	if err != nil {
+		return false, fmt.Errorf("load inbox %s: %w", s.Created.ReplyTo, err)
+	}
+	for _, e := range events {
+		var in inboxInterrupt
+		if e.Type == evInboxInterrupt && json.Unmarshal(e.Payload, &in) == nil && in.Task == id {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 // Interrupt stops the running turn of the conversation replyTo; its queued messages still run.
