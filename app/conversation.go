@@ -28,6 +28,8 @@ type convTurn struct {
 	Answer  string    `json:"answer"`
 	At      time.Time `json:"at"`
 	Context int       `json:"context,omitempty"`
+	// Stopped marks a turn the owner interrupted; it replays as User and Answer only, never its partial tool traffic.
+	Stopped bool `json:"stopped,omitempty"`
 	// msgs is the task's own messages as replayed context; nil replays only User and Answer.
 	msgs []task.Message
 }
@@ -111,7 +113,7 @@ func (a *App) chatWindow(model string) int {
 }
 
 // recordTurn runs before the task turns Done so a crash cannot lose it; readers drop duplicates by task id.
-func (a *App) recordTurn(ctx context.Context, id, answer string) error {
+func (a *App) recordTurn(ctx context.Context, id, answer string, stopped bool) error {
 	s, err := a.Snapshot(ctx, id)
 	if err != nil {
 		return err
@@ -126,13 +128,15 @@ func (a *App) recordTurn(ctx context.Context, id, answer string) error {
 			break
 		}
 	}
-	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock()}
+	turn := convTurn{Task: id, User: user, Answer: answer, At: a.d.Clock(), Stopped: stopped}
 	if s.LastInput > 0 {
 		turn.Context = s.LastInput + len(answer)/4
 	}
-	marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
-	if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
-		return fmt.Errorf("record brain turn marker: %w", err)
+	if !stopped {
+		marker := brainTurn{ReplyTo: s.Created.ReplyTo, Task: id, At: turn.At, Tainted: s.Tainted}
+		if _, err := a.d.Events.Append(ctx, brainStream, evBrainTurn, marker); err != nil {
+			return fmt.Errorf("record brain turn marker: %w", err)
+		}
 	}
 	if _, err := a.d.Events.Append(ctx, convStream(s.Created.ReplyTo), evConvTurn, turn); err != nil {
 		return fmt.Errorf("record conversation turn: %w", err)
@@ -185,12 +189,15 @@ func (a *App) conversation(ctx context.Context, in Input, model string) ([]task.
 	}
 	var fresh []convTurn
 	for _, t := range turns {
-		if !covered[t.Task] {
+		if covered[t.Task] {
+			continue
+		}
+		if !t.Stopped {
 			if t.msgs, err = a.turnMessages(ctx, t.Task); err != nil {
 				return nil, err
 			}
-			fresh = append(fresh, t)
 		}
+		fresh = append(fresh, t)
 	}
 	window := a.chatWindow(model)
 	recent := fresh

@@ -77,6 +77,8 @@ type App struct {
 	live     sync.Map
 	workdirs sync.Map
 	settings map[string]setting
+	lanesMu  sync.Mutex
+	lanes    map[string]*lane
 }
 
 type approvalRequested struct {
@@ -154,7 +156,7 @@ func New(d Deps) *App {
 	if d.CompactAt <= 0 || d.CompactAt > 1 {
 		d.CompactAt = defaultCompactAt
 	}
-	a := &App{d: d}
+	a := &App{d: d, lanes: map[string]*lane{}}
 	a.registerSettings()
 	a.gw = gateway.New(gateway.Deps{
 		Tools: d.Tools, Ledger: d.Ledger, Vault: d.Vault, Policy: d.Policy,
@@ -254,7 +256,7 @@ func (a *App) Start(ctx context.Context) error {
 			}
 		}
 	}
-	return nil
+	return a.resumeLanes(ctx)
 }
 
 func (a *App) reconcile(ctx context.Context, row task.LedgerEntry) error {
@@ -362,22 +364,10 @@ func (a *App) Snapshot(ctx context.Context, taskID string) (task.Snapshot, error
 }
 
 func (a *App) HandleInput(ctx context.Context, in Input) (string, error) {
-	job := a.d.DefaultJob
-	if in.Model != "" {
-		if a.blockedChatModel(in.Model) {
-			return "", fmt.Errorf("%w %q", ErrUnknownModel, in.Model)
-		}
-		job.Model = in.Model
+	if in.Model != "" && a.blockedChatModel(in.Model) {
+		return "", fmt.Errorf("%w %q", ErrUnknownModel, in.Model)
 	}
-	prior, err := a.conversation(ctx, in, job.Model)
-	if err != nil {
-		return "", err
-	}
-	id, err := a.createTask(ctx, newID(job.Name), job, in.Text, in.ReplyTo, in.Workdir, prior...)
-	if err != nil {
-		return "", err
-	}
-	return id, a.RunTask(ctx, id)
+	return a.enqueue(ctx, in)
 }
 
 func (a *App) RunTask(ctx context.Context, taskID string) error {
@@ -403,6 +393,9 @@ func (a *App) run(ctx context.Context, id string) error {
 				return err
 			}
 			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return err
 		}
 
 		if calls := unresolved(s.History); len(calls) > 0 {
@@ -545,7 +538,7 @@ func (a *App) HandleApproval(ctx context.Context, taskID, approvalID string, app
 }
 
 func (a *App) finish(ctx context.Context, id, text string) error {
-	if err := a.recordTurn(ctx, id, text); err != nil {
+	if err := a.recordTurn(ctx, id, text, false); err != nil {
 		return err
 	}
 	if err := a.recordOutcomes(ctx, id, text); err != nil {
