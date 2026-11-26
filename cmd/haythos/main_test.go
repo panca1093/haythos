@@ -11,7 +11,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/chatgpt"
@@ -51,7 +50,15 @@ func runJobFixture(t *testing.T) (dir string, args []string) {
 	if err := os.WriteFile(filepath.Join(dir, "haythos.yaml"), []byte(cfg), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return dir, []string{"-config", filepath.Join(dir, "haythos.yaml"), "-policy", "../../config/policy.yaml", "-jobs", "../../jobs", "run-job", "vm-health"}
+	jobsDir := filepath.Join(dir, "jobs")
+	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	job := "name: check\ngoal: g\ntools: [file.list]\nmode: background\nbudget: { tokens: 1000, steps: 1 }\n"
+	if err := os.WriteFile(filepath.Join(jobsDir, "check.yaml"), []byte(job), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return dir, []string{"-config", filepath.Join(dir, "haythos.yaml"), "-policy", "../../config/policy.yaml", "-jobs", jobsDir, "run-job", "check"}
 }
 
 func TestRunJobDoesNotResumeOtherTasks(t *testing.T) {
@@ -440,17 +447,55 @@ func TestClaudeCLIKeepsItsStateNextToTheDatabaseOnePerModel(t *testing.T) {
 	}
 }
 
-func TestSelfAboutIsReadOnlyChatTool(t *testing.T) {
+func TestSoulAndRuntimeTailReplaceSelfAbout(t *testing.T) {
 	pol, err := config.LoadPolicy("../../config/policy.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, ok := pol.Tiers["self.about"]; !ok || got != policy.TierRead {
-		t.Errorf("self.about tier = %d (set %v), want %d", got, ok, policy.TierRead)
+	for _, removed := range []string{"self.about", "vmhealth.read"} {
+		if _, ok := pol.Tiers[removed]; ok {
+			t.Errorf("%s should be removed from config/policy.yaml", removed)
+		}
+		if slices.Contains(defaultJob.Tools, removed) {
+			t.Errorf("%s should be removed from defaultJob.Tools", removed)
+		}
 	}
-	cfg := config.Main{Models: map[string]config.Model{"b": {}, "a": {}}}
-	got := aboutConfig(cfg, pol, defaultJob.Tools, []string{"tui"}, time.Unix(0, 0), "/repo")
-	if !slices.Contains(defaultJob.Tools, "self.about") || !slices.Equal(got.Models, []string{"a", "b"}) || got.Repo != "/repo" || len(got.Tools) != len(defaultJob.Tools) {
-		t.Errorf("aboutConfig = %+v", got)
+
+	shipped, err := loadSoul("../../config/haythos.yaml", "")
+	if err != nil || !strings.Contains(shipped, "Alfred") {
+		t.Fatalf("shipped SOUL.md = %q, err = %v", shipped, err)
+	}
+
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "haythos.yaml")
+	got, err := loadSoul(cfgPath, "")
+	if err != nil || got != defaultSoul {
+		t.Fatalf("missing sibling SOUL.md: got %q err %v, want defaultSoul", got, err)
+	}
+
+	explicit := filepath.Join(dir, "custom.md")
+	if err := os.WriteFile(explicit, []byte("  Custom Alfred soul.\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got, err = loadSoul(cfgPath, explicit)
+	if err != nil || got != "Custom Alfred soul." {
+		t.Fatalf("explicit soul: got %q err %v", got, err)
+	}
+	if _, err := loadSoul(cfgPath, filepath.Join(dir, "missing.md")); err == nil {
+		t.Error("explicit missing soul path was accepted")
+	}
+
+	goal := chatGoal("Static soul prefix.", "v1.2.3", map[string]config.Model{"b": {}, "a": {}}, []string{"discord", "tui"})
+	if !strings.HasPrefix(goal, "Static soul prefix.\n\nRuntime:\n") {
+		t.Errorf("goal prefix wrong:\n%s", goal)
+	}
+	for _, want := range []string{"- Version: v1.2.3", "- Models: a, b", "- Channels: discord, tui"} {
+		if !strings.Contains(goal, want) {
+			t.Errorf("goal missing %q:\n%s", want, goal)
+		}
+	}
+	noChan := chatGoal("Soul.", "dev", nil, nil)
+	if !strings.Contains(noChan, "- Models: none") || !strings.Contains(noChan, "- Channels: none") {
+		t.Errorf("empty runtime goal:\n%s", noChan)
 	}
 }

@@ -26,7 +26,6 @@ const (
 	evResumed          = task.EventType("kernel.resumed")
 	evJobFired         = task.EventType("job.fired")
 	evJobArmed         = task.EventType("job.armed")
-	collectCallID      = "collect"
 	maxFailReasonBytes = 300
 	defaultStepTimeout = 5 * time.Minute
 )
@@ -323,7 +322,7 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, Collect: job.Collect, NormalMsg: job.NormalMsg, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.Runtime}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.Runtime}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -406,12 +405,6 @@ func (a *App) run(ctx context.Context, id string) error {
 			continue
 		}
 
-		if s.Created.Collect != "" && s.Steps == 0 {
-			if err := a.appendMessage(ctx, id, task.Message{Role: task.RoleAssistant, Calls: []task.ToolCall{{ID: collectCallID, Name: s.Created.Collect, Args: json.RawMessage(`{}`)}}}); err != nil {
-				return err
-			}
-			continue
-		}
 		if calls := unresolved(s.History); len(calls) > 0 {
 			if err := a.execute(ctx, id, s, calls[0]); err != nil {
 				return err
@@ -491,12 +484,6 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 		}); err != nil {
 			return err
 		}
-	}
-	if out.Result.Normal && s.Created.NormalMsg != "" {
-		if err := a.appendMessage(ctx, id, task.Message{Role: task.RoleAssistant, Text: s.Created.NormalMsg}); err != nil {
-			return err
-		}
-		return a.finish(ctx, id, s.Created.NormalMsg)
 	}
 	return nil
 }
