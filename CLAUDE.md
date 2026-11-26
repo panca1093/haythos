@@ -66,6 +66,8 @@ Dependency rule: `core` imports nothing from `app` or `adapters`. `app` imports 
 
 Not interfaces: scheduler, policy, contract, task state machine (single implementation each). User input enters by adapters calling `app.HandleInput` directly.
 
+Input flow (inbox lanes): a lane is one conversation (`replyTo`). `HandleInput` appends `inbox.msg` to the stream `inbox:<replyTo>` and blocks until an `inbox.ack` covers it. One worker per busy lane coalesces every unacked message (texts joined by a blank line) into one task `chat-<last cursor>`, runs it, then acks; lanes run in parallel, a lane runs one turn at a time, and a turn that reaches `waiting_approval` or `watching` releases its lane. `Start` resumes lanes with unacked messages. `app.Interrupt(ctx, replyTo)` appends `inbox.interrupt` and stops the lane's turn (`failed`, reason `interrupted`, a `conv.turn` with a stopped marker and no brain marker) or the conversation's delegated session through `CancelDelegated`; queued messages still run.
+
 ## Non-negotiable rules
 
 1. **Two execution paths, nothing in between.** Alfred's own chat runs on the kernel's loop in Go: every provider only implements `Step`, and no provider runs its own tool loop for Alfred. Heavy work is delegated to a runtime through the `Runtime` port. The kernel does not rebuild a runtime's tools or loop, and the kernel's loop does not grow tools to compete with one.
