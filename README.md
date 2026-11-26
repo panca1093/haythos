@@ -54,7 +54,7 @@ go run ./cmd/haythos auth chatgpt
 
 1. Prints a `http://127.0.0.1:<port>/login/...` link and tries to open your browser. Sign in and allow ChatGPT plan usage.
 2. The access, refresh and ID tokens, the issued client id and this host's id are stored in the vault as `secret://chatgpt`; nothing is printed.
-3. Run `haythos chat --model chatgpt-sub` or enter `/model chatgpt-sub` in terminal chat. The built-in `chatgpt-sub` uses the first model available to your ChatGPT account. To choose a specific model for the kernel default or a job, define an alias with `kind: chatgpt` and its `model:` in the config.
+3. Run `haythos chat --model chatgpt-sub` or enter `/model chatgpt-sub` in terminal chat. The built-in `chatgpt-sub` uses the first model available to your ChatGPT account. To choose a specific model for the kernel default, define an alias with `kind: chatgpt` and its `model:` in the config.
 
 Alfred refreshes the token itself (1 h access token; the 30-day refresh token rotates on every refresh and is written to the vault before use). When the plan's usage limit is hit the task fails with a link to https://chatgpt.com/settings/usage; it never falls back to API-key billing. Run `auth chatgpt` again if the refresh token expires or is revoked.
 
@@ -64,10 +64,9 @@ Headless server (VPS): the login callback goes to `127.0.0.1` on the machine wit
 
 ```bash
 go run ./cmd/haythos              # serve: Discord + scheduler + the client socket
-go run ./cmd/haythos run-job vm-health   # one-shot manual trigger, prints the report to stdout
 ```
 
-Only one `haythos` can use the database at a time (`<db>.lock`), so stop `serve` before `run-job`. `run-job` runs only that job; unfinished tasks wait for the next `serve`.
+Only one `haythos` can use the database at a time (`<db>.lock`).
 
 ### Terminal chat (`haythos chat`)
 
@@ -121,7 +120,7 @@ Discord: only `discord.owner_id` is obeyed, everywhere; everyone else is ignored
 - **Server channel**: only a message that @mentions the bot. Alfred starts a thread on it and replies there. The bot needs View Channel, Send Messages, Create Public Threads and Send Messages in Threads.
 - **Thread**: every message is handled once the thread is Alfred's (he started it, or you @mentioned him in it). `/mention-only` inside a thread toggles whether he then answers only when mentioned; it replies privately with the new state. Both the joined threads and the toggle survive restarts.
 
-Posting: ask Alfred to "post X in #infra" (or in a thread, or to your DM). He looks the channel up with `discord.channels`, then calls `discord.post`, a tier 2 write that always asks for your approval with the channel and text shown. Only server text channels, news channels and threads the bot can see, or your own DM, are accepted; anything else is refused and nothing is sent. Long text is split into several messages, and mentions in the text never ping anyone. `discord.post` is for chat only; scheduled jobs cannot use it.
+Posting: ask Alfred to "post X in #infra" (or in a thread, or to your DM). He looks the channel up with `discord.channels`, then calls `discord.post`, a tier 2 write that always asks for your approval with the channel and text shown. Only server text channels, news channels and threads the bot can see, or your own DM, are accepted; anything else is refused and nothing is sent. Long text is split into several messages, and mentions in the text never ping anyone. `discord.post` is for chat only; background tasks cannot use it.
 
 Alfred replies (and asks for approval) where you wrote. `/pause` stops every write immediately (also those already approved and not yet dispatched) and survives restarts; `/resume` lifts it.
 
@@ -131,19 +130,11 @@ Within one task, each step resumes the same `claude` CLI session and sends only 
 
 ### Switching the model
 
-Jobs pick a model by name (`model:` in `jobs/*.yaml`, else `default_model`). The same job runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythos setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
+Chat picks a model by name (`default_model`). The same chat runs on `claude-api` (Messages API), `claude-sub` (`claude` CLI) or `openai` by changing only that name. `kind: claudesdk` accepts an optional `model:`; empty uses the CLI default. `haythos setup` sets it for you from the live CLI list. Each step runs `claude -p` once in a fresh temp dir with no built-in tools, no settings, no MCP servers and no session persistence. While `serve` runs, `/model` in Discord shows the same live list and switches the model without a restart. This works only when `default_model` is a `claudesdk` model.
 
 ### Runtime settings
 
 `config/haythos.yaml` holds the defaults. Changes made while running (today: `/model`) are stored as events in the database, so they survive restarts, keep a history, and never rewrite the config file. `/settings` in Discord shows each value and whether it is the default or was changed.
-
-### Scheduled jobs from chat
-
-Ask Alfred in Discord, for example "every Monday 09:00 check the disk and report". Alfred proposes a job (name, cron, goal, tools) and you approve it with a button; nothing is scheduled before that. Disable, enable, change or delete it the same way. `/jobs` lists every job with its source (`config` for `jobs/*.yaml`, `chat` for these) and its next run.
-
-Where a job reports: `deliver_to` is a list of Discord channel or thread IDs, or `dm`. When you create a job from chat without saying where, it reports where you asked for it (that thread or your DM); say "report in #infra" and Alfred looks the channel up with the `discord.channels` tool. `jobs/*.yaml` jobs accept `deliver_to` too. With no target a job reports in your DM. A target that is not a channel or thread the bot can see in a server falls back to your DM with a note. `/jobs` shows each job's targets.
-
-Rules: cron is Asia/Jakarta unless it starts with `CRON_TZ=`; tools must already exist and be tier 0 or 1; a job cannot create jobs; budget defaults to 200k tokens / 5 steps (max 1M / 10); names of `jobs/*.yaml` jobs are reserved. Re-enabling a job does not replay the runs it missed.
 
 ### Brain (gbrain)
 
@@ -166,7 +157,7 @@ mcp:
 
 - **Brain first**: before the first model step of a chat task the kernel recalls with your message (at most 3 hits, about 3 KB) and injects them once as a labelled data block. No hits, nothing injected.
 - **Tools**: `brain.recall` (tier 0), `brain.remember` and `brain.forget` (tier 1). Say "ingat ..." and `brain.remember` runs without a button, but only when the task is untainted and started by your own message (`auto_when_clean` in `config/policy.yaml`); a tainted task asks for approval. The stored provenance (`owner/<thread>`) is set by the kernel, never by the model.
-- **Other MCP servers** use the same `mcp.servers` list, are untrusted by default, and need their tools listed in `config/policy.yaml` and a job's `tools` before the model can call them.
+- **Other MCP servers** use the same `mcp.servers` list, are untrusted by default, and need their tools listed in `config/policy.yaml` and in the chat tool list before the model can call them.
 - Zero-width and bidi control characters are stripped from recalled content and untrusted tool output.
 
 ### Brain upkeep (M2B)
@@ -174,9 +165,8 @@ mcp:
 Needs the brain wired (Phase 2); all three steps are silent unless noted.
 
 - **Stale hook.** A conversation idle for 3 h with turns not yet extracted gets one background task (`auto/<conversation>` source, unverified) that saves decisions, preferences, corrections, lessons and facts about people/projects/repos into the brain inbox (`inbox/...`). A conversation in which any task read untrusted content is never extracted; it is listed as skipped in the digest.
-- **02:00 consolidation** (`jobs/brain-consolidate.yaml`, Asia/Jakarta). Processes only the inbox items saved on the previous Jakarta day: merge into existing pages, drop noise. Sends no message. If nothing was saved, no task runs.
-- **07:00 digest** (`jobs/brain-digest.yaml`). One message listing what was saved or merged, with an Undo button per item. Ignore it and everything stays. Undo forgets that item (a second click does nothing). No new items and no skipped conversations: no message.
-- **Weekly instead of daily.** Edit `trigger.cron` in `jobs/brain-consolidate.yaml` (for example `CRON_TZ=Asia/Jakarta 0 2 * * 1`) and restart; `/jobs` then shows the next run. The job reads only the day before it fires, so weekly means only that Sunday's items are consolidated; items from other days stay in the inbox.
+- **02:00 consolidation** (kernel schedule, Asia/Jakarta). Processes only the inbox items saved on the previous Jakarta day: merge into existing pages, drop noise. Sends no message. If nothing was saved, no task runs.
+- **07:00 digest** (kernel schedule). One message listing what was saved or merged, with an Undo button per item. Ignore it and everything stays. Undo forgets that item (a second click does nothing). No new items and no skipped conversations: no message.
 
 ## Development
 
@@ -184,13 +174,13 @@ Needs the brain wired (Phase 2); all three steps are silent unless noted.
 make gate    # gofmt, go vet, golangci-lint, go test -race
 ```
 
-`tests/acceptance/` holds the acceptance tests (including the frozen milestone contract tests), grouped by use case (approval, ledger, taint, task lifecycle, settings, jobs, conversation, brain). Existing assertions are never edited to make a test pass; new tests go in the file for their use case.
+`tests/acceptance/` holds the acceptance tests (including the frozen milestone contract tests), grouped by use case (approval, ledger, taint, task lifecycle, settings, conversation, brain, delegation). Existing assertions are never edited to make a test pass; new tests go in the file for their use case.
 
 ## Repo layout
 
 | Folder | What it is |
 | --- | --- |
-| `cmd/haythos/` | The `haythos` binary: CLI subcommands (`serve`, `chat`, `sessions`, `status`, `stop`, `service`, `run-job`, `auth`, `setup`) and wiring of everything below |
+| `cmd/haythos/` | The `haythos` binary: CLI subcommands (`serve`, `chat`, `sessions`, `status`, `stop`, `service`, `auth`, `setup`) and wiring of everything below |
 | `core/` | Pure rules with no I/O: task state machine, policy tiers, output contract |
 | `app/` | Use cases (run a task, handle approvals, the scheduler tick) and the interfaces they need (`ports.go`) |
 | `app/gateway/` | The only path a tool call can take: policy, approval, ledger, secrets, execute |
@@ -203,7 +193,6 @@ make gate    # gofmt, go vet, golangci-lint, go test -race
 | `adapters/config/` | Go code that loads and validates the YAML in `config/`, and saves the model choice back to it |
 | `adapters/testfakes/` | In-memory fakes of the interfaces, for tests only |
 | `config/` | The YAML files you edit: `haythos.yaml` (your untracked copy of `haythos.example.yaml`), `policy.yaml` |
-| `jobs/` | Job definitions (what to do, which tools, budget, schedule) |
 | `skills/` | Markdown instructions the model reads (how to do it) |
 | `tests/acceptance/` | Whole-kernel tests with fakes, one file per use case plus `harness_test.go`; the gate for every milestone. Never delete |
 | `docs/` | Notes for humans: milestone kickoffs, plans, run reports, spike findings (`FINDINGS.md`) |

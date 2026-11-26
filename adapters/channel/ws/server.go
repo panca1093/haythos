@@ -36,7 +36,6 @@ type Handler interface {
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
 	CancelDelegated(ctx context.Context, taskID string) error
 	Interrupt(ctx context.Context, replyTo string) error
-	RunJob(ctx context.Context, name string) (string, error)
 	ConversationView(ctx context.Context, replyTo string) (app.ConversationView, error)
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
 	TaskOrigin(ctx context.Context, taskID string) (string, error)
@@ -288,11 +287,6 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 				return nil
 			})
 		}
-	case TypeRunJob:
-		s.background(kernel, c, "job", func(ctx context.Context) error {
-			_, err := s.h.RunJob(ctx, f.Name)
-			return err
-		})
 	case TypeSessions:
 		convs, err := s.h.Conversations(ctx, Prefix)
 		if err != nil {

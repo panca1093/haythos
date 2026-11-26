@@ -16,10 +16,10 @@ import (
 func viewApp(t *testing.T, clock *testfakes.Clock, n *testfakes.Notifier, turns ...task.AssistantTurn) *app.App {
 	t.Helper()
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
-		Events:     &testfakes.Events{}, Ledger: testfakes.NewLedger(), Notifier: n, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		Events: &testfakes.Events{}, Ledger: testfakes.NewLedger(), Notifier: n, Vault: testfakes.Vault{},
 		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		Clock:       clock.Now,
 		ApprovalTTL: time.Hour,

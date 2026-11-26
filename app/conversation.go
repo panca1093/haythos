@@ -106,7 +106,7 @@ func fitTurn(t convTurn, budget int) (convTurn, bool) {
 }
 
 func (a *App) chatWindow(model string) int {
-	if sel := a.d.ModelSelector; model == a.d.DefaultJob.Model && sel != nil && a.d.Windows[sel.Current()] > 0 {
+	if sel := a.d.ModelSelector; model == a.d.Chat.Model && sel != nil && a.d.Windows[sel.Current()] > 0 {
 		return a.window(sel.Current())
 	}
 	return a.window(model)

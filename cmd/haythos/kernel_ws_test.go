@@ -85,9 +85,9 @@ func TestKernelOverWS(t *testing.T) {
 	discord := &testfakes.Notifier{}
 	route := &routeNotifier{other: discord}
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(write, task.AssistantTurn{Text: "noted"})},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(write, task.AssistantTurn{Text: "noted"})},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
 		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		ApprovalTTL: time.Hour,
 	})
@@ -181,13 +181,13 @@ func TestConversationModelOverWS(t *testing.T) {
 			"chatgpt-sub":              fakePlanModel{testfakes.NewModel(task.AssistantTurn{Text: "from ChatGPT"})},
 			"chatgpt-sub/gpt-conflict": testfakes.NewModel(task.AssistantTurn{Text: "from API key"}),
 		},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "claude-sub"},
-		Tools:      testfakes.NewTools(),
-		Events:     st,
-		Ledger:     st,
-		Notifier:   route,
-		Vault:      testfakes.Vault{},
-		Windows:    map[string]int{"chatgpt-sub": 123_456},
+		Chat:     app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "claude-sub"},
+		Tools:    testfakes.NewTools(),
+		Events:   st,
+		Ledger:   st,
+		Notifier: route,
+		Vault:    testfakes.Vault{},
+		Windows:  map[string]int{"chatgpt-sub": 123_456},
 	}
 	srv := ws.New(ws.Config{SocketPath: p.Socket, DefaultModel: "claude-sub"}, app.New(deps))
 	route.ws = srv
@@ -280,9 +280,9 @@ func TestDecideRefusesApprovalOfAnotherTask(t *testing.T) {
 	tools := testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)})
 	route := &routeNotifier{other: &testfakes.Notifier{}}
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(writeA, writeB, task.AssistantTurn{Text: "noted"})},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(writeA, writeB, task.AssistantTurn{Text: "noted"})},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: route, Vault: testfakes.Vault{},
 		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		ApprovalTTL: time.Hour,
 	})
@@ -354,7 +354,6 @@ func (nopHandler) HandleInput(context.Context, app.Input) (string, error)     { 
 func (nopHandler) HandleApproval(context.Context, string, string, bool) error { return nil }
 func (nopHandler) CancelDelegated(context.Context, string) error              { return nil }
 func (nopHandler) Interrupt(context.Context, string) error                    { return nil }
-func (nopHandler) RunJob(context.Context, string) (string, error)             { return "", nil }
 func (nopHandler) ConversationView(context.Context, string) (app.ConversationView, error) {
 	return app.ConversationView{}, nil
 }

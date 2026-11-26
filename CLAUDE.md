@@ -2,7 +2,7 @@
 
 Personal agentic OS. Kernel in Go, persona "Alfred". Single user (the repo owner).
 The model decides; the kernel executes, guards, and remembers.
-HaythOS is a kernel, not an agent runtime: it owns jobs, memory, guardrails and observability, and delegates heavy work to runtimes (Claude Code, Codex, OpenCode, …) that it runs as processes.
+HaythOS is a kernel, not an agent runtime: it owns scheduling, memory, guardrails and observability, and delegates heavy work to runtimes (Claude Code, Codex, OpenCode, …) that it runs as processes.
 
 ## How to work in this repo
 
@@ -43,7 +43,6 @@ haythos/
     runtime/acp        # planned: generic ACP client; each runtime that speaks ACP (OpenCode, Goose, …) is a config entry
     runtime/claudecli  # planned: Claude Code over stream-json + its control protocol, no Node
     runtime/codexapp   # planned: native `codex app-server`, reusing the acp JSON-RPC client
-  jobs/                # job definitions (YAML)
   skills/              # SKILL.md files (agentskills.io format)
   config/
 ```
@@ -84,7 +83,7 @@ States: `pending`, `running`, `waiting_approval`, `watching`, `done`, `failed`.
 
 Transitions:
 - `pending → running` (triggered)
-- `running → done` (model answers with no tool call and contract passes; a runtime session's end is only a submission, so a delegated task reaches `done` only when the job's contract passes on what the session left)
+- `running → done` (model answers with no tool call and contract passes; a runtime session's end is only a submission, so a delegated task reaches `done` only when the delegation's contract passes on what the session left)
 - `running → failed` (error, budget exhausted; reason recorded)
 - `running → waiting_approval` (gateway needs approval) and back to `running` on approve or reject
 - `running → watching` (waiting on an external change) and back to `running` when it changes
@@ -109,7 +108,7 @@ Tiers per tool, from `config/policy.yaml`:
 | 3 | High impact or irreversible | Always ask |
 | 4 | Forbidden (secret exfiltration, shell from the kernel's loop) | Always deny |
 
-Taint: once untrusted content enters a task's context, any write whose target did not appear in a trusted instruction (user message or job definition) is escalated to tier 3.
+Taint: once untrusted content enters a task's context, any write whose target did not appear in a trusted instruction (user message or kernel goal) is escalated to tier 3.
 
 Approval binding: an approval stores tool, target, args hash, expiry, and policy version. The gateway revalidates all of them at execution time; any mismatch voids the approval.
 
@@ -144,12 +143,12 @@ Starter guarded list: deletes (`rm`, `git clean`, `git reset --hard`, dropping a
 - One logical change per commit; message `<area>: <what>` (e.g. `gateway: revalidate approval args hash`).
 - Tests and the code they test may share a commit, except the frozen contract tests, which are committed alone.
 
-## Jobs, skills, triggers
+## Tasks, skills, schedules
 
 - **Skill** = how. Markdown read by the model. No permissions, schedule, or budget.
-- **Job** = what and with what: goal, skills, tool allowlist, mode (`background` max tier 0–1, `foreground`), budget, output contract, and optionally the runtime that does the work.
-- **Trigger** = when. A field on the job: `cron`, `event`, or `manual`. A chat message is an ad-hoc manual job.
+- **Spec** (`app.Spec`) = what a task runs with: goal, model, tool allowlist, budget. Chat uses `Deps.Chat`; the kernel builds its own for brain extract and consolidation.
+- **Schedule** = kernel-internal cron, today only brain consolidate (02:00) and digest (07:00) in `app/brainmem.go`. User jobs were removed on 2026-11-26 (owner decision, plan `docs/plans/2026-11-26-remove-jobs.md`); their replacement is not designed yet, so nothing starts a runtime delegation outside tests.
 
 ## Reports (output contract)
 
-First line: what the user needs to do, or "nothing". Max 5 bullet points, one line each, with links. One line of gaps: what could not be checked and why. Items that are not relevant to the job's goal are not written. Silent rule: if nothing needs doing, background jobs send nothing (morning brief excepted).
+First line: what the user needs to do, or "nothing". Max 5 bullet points, one line each, with links. One line of gaps: what could not be checked and why. Items that are not relevant to the task's goal are not written. Silent rule: if nothing needs doing, background tasks send nothing.

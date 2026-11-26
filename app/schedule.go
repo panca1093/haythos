@@ -17,7 +17,7 @@ type jobMark struct {
 	At  time.Time `json:"at"`
 }
 
-// Tick fires every cron job that became due since it last fired. After downtime it fires only the latest missed run.
+// Tick fires every kernel schedule that became due since it last fired. After downtime it fires only the latest missed run.
 func (a *App) Tick(ctx context.Context) error {
 	now := a.d.Clock()
 	sys, err := a.d.Events.Load(ctx, systemTask)
@@ -32,11 +32,6 @@ func (a *App) Tick(ctx context.Context) error {
 		}
 	}
 
-	jobs, err := a.scheduledJobs(sys)
-	if err != nil {
-		return err
-	}
-
 	var errs []error
 	if err := a.sweepApprovals(ctx); err != nil {
 		errs = append(errs, err)
@@ -44,19 +39,17 @@ func (a *App) Tick(ctx context.Context) error {
 	if err := a.extractStale(ctx); err != nil {
 		errs = append(errs, err)
 	}
-	for _, j := range jobs {
-		if j.Trigger.Cron == "" {
-			continue
-		}
-		sched, err := cron.ParseStandard(j.Trigger.Cron)
+	for _, sc := range a.schedules() {
+		j := sc.spec
+		sched, err := cron.ParseStandard(sc.cron)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("job %s cron %q: %w", j.Name, j.Trigger.Cron, err))
+			errs = append(errs, fmt.Errorf("schedule %s cron %q: %w", j.Name, sc.cron, err))
 			continue
 		}
 		from, armed := last[j.Name]
 		if !armed {
 			if _, err := a.d.Events.Append(ctx, systemTask, evJobArmed, jobMark{Job: j.Name, At: now}); err != nil {
-				return fmt.Errorf("arm job %s: %w", j.Name, err)
+				return fmt.Errorf("arm schedule %s: %w", j.Name, err)
 			}
 			continue
 		}
@@ -73,13 +66,7 @@ func (a *App) Tick(ctx context.Context) error {
 			errs = append(errs, err)
 			continue
 		}
-		if in.run && j.Runtime != "" {
-			if err := a.launchDelegated(ctx, id, j); err != nil {
-				errs = append(errs, fmt.Errorf("launch %s: %w", id, err))
-				continue
-			}
-			in.run = false
-		} else if in.run {
+		if in.run {
 			if _, err := a.createTask(ctx, id, j, in.text, "", ""); err != nil {
 				errs = append(errs, err)
 				continue
@@ -90,7 +77,7 @@ func (a *App) Tick(ctx context.Context) error {
 			}
 		}
 		if _, err := a.d.Events.Append(ctx, systemTask, evJobFired, jobMark{Job: j.Name, At: due}); err != nil {
-			return fmt.Errorf("record job %s fired: %w", j.Name, err)
+			return fmt.Errorf("record schedule %s fired: %w", j.Name, err)
 		}
 		if err := a.hook("app.after_job_fired"); err != nil {
 			return err

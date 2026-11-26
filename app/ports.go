@@ -97,31 +97,19 @@ type Notifier interface {
 	Publish(ctx context.Context, n Notice) error
 }
 
-type Trigger struct {
-	Cron   string `yaml:"cron"`
-	Manual bool   `yaml:"manual"`
-}
-
-type Job struct {
-	Name    string
-	Goal    string
-	Model   string
-	Tools   []string
-	Budget  task.Budget
-	Trigger Trigger
-	// DeliverTo are channel-adapter addresses for this job's notices; empty means the adapter's default.
-	DeliverTo []string
+// Spec is what a task runs with: its system goal, model, tool allowlist and budget.
+type Spec struct {
+	Name   string
+	Goal   string
+	Model  string
+	Tools  []string
+	Budget task.Budget
 	// Silent suppresses the task's final and failure notices.
 	Silent bool
-	// BrainSource is the provenance stamped on brain writes from this job's tasks.
+	// BrainSource is the provenance stamped on brain writes from this spec's tasks.
 	BrainSource string
-	// Runtime is the alias of the runtime this job delegates to; empty runs on the kernel's loop.
-	Runtime string
-	// Workdir, RuntimeModel, RuntimeMode and Checks apply only when Runtime is set; Workdir is already resolved from config.
-	Workdir      string
-	RuntimeModel string
-	RuntimeMode  string
-	Checks       []Check
+
+	runtime string
 }
 
 type Input struct {

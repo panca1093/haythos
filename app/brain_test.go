@@ -23,11 +23,10 @@ func brainApp(t *testing.T, db string, br app.Brain, model *testfakes.Model, n *
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Jobs:       []app.Job{{Name: "nightly", Goal: "Do it.", Model: "default", Tools: []string{"note.add"}, Trigger: app.Trigger{Manual: true}}},
-		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
-		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{}, Brain: br,
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{}, Brain: br,
 		Policy:      policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		Clock:       func() time.Time { return time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC) },
 		ApprovalTTL: time.Hour,
@@ -121,8 +120,13 @@ func TestBrainBlockIsCappedAndEscaped(t *testing.T) {
 func TestBrainNotUsedForScheduledJobs(t *testing.T) {
 	br := &testfakes.Brain{Items: []app.BrainItem{{Slug: "a", Text: "alpha", Source: "import/mybook"}}}
 	m := testfakes.NewModel(task.AssistantTurn{Text: "done"})
-	if _, err := brainApp(t, t.TempDir()+"/h.db", br, m, &testfakes.Notifier{}).RunJob(context.Background(), "nightly"); err != nil {
-		t.Fatalf("run job: %v", err)
+	a := brainApp(t, t.TempDir()+"/h.db", br, m, &testfakes.Notifier{})
+	id, err := a.CreateTask(context.Background(), app.Spec{Name: "nightly", Goal: "Do it.", Model: "default", Tools: []string{"note.add"}}, "Run it.")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := a.RunTask(context.Background(), id); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	if len(br.Queries) != 0 {
 		t.Fatalf("scheduled job recalled %v, want no recall", br.Queries)

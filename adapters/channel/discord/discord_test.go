@@ -102,7 +102,7 @@ func TestTextCommand(t *testing.T) {
 		{"/pause", "pause", true},
 		{"/resume", "resume", true},
 		{"/settings", "settings", true},
-		{"/jobs", "jobs", true},
+		{"/jobs", "", false},
 		{"/stop", "stop", true},
 		{"/model", "", false},
 		{"/mention-only please", "", false},
@@ -377,21 +377,6 @@ func TestSettingsText(t *testing.T) {
 	}
 	if got := settingsText(nil); got != "No runtime settings." {
 		t.Errorf("empty = %q", got)
-	}
-}
-
-func TestJobsText(t *testing.T) {
-	next := time.Date(2026, 11, 2, 2, 0, 0, 0, time.UTC)
-	got := jobsText([]app.JobStatus{
-		{Name: "vm-health", Source: "config", Cron: "CRON_TZ=Asia/Jakarta 0 7,15 * * *", Tools: []string{"vmhealth.read"}, Enabled: true, Next: next},
-		{Name: "disk", Source: "chat", Cron: "CRON_TZ=Asia/Jakarta 0 9 * * 1", Enabled: false, DeliverTo: []string{"123", "dm-me"}},
-	}, "dm-me")
-	want := "**Jobs**\n" +
-		"`vm-health` (config) `0 7,15 * * *` next Mon 02 Nov 09:00 WIB · tools: vmhealth.read → DM\n" +
-		"`disk` (chat) `0 9 * * 1` disabled · tools: none → <#123>, DM\n" +
-		"Create, change, disable or delete chat jobs by asking Alfred; each change asks for approval."
-	if got != want {
-		t.Errorf("got:\n%s\nwant:\n%s", got, want)
 	}
 }
 

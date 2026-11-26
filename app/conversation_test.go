@@ -32,9 +32,9 @@ func newConvRig(t *testing.T, turns ...task.AssistantTurn) *convRig {
 	t.Cleanup(func() { _ = st.Close() })
 	r := &convRig{model: testfakes.NewModel(turns...), clock: testfakes.NewClock(time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC)), store: st}
 	r.app = app.New(app.Deps{
-		Models:     map[string]app.Model{"default": r.model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
-		Tools:      testfakes.NewTools(), Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": r.model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:  testfakes.NewTools(), Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{}}, Clock: r.clock.Now, ApprovalTTL: time.Hour,
 		Windows: map[string]int{"default": 1000},
 	})
@@ -282,9 +282,9 @@ func toolRig(t *testing.T, result task.ToolResult, turns ...task.AssistantTurn) 
 	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`), Untrusted: result.Untrusted})
 	tools.Handlers["note.read"] = func(task.ToolCall) (task.ToolResult, error) { return result, nil }
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy:  policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}},
 		Clock:   time.Now,
 		Windows: map[string]int{"default": 1000},
@@ -375,9 +375,9 @@ func TestOversizedToolTurnFallsBackToQuestionAndAnswer(t *testing.T) {
 func rebuild(t *testing.T, r *convRig, m app.Model) *app.App {
 	t.Helper()
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": m},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
-		Tools:      testfakes.NewTools(), Events: r.store, Ledger: r.store, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": m},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:  testfakes.NewTools(), Events: r.store, Ledger: r.store, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{}}, Clock: r.clock.Now, ApprovalTTL: time.Hour,
 		Windows: map[string]int{"default": 1000},
 	})

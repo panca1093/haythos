@@ -64,7 +64,7 @@ func newDelegateRig(t *testing.T, script func(r *delegateRig) []testfakes.Runtim
 }
 
 func (r *delegateRig) run(checks ...app.Check) (string, error) {
-	return r.app.RunDelegated(context.Background(), app.Job{Name: "delegate", Goal: "g"}, app.Delegation{Runtime: "rt", Prompt: "p", Workdir: "/w", Checks: checks})
+	return r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "rt", Prompt: "p", Workdir: "/w", Checks: checks})
 }
 
 func askStep(id, kind, text string) testfakes.RuntimeStep {
@@ -198,7 +198,7 @@ func TestDelegatedChecks(t *testing.T) {
 func TestDelegatedGuards(t *testing.T) {
 	t.Run("unknown runtime", func(t *testing.T) {
 		r := newDelegateRig(t, func(*delegateRig) []testfakes.RuntimeStep { return nil })
-		_, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d"}, app.Delegation{Runtime: "nope"})
+		_, err := r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "nope"})
 		if err == nil {
 			t.Error("RunDelegated with an unknown runtime succeeded")
 		}
@@ -208,7 +208,7 @@ func TestDelegatedGuards(t *testing.T) {
 		ctx, cancel := context.WithCancel(context.Background())
 		done := make(chan string, 1)
 		go func() {
-			id, _ := r.app.RunDelegated(ctx, app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/w"})
+			id, _ := r.app.RunDelegated(ctx, app.Delegation{Runtime: "rt", Workdir: "/w"})
 			done <- id
 		}()
 		var id string
@@ -302,7 +302,7 @@ func TestDelegatedSecondSessionOnTheSameWorkdirFailsFast(t *testing.T) {
 	r := newDelegateRig(t, func(r *delegateRig) []testfakes.RuntimeStep { return []testfakes.RuntimeStep{testfakes.Hang()} })
 	first := make(chan string, 1)
 	go func() {
-		id, _ := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/w"})
+		id, _ := r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "rt", Workdir: "/w"})
 		first <- id
 	}()
 	for deadline := time.Now().Add(5 * time.Second); r.runtime.Sessions() == 0 && time.Now().Before(deadline); time.Sleep(5 * time.Millisecond) {
@@ -311,7 +311,7 @@ func TestDelegatedSecondSessionOnTheSameWorkdirFailsFast(t *testing.T) {
 		t.Fatal("first session never started")
 	}
 
-	id, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/w/"})
+	id, err := r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "rt", Workdir: "/w/"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -337,7 +337,7 @@ func TestDelegatedSecondSessionOnTheSameWorkdirFailsFast(t *testing.T) {
 	}
 	<-first
 
-	id3, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Workdir: "/other"})
+	id3, err := r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "rt", Workdir: "/other"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,7 +354,7 @@ func TestInterruptStopsADelegatedSessionOfTheConversation(t *testing.T) {
 	}
 	done := make(chan result, 1)
 	go func() {
-		id, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Prompt: "p", Workdir: "/w", ReplyTo: "c1"})
+		id, err := r.app.RunDelegated(context.Background(), app.Delegation{Runtime: "rt", Prompt: "p", Workdir: "/w", ReplyTo: "c1"})
 		done <- result{id, err}
 	}()
 	err := app.ErrNothingRunning

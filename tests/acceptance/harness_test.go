@@ -13,7 +13,6 @@ import (
 	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/tools/local"
 	localbrain "github.com/panca/haythos/adapters/tools/local/brain"
-	"github.com/panca/haythos/adapters/tools/local/jobs"
 	"github.com/panca/haythos/adapters/tools/mcp"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
@@ -37,7 +36,7 @@ var testPolicy = policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{
 	"slack.post": policy.TierInternalWrite, "msg.send": policy.TierExternalWrite,
 }}
 
-var testJob = app.Job{
+var testJob = app.Spec{
 	Name: "t", Goal: "You are Alfred.", Model: "default",
 	Tools:  []string{"vm.read", "slack.read", "slack.post", "msg.send"},
 	Budget: task.Budget{Tokens: 100000, Steps: 20},
@@ -86,7 +85,7 @@ func (r *rig) boot(turns ...task.AssistantTurn) {
 		models[k] = v
 	}
 	r.app = app.New(app.Deps{
-		Models: models, DefaultJob: testJob, Tools: r.tools,
+		Models: models, Chat: testJob, Tools: r.tools,
 		Events: st, Ledger: st, Notifier: r.notifier, Vault: testfakes.Vault{},
 		Policy: testPolicy, Clock: r.clock.Now, ApprovalTTL: time.Hour,
 		Hook: func(p string) error {
@@ -105,7 +104,7 @@ func (r *rig) start() {
 	}
 }
 
-func (r *rig) create(job app.Job, input string) string {
+func (r *rig) create(job app.Spec, input string) string {
 	r.t.Helper()
 	id, err := r.app.CreateTask(context.Background(), job, input)
 	if err != nil {
@@ -166,25 +165,16 @@ func hasErrorResultContaining(s task.Snapshot, sub string) bool {
 
 var m2Policy = policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{
 	"vm.read": policy.TierRead, "slack.read": policy.TierRead, "msg.send": policy.TierExternalWrite,
-	"jobs.list": policy.TierRead, "jobs.define": policy.TierInternalWrite, "jobs.disable": policy.TierInternalWrite,
-	"jobs.enable": policy.TierInternalWrite, "jobs.delete": policy.TierInternalWrite,
 }}
 
-var chatJob = app.Job{
+var chatJob = app.Spec{
 	Name: "chat", Goal: "You are Alfred.", Model: "default",
-	Tools:  []string{"vm.read", "slack.read", "jobs.list", "jobs.define", "jobs.disable", "jobs.enable", "jobs.delete"},
+	Tools:  []string{"vm.read", "slack.read"},
 	Budget: task.Budget{Tokens: 100000, Steps: 20},
-}
-
-var configJob = app.Job{
-	Name: "vm-health", Goal: "Report VM health.", Model: "default", Tools: []string{"vm.read"},
-	Budget: task.Budget{Tokens: 20000, Steps: 5}, Trigger: app.Trigger{Cron: "CRON_TZ=Asia/Jakarta 0 7 1 1 *"},
 }
 
 // 2026-10-27 is a Tuesday; 02:00 UTC is 09:00 in Asia/Jakarta.
 var m2Start = time.Date(2026, 10, 27, 2, 0, 0, 0, time.UTC)
-
-const diskJobArgs = `{"name":"disk-check","cron":"0 9 * * 1","goal":"Check the disk and report.","tools":["vm.read"]}`
 
 type m2rig struct {
 	t        *testing.T
@@ -232,7 +222,7 @@ func (r *m2rig) boot(turns ...task.AssistantTurn) {
 	reg.Register(task.ToolSpec{Name: "msg.send", Write: true, TargetArg: "to", InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(context.Context, []byte) (task.ToolResult, error) { return task.ToolResult{Content: "sent"}, nil })
 	r.app = app.New(app.Deps{
-		Models: map[string]app.Model{"default": r.model}, DefaultJob: chatJob, Jobs: []app.Job{configJob},
+		Models: map[string]app.Model{"default": r.model}, Chat: chatJob,
 		Tools: reg, Events: st, Ledger: st, Notifier: r.notifier, Vault: testfakes.Vault{},
 		Policy: m2Policy, Clock: r.clock.Now, ApprovalTTL: time.Hour, ModelSelector: r.selector,
 		Hook: func(p string) error {
@@ -242,7 +232,6 @@ func (r *m2rig) boot(turns ...task.AssistantTurn) {
 			return nil
 		},
 	})
-	jobs.Register(reg, r.app)
 }
 
 func (r *m2rig) start() {
@@ -250,54 +239,6 @@ func (r *m2rig) start() {
 	if err := r.app.Start(context.Background()); err != nil {
 		r.t.Fatalf("start: %v", err)
 	}
-}
-
-func (r *m2rig) tick() {
-	r.t.Helper()
-	if err := r.app.Tick(context.Background()); err != nil {
-		r.t.Fatalf("tick: %v", err)
-	}
-}
-
-func (r *m2rig) chat(text string) string {
-	r.t.Helper()
-	id, err := r.app.HandleInput(context.Background(), app.Input{Text: text})
-	if err != nil {
-		r.t.Fatalf("handle input: %v", err)
-	}
-	return id
-}
-
-func (r *m2rig) approveLast(id string) {
-	r.t.Helper()
-	n := r.notifier.Of(app.NoticeApproval)
-	if len(n) == 0 {
-		r.t.Fatal("no approval.request notice")
-	}
-	if err := r.app.HandleApproval(context.Background(), id, n[len(n)-1].Approval.Approval.ID, true); err != nil {
-		r.t.Fatalf("approve: %v", err)
-	}
-}
-
-func (r *m2rig) jobNames() []string {
-	r.t.Helper()
-	js, err := r.app.ListJobs(context.Background())
-	if err != nil {
-		r.t.Fatalf("list jobs: %v", err)
-	}
-	var out []string
-	for _, j := range js {
-		out = append(out, j.Name)
-	}
-	return out
-}
-
-func (r *m2rig) reports() []string {
-	var out []string
-	for _, n := range r.notifier.Of(app.NoticeMessage) {
-		out = append(out, n.Text)
-	}
-	return out
 }
 
 func (r *m2rig) setting(key string) app.SettingValue {
@@ -313,20 +254,6 @@ func (r *m2rig) setting(key string) app.SettingValue {
 	}
 	r.t.Fatalf("setting %q not listed in %+v", key, all)
 	return app.SettingValue{}
-}
-
-// untilMonday9 moves the clock past the next Monday 09:00 Asia/Jakarta (2026-11-02 02:00 UTC).
-func (r *m2rig) untilMonday9() {
-	r.clock.Advance(time.Date(2026, 11, 2, 2, 0, 30, 0, time.UTC).Sub(r.clock.Now()))
-}
-
-func (r *m2rig) snap(id string) task.Snapshot {
-	r.t.Helper()
-	s, err := r.app.Snapshot(context.Background(), id)
-	if err != nil {
-		r.t.Fatalf("snapshot: %v", err)
-	}
-	return s
 }
 
 const (
@@ -388,13 +315,13 @@ func newP2Rig(t *testing.T, items []app.BrainItem, extra app.Tools, turns ...tas
 	if extra != nil {
 		tools = chain{reg, extra}
 	}
-	job := app.Job{
+	job := app.Spec{
 		Name: "chat", Goal: "You are Alfred.", Model: "default",
 		Tools:  []string{"vm.read", "web.read", "chat.post", "ext.lookup", "brain.recall", "brain.remember", "brain.forget"},
 		Budget: task.Budget{Tokens: 1000000, Steps: 20},
 	}
 	r.app = app.New(app.Deps{
-		Models: map[string]app.Model{"default": r.model}, DefaultJob: job, Tools: tools, Events: st, Ledger: st,
+		Models: map[string]app.Model{"default": r.model}, Chat: job, Tools: tools, Events: st, Ledger: st,
 		Notifier: r.notifier, Vault: testfakes.Vault{}, Policy: p2Policy, Brain: r.brain,
 		Clock: testfakes.NewClock(m2Start).Now, ApprovalTTL: time.Hour,
 	})

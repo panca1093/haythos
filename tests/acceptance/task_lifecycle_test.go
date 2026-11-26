@@ -288,7 +288,7 @@ func TestHungModelStepFailsTheTask(t *testing.T) {
 	t.Cleanup(func() { _ = st.Close() })
 	notifier := &testfakes.Notifier{}
 	a := app.New(app.Deps{
-		Models: map[string]app.Model{"default": hangingModel{}}, DefaultJob: testJob,
+		Models: map[string]app.Model{"default": hangingModel{}}, Chat: testJob,
 		Tools: testfakes.NewTools(specs...), Events: st, Ledger: st, Notifier: notifier,
 		Vault: testfakes.Vault{}, Policy: testPolicy, StepTimeout: 50 * time.Millisecond,
 	})

@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"context"
-	"encoding/base64"
 	"errors"
 	"io"
 	"os"
@@ -15,12 +14,9 @@ import (
 	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/model/chatgpt"
 	"github.com/panca/haythos/adapters/model/claudesdk"
-	"github.com/panca/haythos/adapters/store/sqlite"
-	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/adapters/vault/file"
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
-	"github.com/panca/haythos/core/task"
 )
 
 func TestInstanceLockIsExclusive(t *testing.T) {
@@ -38,71 +34,6 @@ func TestInstanceLockIsExclusive(t *testing.T) {
 		t.Fatalf("lock after release: %v", err)
 	}
 	release2()
-}
-
-func runJobFixture(t *testing.T) (dir string, args []string) {
-	t.Helper()
-	dir = t.TempDir()
-	t.Setenv("HAYTHOS_VAULT_KEY", base64.StdEncoding.EncodeToString(make([]byte, 32)))
-	t.Setenv("HAYTHOS_HOME", dir)
-	cfg := "db: " + filepath.Join(dir, "h.db") + "\nvault: " + filepath.Join(dir, "v.enc") + "\n" +
-		"default_model: claude-api\nmodels:\n  claude-api: { kind: anthropic, model: m, secret: anthropic }\n"
-	if err := os.WriteFile(filepath.Join(dir, "haythos.yaml"), []byte(cfg), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	jobsDir := filepath.Join(dir, "jobs")
-	if err := os.MkdirAll(jobsDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	job := "name: check\ngoal: g\ntools: [file.list]\nmode: background\nbudget: { tokens: 1000, steps: 1 }\n"
-	if err := os.WriteFile(filepath.Join(jobsDir, "check.yaml"), []byte(job), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	return dir, []string{"-config", filepath.Join(dir, "haythos.yaml"), "-policy", "../../config/policy.yaml", "-jobs", jobsDir, "run-job", "check"}
-}
-
-func TestRunJobDoesNotResumeOtherTasks(t *testing.T) {
-	dir, args := runJobFixture(t)
-	db := filepath.Join(dir, "h.db")
-	st, err := sqlite.Open(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	a := app.New(app.Deps{Events: st, Ledger: st, Tools: testfakes.NewTools(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{}})
-	other, err := a.CreateTask(context.Background(), app.Job{Name: "chat", Goal: "g"}, "hi from discord")
-	if err != nil {
-		t.Fatal(err)
-	}
-	_ = st.Close()
-
-	if err := run(args); err != nil {
-		t.Fatalf("run-job: %v", err)
-	}
-
-	st, err = sqlite.Open(db)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = st.Close() }()
-	pending, err := st.TasksIn(context.Background(), task.Pending)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !slices.Contains(pending, other) {
-		t.Errorf("task %s was resumed by run-job; pending = %v", other, pending)
-	}
-}
-
-func TestRunJobRefusesWhileAnotherInstanceHoldsTheDB(t *testing.T) {
-	dir, args := runJobFixture(t)
-	release, err := lockInstance(filepath.Join(dir, "h.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer release()
-	if err := run(args); err == nil || !strings.Contains(err.Error(), "another haythos") {
-		t.Errorf("err = %v, want another-instance error", err)
-	}
 }
 
 func TestAuthStoresTrimmedSecretAndNeverEchoesIt(t *testing.T) {
@@ -375,14 +306,14 @@ func TestClaudeSubSelectorSwitchesWithoutTouchingConfig(t *testing.T) {
 func TestBuildModelsChatGPTNeedsSignIn(t *testing.T) {
 	v, _ := file.Open(t.TempDir()+"/v.enc", bytes.Repeat([]byte{7}, 32))
 	cfg := config.Main{DefaultModel: "gpt-sub", Models: map[string]config.Model{"gpt-sub": {Kind: "chatgpt"}}}
-	models, _, err := buildModels(cfg, v, nil)
+	models, _, err := buildModels(cfg, v)
 	if err != nil || models["gpt-sub"] != nil {
 		t.Fatalf("not signed in: models=%v err=%v, want skipped", models, err)
 	}
 	if err := v.Set("chatgpt", "{}"); err != nil {
 		t.Fatal(err)
 	}
-	models, _, err = buildModels(cfg, v, nil)
+	models, _, err = buildModels(cfg, v)
 	if err != nil || models["gpt-sub"] == nil {
 		t.Fatalf("signed in: models=%v err=%v", models, err)
 	}
@@ -397,7 +328,7 @@ func TestBuildModelsOffersChatGPTWithoutYAML(t *testing.T) {
 		DefaultModel: "claude-sub",
 		Models:       map[string]config.Model{"claude-sub": {Kind: "claudesdk"}},
 	}
-	models, _, err := buildModels(cfg, v, nil)
+	models, _, err := buildModels(cfg, v)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -415,7 +346,7 @@ func TestChatToolsHaveAPolicyTier(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, tool := range append(slices.Clone(defaultJob.Tools), discordChatTools...) {
+	for _, tool := range append(slices.Clone(defaultChat.Tools), discordChatTools...) {
 		if _, ok := pol.Tiers[tool]; !ok {
 			t.Errorf("chat tool %s has no tier in config/policy.yaml; the gateway would deny it", tool)
 		}
@@ -430,7 +361,7 @@ func TestDiscordPostIsTierTwoAndOnlyForDiscordChat(t *testing.T) {
 	if got := pol.Tiers["discord.post"]; got != policy.TierExternalWrite {
 		t.Errorf("discord.post tier = %d, want %d", got, policy.TierExternalWrite)
 	}
-	if !slices.Contains(discordChatTools, "discord.post") || slices.Contains(defaultJob.Tools, "discord.post") {
+	if !slices.Contains(discordChatTools, "discord.post") || slices.Contains(defaultChat.Tools, "discord.post") {
 		t.Error("discord.post must be added to the chat job only when Discord is configured")
 	}
 }
@@ -456,8 +387,8 @@ func TestSoulAndRuntimeTailReplaceSelfAbout(t *testing.T) {
 		if _, ok := pol.Tiers[removed]; ok {
 			t.Errorf("%s should be removed from config/policy.yaml", removed)
 		}
-		if slices.Contains(defaultJob.Tools, removed) {
-			t.Errorf("%s should be removed from defaultJob.Tools", removed)
+		if slices.Contains(defaultChat.Tools, removed) {
+			t.Errorf("%s should be removed from defaultChat.Tools", removed)
 		}
 	}
 

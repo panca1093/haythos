@@ -38,11 +38,11 @@ func workdirAppWindows(t *testing.T, windows map[string]int, n *testfakes.Notifi
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
-		Tools:      tools,
-		Windows:    windows,
-		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
+		Models:  map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		Chat:    app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.read"}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
+		Tools:   tools,
+		Windows: windows,
+		Events:  st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{"file.read": policy.TierRead}},
 		Clock:  func() time.Time { return time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC) },
 	})
@@ -82,7 +82,7 @@ func TestToolActivityIsNotSentForTasksWithoutOrigin(t *testing.T) {
 	n := &testfakes.Notifier{}
 	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: "file.read", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	a := workdirApp(t, n, tools, readCall(), task.AssistantTurn{Text: "done"})
-	id, err := a.CreateTask(context.Background(), app.Job{Name: "job", Goal: "g", Model: "default", Tools: []string{"file.read"}}, "go")
+	id, err := a.CreateTask(context.Background(), app.Spec{Name: "job", Goal: "g", Model: "default", Tools: []string{"file.read"}}, "go")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}
@@ -146,10 +146,10 @@ func approvalToolApp(t *testing.T, n *testfakes.Notifier, tool string, tier poli
 	t.Cleanup(func() { _ = st.Close() })
 	tools := &workdirTools{Tools: testfakes.NewTools(task.ToolSpec{Name: tool, Write: true, TargetArg: "path", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{tool}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
-		Tools:      tools,
-		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{tool}, Budget: task.Budget{Tokens: 50000, Steps: 10}},
+		Tools:  tools,
+		Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{tool: tier}},
 		Clock:  func() time.Time { return time.Date(2026, 11, 10, 2, 0, 0, 0, time.UTC) },
 	})

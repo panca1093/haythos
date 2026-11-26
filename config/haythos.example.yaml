@@ -17,8 +17,8 @@ claude_cli:
 discord:
   owner_id: ""
 
-# Runtimes run heavy work as processes; a job picks one with `runtime: { alias, workdir }` (see jobs/examples/).
-# workdirs maps a name to an absolute folder: jobs name the folder, they never carry a path.
+# Runtimes run heavy work as processes. Nothing starts a delegation yet: jobs were removed (2026-11-26) and their replacement is not built.
+# workdirs maps a name to an absolute folder: a delegation names the folder, it never carries a path.
 # Every permission request goes through the guard: policy.StarterRules plus your `guard` rules
 # (action: ask | deny; `starter_guard: false` drops the starter list). Matching is on text, so it is a guard rail, not a sandbox.
 # runtimes:

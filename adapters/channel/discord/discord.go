@@ -59,7 +59,6 @@ type Handler interface {
 	CurrentModel() string
 	SelectModel(ctx context.Context, value string) error
 	Settings(ctx context.Context) ([]app.SettingValue, error)
-	ListJobs(ctx context.Context) ([]app.JobStatus, error)
 	ActivateThread(ctx context.Context, id string) error
 	SetThreadMentionOnly(ctx context.Context, id string, on bool) error
 	ThreadModes(ctx context.Context) (map[string]app.ThreadMode, error)
@@ -117,7 +116,7 @@ func textCommand(text string) (string, bool) {
 		return "", false
 	}
 	switch name {
-	case mentionOnlyCmd, "pause", "resume", "settings", "jobs", "stop":
+	case mentionOnlyCmd, "pause", "resume", "settings", "stop":
 		return name, true
 	}
 	return "", false
@@ -223,7 +222,6 @@ func (c *Channel) Open() error {
 		{Name: "stop", Description: "Stop the turn running in this thread or channel"},
 		{Name: "model", Description: "Show or switch the model"},
 		{Name: "settings", Description: "Show runtime settings and what changed them"},
-		{Name: "jobs", Description: "List scheduled jobs and their next run"},
 		{Name: mentionOnlyCmd, Description: "In a thread: toggle answering only when mentioned"},
 	}
 	if _, err := c.s.ApplicationCommandBulkOverwrite(c.s.State.User.ID, "", cmds); err != nil {
@@ -751,12 +749,6 @@ func (c *Channel) commandText(ctx context.Context, name, channelID string) strin
 		} else {
 			msg = settingsText(vals)
 		}
-	case "jobs":
-		if js, err := c.h.ListJobs(ctx); err != nil {
-			msg = "Could not list jobs: " + err.Error()
-		} else {
-			msg = jobsText(js, c.dm)
-		}
 	default:
 		msg = "Unknown command."
 	}
@@ -787,11 +779,11 @@ func (c *Channel) onMentionOnly(s *discordgo.Session, i *discordgo.InteractionCr
 	}
 }
 
-// ChannelsTool is the discord.channels tool, so the model can turn "#infra" into an ID for deliver_to.
+// ChannelsTool is the discord.channels tool, so the model can turn "#infra" into an ID.
 func (c *Channel) ChannelsTool() (task.ToolSpec, func(ctx context.Context, args []byte) (task.ToolResult, error)) {
 	spec := task.ToolSpec{
 		Name:        channelsToolName,
-		Description: "List the Discord text channels and active threads the bot can see, with id, name and guild. Use the id in jobs.define deliver_to.",
+		Description: "List the Discord text channels and active threads the bot can see, with id, name and guild. Use the id to address a channel.",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{}}`),
 		Untrusted:   true,
 	}
@@ -846,42 +838,6 @@ func settingsText(vals []app.SettingValue) string {
 		lines = append(lines, fmt.Sprintf("`%s` = `%s` %s", v.Key, v.Value, src))
 	}
 	return strings.Join(lines, "\n")
-}
-
-var wib = time.FixedZone("WIB", 7*3600)
-
-func jobsText(js []app.JobStatus, dm string) string {
-	lines := []string{"**Jobs**"}
-	for _, j := range js {
-		when := "disabled"
-		switch {
-		case j.Enabled && j.Next.IsZero():
-			when = "manual only"
-		case j.Enabled:
-			when = "next " + j.Next.In(wib).Format("Mon 02 Jan 15:04") + " WIB"
-		}
-		tools := "none"
-		if len(j.Tools) > 0 {
-			tools = strings.Join(j.Tools, ", ")
-		}
-		lines = append(lines, fmt.Sprintf("`%s` (%s) `%s` %s · tools: %s → %s", j.Name, j.Source, strings.TrimPrefix(j.Cron, "CRON_TZ=Asia/Jakarta "), when, tools, targetsText(j.DeliverTo, dm)))
-	}
-	lines = append(lines, "Create, change, disable or delete chat jobs by asking Alfred; each change asks for approval.")
-	return strings.Join(lines, "\n")
-}
-
-func targetsText(targets []string, dm string) string {
-	if len(targets) == 0 {
-		return "DM"
-	}
-	parts := make([]string, len(targets))
-	for i, t := range targets {
-		parts[i] = "<#" + t + ">"
-		if t == "dm" || t == dm {
-			parts[i] = "DM"
-		}
-	}
-	return strings.Join(parts, ", ")
 }
 
 func (c *Channel) respond(s *discordgo.Session, i *discordgo.InteractionCreate, typ discordgo.InteractionResponseType, content string, comps []discordgo.MessageComponent) {
