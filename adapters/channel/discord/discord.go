@@ -23,6 +23,7 @@ const (
 	undoPrefix = "un"
 	undoLabel  = 70
 	handleTO   = 30 * time.Minute
+	stopTO     = time.Minute
 
 	modelSelectID = "mdl"
 	modelTO       = 30 * time.Second
@@ -637,6 +638,19 @@ func (c *Channel) onUndo(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}()
 }
 
+// onStopCommand defers the reply because Interrupt waits for the turn to stop, which can outlast Discord's 3 s window.
+func (c *Channel) onStopCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}); err != nil {
+		slog.Error("interaction respond failed", "err", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTO)
+		defer cancel()
+		c.edit(s, i, c.commandText(ctx, "stop", i.ChannelID), []discordgo.MessageComponent{})
+	}()
+}
+
 func (c *Channel) onModelCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -694,6 +708,9 @@ func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 		return
 	case mentionOnlyCmd:
 		c.onMentionOnly(s, i)
+		return
+	case "stop":
+		c.onStopCommand(s, i)
 		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
