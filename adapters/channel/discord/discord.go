@@ -53,6 +53,7 @@ type Handler interface {
 	UndoBrain(ctx context.Context, itemID string) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
+	Interrupt(ctx context.Context, replyTo string) error
 	ListModels(ctx context.Context) ([]app.ModelChoice, error)
 	CurrentModel() string
 	SelectModel(ctx context.Context, value string) error
@@ -115,7 +116,7 @@ func textCommand(text string) (string, bool) {
 		return "", false
 	}
 	switch name {
-	case mentionOnlyCmd, "pause", "resume", "settings", "jobs":
+	case mentionOnlyCmd, "pause", "resume", "settings", "jobs", "stop":
 		return name, true
 	}
 	return "", false
@@ -218,6 +219,7 @@ func (c *Channel) Open() error {
 	cmds := []*discordgo.ApplicationCommand{
 		{Name: "pause", Description: "Stop all writes immediately"},
 		{Name: "resume", Description: "Allow writes again"},
+		{Name: "stop", Description: "Stop what is running in this channel"},
 		{Name: "model", Description: "Show or switch the model"},
 		{Name: "settings", Description: "Show runtime settings and what changed them"},
 		{Name: "jobs", Description: "List scheduled jobs and their next run"},
@@ -716,6 +718,15 @@ func (c *Channel) commandText(ctx context.Context, name, channelID string) strin
 			msg = "Resume failed: " + err.Error()
 		} else {
 			msg = "Resumed. Writes still need approval."
+		}
+	case "stop":
+		switch err := c.h.Interrupt(ctx, channelID); {
+		case err == nil:
+			msg = "Stopping."
+		case errors.Is(err, app.ErrNothingRunning):
+			msg = "Nothing is running here."
+		default:
+			msg = "Stop failed: " + err.Error()
 		}
 	case "settings":
 		if vals, err := c.h.Settings(ctx); err != nil {
