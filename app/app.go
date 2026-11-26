@@ -630,6 +630,7 @@ func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 	// Tasks without targets record Target "" so notices sent before targets existed still dedupe.
 	type dest struct{ record, replyTo string }
 	dests := []dest{{"", created.ReplyTo}}
+	// Only tasks created before jobs were removed (2026-11-26) carry targets.
 	if len(created.Targets) > 0 {
 		dests = nil
 		for _, t := range created.Targets {

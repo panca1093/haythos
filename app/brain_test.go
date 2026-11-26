@@ -132,3 +132,55 @@ func TestBrainNotUsedForScheduledJobs(t *testing.T) {
 		t.Fatalf("scheduled job recalled %v, want no recall", br.Queries)
 	}
 }
+
+func TestBrainSchedulesKeepTheirMarksAcrossTheUpgrade(t *testing.T) {
+	ctx := context.Background()
+	db := t.TempDir() + "/h.db"
+	st, err := sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Marks as the YAML jobs wrote them; the clock below is 2026-10-28 09:00 WIB, after both runs of that day.
+	for _, m := range []struct {
+		typ, job string
+		at       time.Time
+	}{
+		{"job.armed", "brain-consolidate", time.Date(2026, 10, 26, 1, 0, 0, 0, time.UTC)},
+		{"job.armed", "brain-digest", time.Date(2026, 10, 26, 1, 0, 0, 0, time.UTC)},
+		{"job.fired", "brain-consolidate", time.Date(2026, 10, 27, 19, 0, 0, 0, time.UTC)},
+		{"job.fired", "brain-digest", time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)},
+	} {
+		if _, err := st.Append(ctx, "_system", task.EventType(m.typ), map[string]any{"job": m.job, "at": m.at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = st.Close()
+
+	n := &testfakes.Notifier{}
+	a := brainApp(t, db, &testfakes.Brain{}, testfakes.NewModel(), n)
+	if err := a.Tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	st, err = sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	sys, err := st.Load(ctx, "_system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sys) != 4 {
+		t.Errorf("system events = %d, want the 4 seeded marks and no re-arm or new fire", len(sys))
+	}
+	all, err := st.Since(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range all {
+		if e.Type == task.EvCreated {
+			t.Errorf("task %s created, want none", e.TaskID)
+		}
+	}
+}
