@@ -219,7 +219,7 @@ func (c *Channel) Open() error {
 	cmds := []*discordgo.ApplicationCommand{
 		{Name: "pause", Description: "Stop all writes immediately"},
 		{Name: "resume", Description: "Allow writes again"},
-		{Name: "stop", Description: "Stop what is running in this channel"},
+		{Name: "stop", Description: "Stop the turn running in this thread or channel"},
 		{Name: "model", Description: "Show or switch the model"},
 		{Name: "settings", Description: "Show runtime settings and what changed them"},
 		{Name: "jobs", Description: "List scheduled jobs and their next run"},
