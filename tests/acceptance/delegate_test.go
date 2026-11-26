@@ -345,3 +345,40 @@ func TestDelegatedSecondSessionOnTheSameWorkdirFailsFast(t *testing.T) {
 		t.Errorf("another workdir was refused: %q", s.Reason)
 	}
 }
+
+func TestInterruptStopsADelegatedSessionOfTheConversation(t *testing.T) {
+	r := newDelegateRig(t, func(r *delegateRig) []testfakes.RuntimeStep { return []testfakes.RuntimeStep{testfakes.Hang()} })
+	type result struct {
+		id  string
+		err error
+	}
+	done := make(chan result, 1)
+	go func() {
+		id, err := r.app.RunDelegated(context.Background(), app.Job{Name: "d", Goal: "g"}, app.Delegation{Runtime: "rt", Prompt: "p", Workdir: "/w", ReplyTo: "c1"})
+		done <- result{id, err}
+	}()
+	err := app.ErrNothingRunning
+	for deadline := time.Now().Add(5 * time.Second); errors.Is(err, app.ErrNothingRunning) && time.Now().Before(deadline); time.Sleep(time.Millisecond) {
+		err = r.app.Interrupt(context.Background(), "c1")
+	}
+	if err != nil {
+		t.Fatalf("interrupt: %v", err)
+	}
+	select {
+	case res := <-done:
+		if res.err != nil {
+			t.Fatal(res.err)
+		}
+		if s := r.snap(res.id); s.State != task.Failed || s.Reason != "cancelled" {
+			t.Errorf("state = %s (%s), want failed: cancelled", s.State, s.Reason)
+		}
+		if !r.runtime.Session(0).Stopped() {
+			t.Error("session was not stopped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("interrupt did not stop the delegated session")
+	}
+	if err := r.app.Interrupt(context.Background(), "c2"); !errors.Is(err, app.ErrNothingRunning) {
+		t.Errorf("interrupt of another conversation = %v, want ErrNothingRunning", err)
+	}
+}

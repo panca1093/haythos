@@ -35,6 +35,7 @@ type Handler interface {
 	HandleInput(ctx context.Context, in app.Input) (string, error)
 	HandleApproval(ctx context.Context, taskID, approvalID string, approve bool) error
 	CancelDelegated(ctx context.Context, taskID string) error
+	Interrupt(ctx context.Context, replyTo string) error
 	RunJob(ctx context.Context, name string) (string, error)
 	ConversationView(ctx context.Context, replyTo string) (app.ConversationView, error)
 	Conversations(ctx context.Context, prefix string) ([]app.ConversationSummary, error)
@@ -268,6 +269,25 @@ func (s *Server) dispatch(ctx, kernel context.Context, c *conn, f clientFrame) {
 		s.background(kernel, c, "cancel", func(ctx context.Context) error {
 			return s.h.CancelDelegated(ctx, f.TaskID)
 		})
+	case TypeInterrupt:
+		conv := s.convOf(c)
+		switch {
+		case conv == "":
+			s.reply(c, errorFrame("subscribe to a conversation first"))
+		case f.Conv != conv:
+			s.reply(c, errorFrame("interrupt refused: this connection may only stop "+conv))
+		default:
+			s.background(kernel, c, "interrupt", func(ctx context.Context) error {
+				if err := s.h.Interrupt(ctx, conv); err != nil {
+					if errors.Is(err, app.ErrNothingRunning) {
+						s.reply(c, errorFrame(err.Error()))
+						return nil
+					}
+					return err
+				}
+				return nil
+			})
+		}
 	case TypeRunJob:
 		s.background(kernel, c, "job", func(ctx context.Context) error {
 			_, err := s.h.RunJob(ctx, f.Name)

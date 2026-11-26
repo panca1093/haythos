@@ -188,7 +188,7 @@ func (g *Gateway) Execute(ctx context.Context, req Request) (Outcome, error) {
 	case res.IsError:
 		final = task.LedgerFailed
 	}
-	if err := g.setLedger(ctx, &entry, final, content); err != nil {
+	if err := g.setLedger(context.WithoutCancel(ctx), &entry, final, content); err != nil {
 		return Outcome{}, err
 	}
 	return Outcome{Result: res, Unknown: final == task.LedgerOutcomeUnknown}, nil

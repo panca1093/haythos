@@ -23,6 +23,7 @@ const (
 	undoPrefix = "un"
 	undoLabel  = 70
 	handleTO   = 30 * time.Minute
+	stopTO     = time.Minute
 
 	modelSelectID = "mdl"
 	modelTO       = 30 * time.Second
@@ -53,6 +54,7 @@ type Handler interface {
 	UndoBrain(ctx context.Context, itemID string) error
 	Pause(ctx context.Context) error
 	Resume(ctx context.Context) error
+	Interrupt(ctx context.Context, replyTo string) error
 	ListModels(ctx context.Context) ([]app.ModelChoice, error)
 	CurrentModel() string
 	SelectModel(ctx context.Context, value string) error
@@ -115,7 +117,7 @@ func textCommand(text string) (string, bool) {
 		return "", false
 	}
 	switch name {
-	case mentionOnlyCmd, "pause", "resume", "settings", "jobs":
+	case mentionOnlyCmd, "pause", "resume", "settings", "jobs", "stop":
 		return name, true
 	}
 	return "", false
@@ -218,6 +220,7 @@ func (c *Channel) Open() error {
 	cmds := []*discordgo.ApplicationCommand{
 		{Name: "pause", Description: "Stop all writes immediately"},
 		{Name: "resume", Description: "Allow writes again"},
+		{Name: "stop", Description: "Stop the turn running in this thread or channel"},
 		{Name: "model", Description: "Show or switch the model"},
 		{Name: "settings", Description: "Show runtime settings and what changed them"},
 		{Name: "jobs", Description: "List scheduled jobs and their next run"},
@@ -635,6 +638,19 @@ func (c *Channel) onUndo(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	}()
 }
 
+// onStopCommand defers the reply because Interrupt waits for the turn to stop, which can outlast Discord's 3 s window.
+func (c *Channel) onStopCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
+	if err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{Type: discordgo.InteractionResponseDeferredChannelMessageWithSource}); err != nil {
+		slog.Error("interaction respond failed", "err", err)
+		return
+	}
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), stopTO)
+		defer cancel()
+		c.edit(s, i, c.commandText(ctx, "stop", i.ChannelID), []discordgo.MessageComponent{})
+	}()
+}
+
 func (c *Channel) onModelCommand(s *discordgo.Session, i *discordgo.InteractionCreate) {
 	err := s.InteractionRespond(i.Interaction, &discordgo.InteractionResponse{
 		Type: discordgo.InteractionResponseDeferredChannelMessageWithSource,
@@ -693,6 +709,9 @@ func (c *Channel) onCommand(s *discordgo.Session, i *discordgo.InteractionCreate
 	case mentionOnlyCmd:
 		c.onMentionOnly(s, i)
 		return
+	case "stop":
+		c.onStopCommand(s, i)
+		return
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -716,6 +735,15 @@ func (c *Channel) commandText(ctx context.Context, name, channelID string) strin
 			msg = "Resume failed: " + err.Error()
 		} else {
 			msg = "Resumed. Writes still need approval."
+		}
+	case "stop":
+		switch err := c.h.Interrupt(ctx, channelID); {
+		case err == nil:
+			msg = "Stopping."
+		case errors.Is(err, app.ErrNothingRunning):
+			msg = "Nothing is running here."
+		default:
+			msg = "Stop failed: " + err.Error()
 		}
 	case "settings":
 		if vals, err := c.h.Settings(ctx); err != nil {
