@@ -347,17 +347,6 @@ func inboxAcks(t *testing.T, events app.EventStore, replyTo string) []string {
 	return acks
 }
 
-// waitAcks waits until the lane replyTo holds n acks.
-func waitAcks(t *testing.T, events app.EventStore, replyTo string, n int) {
-	t.Helper()
-	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); time.Sleep(time.Millisecond) {
-		if len(inboxAcks(t, events, replyTo)) >= n {
-			return
-		}
-	}
-	t.Fatalf("inbox %s never held %d acks", replyTo, n)
-}
-
 // userTasks maps every task id to the user text it was created with.
 func userTasks(t *testing.T, events app.EventStore) map[string]string {
 	t.Helper()
@@ -396,7 +385,7 @@ func TestInboxResumesAfterACrashBeforeAck(t *testing.T) {
 	if err := a2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitAcks(t, st, "c1", 1)
+	a2.Wait()
 	tasks := userTasks(t, st)
 	acks := inboxAcks(t, st, "c1")
 	if len(tasks) != 1 || len(acks) != 1 || tasks[acks[0]] != "hi" {
@@ -438,7 +427,7 @@ func TestInboxCrashKeepsTheCoalescingBoundary(t *testing.T) {
 	if err := a2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitAcks(t, st, "c1", 2)
+	a2.Wait()
 	acks := inboxAcks(t, st, "c1")
 	tasks := userTasks(t, st)
 	if len(acks) != 2 || tasks[acks[0]] != "one" || tasks[acks[1]] != "two" {
@@ -550,7 +539,7 @@ func TestStartFinishesAStopInterruptedByACrash(t *testing.T) {
 	if err := a2.Start(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	waitAcks(t, st, "c1", 1)
+	a2.Wait()
 	id := inboxAcks(t, st, "c1")[0]
 	if s := snap(t, a2, id); s.State != task.Failed || s.Reason != "interrupted" {
 		t.Fatalf("task = %s (%s), want failed: interrupted", s.State, s.Reason)
@@ -577,5 +566,34 @@ func TestStartFinishesAStopInterruptedByACrash(t *testing.T) {
 	}
 	if stops != 1 {
 		t.Errorf("stopped notices = %d, want 1", stops)
+	}
+}
+
+func TestShutdownStopsALaneTurnAndWaitReturns(t *testing.T) {
+	m := newGateModel()
+	r := newInboxRig(t, m, policy.Policy{Tiers: map[string]policy.Tier{}})
+	ctx, shutdown := context.WithCancel(context.Background())
+	defer shutdown()
+	if err := r.app.Start(ctx); err != nil {
+		t.Fatal(err)
+	}
+	done := r.send("c1", "one")
+	recv(t, m.started)
+	shutdown()
+	if s := recv(t, done); !errors.Is(s.err, context.Canceled) {
+		t.Fatalf("handle input = %v, want the turn stopped by shutdown", s.err)
+	}
+	waited := make(chan struct{})
+	go func() { r.app.Wait(); close(waited) }()
+	recv(t, waited)
+	inbox, _ := r.events.Load(context.Background(), "inbox:c1")
+	var take struct{ Task string }
+	for _, e := range inbox {
+		if e.Type == "inbox.take" {
+			_ = json.Unmarshal(e.Payload, &take)
+		}
+	}
+	if s := snap(t, r.app, take.Task); s.State != task.Running {
+		t.Errorf("task is %s, want running so the next Start resumes it", s.State)
 	}
 }

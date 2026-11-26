@@ -69,16 +69,17 @@ type Deps struct {
 }
 
 type App struct {
-	d        Deps
-	gw       *gateway.Gateway
-	paused   atomic.Bool
-	bg       sync.WaitGroup
-	locks    sync.Map
-	live     sync.Map
-	workdirs sync.Map
-	settings map[string]setting
-	lanesMu  sync.Mutex
-	lanes    map[string]*lane
+	d          Deps
+	gw         *gateway.Gateway
+	paused     atomic.Bool
+	bg         sync.WaitGroup
+	locks      sync.Map
+	live       sync.Map
+	workdirs   sync.Map
+	settings   map[string]setting
+	lanesMu    sync.Mutex
+	lanes      map[string]*lane
+	supervisor *laneSupervisor
 }
 
 type approvalRequested struct {

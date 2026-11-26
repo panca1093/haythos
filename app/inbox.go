@@ -24,6 +24,7 @@ var (
 	ErrInterrupted    = errors.New("interrupted by the owner")
 	ErrNothingRunning = errors.New("nothing is running in this conversation")
 	errLaneStopped    = errors.New("lane stopped before the message ran")
+	errKernelStopped  = errors.New("kernel is shutting down; the message is kept for the next start")
 )
 
 type inboxMsg struct {
@@ -68,7 +69,10 @@ func (a *App) enqueue(ctx context.Context, in Input) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("append inbox message: %w", err)
 	}
-	l := a.wakeLane(context.WithoutCancel(ctx), in.ReplyTo)
+	l, err := a.laneFor(ctx, in.ReplyTo)
+	if err != nil {
+		return "", err
+	}
 	for {
 		a.lanesMu.Lock()
 		ch, done, lerr := l.acked, l.done, l.err
@@ -92,6 +96,48 @@ func (a *App) enqueue(ctx context.Context, in Input) (string, error) {
 	}
 }
 
+// laneSupervisor hands wake requests to the goroutine Start runs, so lane workers run on Start's ctx.
+type laneSupervisor struct {
+	wakes chan wakeReq
+	done  chan struct{}
+}
+
+type wakeReq struct {
+	replyTo string
+	lane    chan *lane
+}
+
+// laneFor wakes the lane under Start's ctx; without Start it falls back to the caller's ctx, detached from its cancel.
+func (a *App) laneFor(ctx context.Context, replyTo string) (*lane, error) {
+	a.lanesMu.Lock()
+	sup := a.supervisor
+	a.lanesMu.Unlock()
+	if sup == nil {
+		return a.wakeLane(context.WithoutCancel(ctx), replyTo), nil
+	}
+	req := wakeReq{replyTo: replyTo, lane: make(chan *lane, 1)}
+	select {
+	case sup.wakes <- req:
+		return <-req.lane, nil
+	case <-sup.done:
+		return nil, fmt.Errorf("run inbox %s: %w", replyTo, errKernelStopped)
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (a *App) superviseLanes(ctx context.Context, sup *laneSupervisor) {
+	defer close(sup.done)
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case req := <-sup.wakes:
+			req.lane <- a.wakeLane(ctx, req.replyTo)
+		}
+	}
+}
+
 // wakeLane starts the lane's worker on ctx if none runs, and tells it there is work.
 func (a *App) wakeLane(ctx context.Context, replyTo string) *lane {
 	a.lanesMu.Lock()
@@ -100,7 +146,11 @@ func (a *App) wakeLane(ctx context.Context, replyTo string) *lane {
 	if l == nil {
 		l = &lane{wake: make(chan struct{}, 1), acked: make(chan struct{})}
 		a.lanes[replyTo] = l
-		go a.drain(ctx, replyTo, l)
+		a.bg.Add(1)
+		go func() {
+			defer a.bg.Done()
+			a.drain(ctx, replyTo, l)
+		}()
 	}
 	select {
 	case l.wake <- struct{}{}:
@@ -345,8 +395,14 @@ func (a *App) liveDelegatedFor(ctx context.Context, replyTo string) string {
 	return found
 }
 
-// resumeLanes starts a worker on ctx for every inbox that has a message after its last ack.
+// resumeLanes starts a worker on ctx for every inbox that has a message after its last ack, then supervises new lanes on ctx.
 func (a *App) resumeLanes(ctx context.Context) error {
+	sup := &laneSupervisor{wakes: make(chan wakeReq), done: make(chan struct{})}
+	a.lanesMu.Lock()
+	a.supervisor = sup
+	a.lanesMu.Unlock()
+	go a.superviseLanes(ctx, sup)
+
 	events, err := a.d.Events.Since(ctx, 0)
 	if err != nil {
 		return fmt.Errorf("scan inboxes: %w", err)
