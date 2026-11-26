@@ -254,8 +254,8 @@ func (a *App) Start(ctx context.Context) error {
 		for _, id := range ids {
 			if stopped, err := a.wasInterrupted(ctx, id); err != nil {
 				return err
-			} else if stopped && st == task.Running {
-				if err := a.stopInterrupted(ctx, id); err != nil {
+			} else if stopped {
+				if _, err := a.stopInterrupted(ctx, id); err != nil {
 					return fmt.Errorf("finish stop of task %s: %w", id, err)
 				}
 				continue

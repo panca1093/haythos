@@ -54,11 +54,19 @@ type inboxInterrupt struct {
 type lane struct {
 	wake chan struct{}
 	// acked is closed and replaced on every ack, and closed for good when the worker exits.
-	acked  chan struct{}
-	task   string
-	cancel context.CancelCauseFunc
-	done   bool
-	err    error
+	acked chan struct{}
+	turn  *laneTurn
+	done  bool
+	err   error
+}
+
+// laneTurn is the turn a lane is running; finished closes once stopped and err are set.
+type laneTurn struct {
+	task     string
+	cancel   context.CancelCauseFunc
+	finished chan struct{}
+	stopped  bool
+	err      error
 }
 
 func inboxStream(replyTo string) string { return laneStreamPrefix + replyTo }
@@ -226,23 +234,28 @@ func (a *App) drainOnce(ctx context.Context, replyTo string, l *lane) (bool, err
 	} else if _, err := a.d.Events.Append(ctx, inboxStream(replyTo), evInboxTake, inboxTake{Through: last, Task: id}); err != nil {
 		return false, fmt.Errorf("append inbox take: %w", err)
 	}
-	if err := a.createInboxTask(ctx, id, in); err != nil {
-		return false, err
-	}
-
 	turnCtx, cancel := context.WithCancelCause(ctx)
+	turn := &laneTurn{task: id, cancel: cancel, finished: make(chan struct{})}
 	a.lanesMu.Lock()
-	l.task, l.cancel = id, cancel
+	l.turn = turn
 	a.lanesMu.Unlock()
-	err = a.RunTask(turnCtx, id)
-	a.lanesMu.Lock()
-	l.task, l.cancel = "", nil
-	a.lanesMu.Unlock()
+	err = a.createInboxTask(ctx, id, in)
+	if err == nil {
+		err = a.RunTask(turnCtx, id)
+	}
+	if err == nil {
+		err = a.hook("inbox.after_run")
+	}
 	interrupted := errors.Is(context.Cause(turnCtx), ErrInterrupted)
 	cancel(nil)
 	if interrupted {
-		err = a.stopInterrupted(ctx, id)
+		turn.stopped, err = a.stopInterrupted(ctx, id)
 	}
+	a.lanesMu.Lock()
+	l.turn = nil
+	a.lanesMu.Unlock()
+	turn.err = err
+	close(turn.finished)
 	if err != nil {
 		return false, err
 	}
@@ -295,33 +308,46 @@ func (a *App) ackedBy(ctx context.Context, replyTo string, cursor int64) (string
 	return "", false, nil
 }
 
-// stopInterrupted fails a task its lane cancelled and keeps the stopped request as conversation context.
-func (a *App) stopInterrupted(ctx context.Context, id string) error {
+// stopInterrupted fails a task its lane cancelled and keeps the stopped request as conversation context; false means it had already left running.
+func (a *App) stopInterrupted(ctx context.Context, id string) (bool, error) {
 	unlock := a.lock(id)
 	defer unlock()
 	s, err := a.Snapshot(ctx, id)
 	if err != nil {
-		return err
+		return false, err
 	}
-	if s.State != task.Running {
-		return nil
+	switch s.State {
+	case task.Pending:
+		if err := a.setState(ctx, id, task.Running, ""); err != nil {
+			return false, err
+		}
+	case task.Running:
+	default:
+		return false, nil
+	}
+	if recorded, err := a.wasInterrupted(ctx, id); err != nil {
+		return false, err
+	} else if !recorded {
+		if _, err := a.d.Events.Append(ctx, inboxStream(s.Created.ReplyTo), evInboxInterrupt, inboxInterrupt{Reason: "stopped by the owner", Task: id}); err != nil {
+			return false, fmt.Errorf("append inbox interrupt: %w", err)
+		}
 	}
 	recorded, err := a.hasConvTurn(ctx, s.Created.ReplyTo, id)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if !recorded {
 		if err := a.recordTurn(ctx, id, stoppedAnswer, true); err != nil {
-			return err
+			return false, err
 		}
 	}
 	if err := a.hook("inbox.before_stop_state"); err != nil {
-		return err
+		return false, err
 	}
 	if err := a.setState(ctx, id, task.Failed, "interrupted"); err != nil {
-		return err
+		return false, err
 	}
-	return a.notify(ctx, id, "stopped", Notice{Kind: NoticeState, State: task.Failed, Reason: "interrupted", Text: "Stopped."})
+	return true, a.notify(ctx, id, "stopped", Notice{Kind: NoticeState, State: task.Failed, Reason: "interrupted", Text: "Stopped."})
 }
 
 func (a *App) hasConvTurn(ctx context.Context, replyTo, id string) (bool, error) {
@@ -357,30 +383,38 @@ func (a *App) wasInterrupted(ctx context.Context, id string) (bool, error) {
 	return false, nil
 }
 
-// Interrupt stops the running turn of the conversation replyTo; its queued messages still run.
+// Interrupt stops the running turn of the conversation replyTo and waits for it to stop; its queued messages still run.
+// ctx bounds only the wait: a stop already requested still lands.
 func (a *App) Interrupt(ctx context.Context, replyTo string) error {
 	a.lanesMu.Lock()
-	var id string
-	var cancel context.CancelCauseFunc
+	var turn *laneTurn
 	if l := a.lanes[replyTo]; l != nil {
-		id, cancel = l.task, l.cancel
+		turn = l.turn
 	}
 	a.lanesMu.Unlock()
-	delegated := false
-	if id == "" {
-		id, delegated = a.liveDelegatedFor(ctx, replyTo), true
+	if turn != nil {
+		turn.cancel(ErrInterrupted)
+		select {
+		case <-turn.finished:
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+		switch {
+		case turn.err != nil:
+			return fmt.Errorf("stop task %s: %w", turn.task, turn.err)
+		case !turn.stopped:
+			return ErrNothingRunning
+		}
+		return nil
 	}
+	id := a.liveDelegatedFor(ctx, replyTo)
 	if id == "" {
 		return ErrNothingRunning
 	}
 	if _, err := a.d.Events.Append(ctx, inboxStream(replyTo), evInboxInterrupt, inboxInterrupt{Reason: "stopped by the owner", Task: id}); err != nil {
 		return fmt.Errorf("append inbox interrupt: %w", err)
 	}
-	if delegated {
-		return a.CancelDelegated(ctx, id)
-	}
-	cancel(ErrInterrupted)
-	return nil
+	return a.CancelDelegated(ctx, id)
 }
 
 func (a *App) liveDelegatedFor(ctx context.Context, replyTo string) string {

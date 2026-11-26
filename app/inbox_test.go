@@ -262,10 +262,11 @@ func TestInterruptKeepsALedgerWriteInFlight(t *testing.T) {
 	}
 	done := r.send("c1", "write a note")
 	recv(t, dispatched)
-	if err := r.app.Interrupt(context.Background(), "c1"); err != nil {
+	stopped := interruptAsync(r.app, "c1")
+	close(unblock)
+	if err := recv(t, stopped); err != nil {
 		t.Fatal(err)
 	}
-	close(unblock)
 	s := recv(t, done)
 	if s.err != nil {
 		t.Fatal(s.err)
@@ -459,6 +460,12 @@ func TestInboxCrashKeepsTheCoalescingBoundary(t *testing.T) {
 	}
 }
 
+func interruptAsync(a *app.App, replyTo string) chan error {
+	ch := make(chan error, 1)
+	go func() { ch <- a.Interrupt(context.Background(), replyTo) }()
+	return ch
+}
+
 // ctxTools blocks every Call until release or its ctx ends, like a real tool honoring cancellation.
 type ctxTools struct {
 	*testfakes.Tools
@@ -486,10 +493,11 @@ func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
 		done <- sent{id, err}
 	}()
 	recv(t, tools.dispatched)
-	if err := a.Interrupt(context.Background(), "c1"); err != nil {
+	stopped := interruptAsync(a, "c1")
+	close(tools.release)
+	if err := recv(t, stopped); err != nil {
 		t.Fatal(err)
 	}
-	close(tools.release)
 	s := recv(t, done)
 	if s.err != nil {
 		t.Fatal(s.err)
@@ -527,8 +535,8 @@ func TestStartFinishesAStopInterruptedByACrash(t *testing.T) {
 		done <- err
 	}()
 	recv(t, m.started)
-	if err := a1.Interrupt(context.Background(), "c1"); err != nil {
-		t.Fatal(err)
+	if err := a1.Interrupt(context.Background(), "c1"); !errors.Is(err, crash) {
+		t.Fatalf("interrupt = %v, want the simulated crash", err)
 	}
 	if err := recv(t, done); !errors.Is(err, crash) {
 		t.Fatalf("handle input = %v, want the simulated crash", err)
@@ -595,5 +603,97 @@ func TestShutdownStopsALaneTurnAndWaitReturns(t *testing.T) {
 	}
 	if s := snap(t, r.app, take.Task); s.State != task.Running {
 		t.Errorf("task is %s, want running so the next Start resumes it", s.State)
+	}
+}
+
+// gatedCreate blocks the append of a task's created event until release, as a slow conversation load would.
+type gatedCreate struct {
+	*testfakes.Events
+	reached, release chan struct{}
+}
+
+func (g gatedCreate) Append(ctx context.Context, taskID string, typ task.EventType, payload any) (task.Event, error) {
+	if typ == task.EvCreated {
+		close(g.reached)
+		<-g.release
+	}
+	return g.Events.Append(ctx, taskID, typ, payload)
+}
+
+func TestInterruptBeforeTheTaskExistsStopsIt(t *testing.T) {
+	m := newGateModel()
+	events := gatedCreate{&testfakes.Events{}, make(chan struct{}), make(chan struct{})}
+	a := app.New(app.Deps{
+		Models:     map[string]app.Model{"default": m},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:      testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{}},
+	})
+	done := make(chan sent, 1)
+	go func() {
+		id, err := a.HandleInput(context.Background(), app.Input{Text: "one", ReplyTo: "c1"})
+		done <- sent{id, err}
+	}()
+	recv(t, events.reached)
+	requested, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := a.Interrupt(requested, "c1"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupt = %v, want the stop requested and the wait cut short", err)
+	}
+	close(events.release)
+	s := recv(t, done)
+	if s.err != nil {
+		t.Fatal(s.err)
+	}
+	if st := snap(t, a, s.id); st.State != task.Failed || st.Reason != "interrupted" {
+		t.Fatalf("task = %s (%s), want failed: interrupted", st.State, st.Reason)
+	}
+	select {
+	case got := <-m.started:
+		t.Fatalf("model ran %q after the stop", got)
+	default:
+	}
+}
+
+func TestInterruptAsTheTurnFinishesStopsNothing(t *testing.T) {
+	var a *app.App
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	late, waited := make(chan error, 1), make(chan error, 1)
+	events := &testfakes.Events{}
+	a = app.New(app.Deps{
+		Models:     map[string]app.Model{"default": testfakes.NewModel(task.AssistantTurn{Text: "done"})},
+		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:      testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Policy: policy.Policy{Tiers: map[string]policy.Tier{}},
+		Hook: func(p string) error {
+			if p == "inbox.after_run" {
+				late <- a.Interrupt(ctx, "c1")
+				go func() { waited <- a.Interrupt(context.Background(), "c1") }()
+			}
+			return nil
+		},
+	})
+	id, err := a.HandleInput(context.Background(), app.Input{Text: "one", ReplyTo: "c1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := recv(t, late); !errors.Is(err, context.Canceled) {
+		t.Fatalf("late interrupt = %v, want the wait cut short by its ctx", err)
+	}
+	if err := recv(t, waited); !errors.Is(err, app.ErrNothingRunning) {
+		t.Fatalf("interrupt waiting on the finishing turn = %v, want ErrNothingRunning", err)
+	}
+	if st := snap(t, a, id).State; st != task.Done {
+		t.Fatalf("task is %s, want done", st)
+	}
+	inbox, _ := events.Load(context.Background(), "inbox:c1")
+	for _, e := range inbox {
+		if e.Type == "inbox.interrupt" {
+			t.Fatalf("inbox.interrupt written for a finished turn: %s", e.Payload)
+		}
+	}
+	if err := a.Interrupt(context.Background(), "c1"); !errors.Is(err, app.ErrNothingRunning) {
+		t.Fatalf("interrupt after the turn = %v, want ErrNothingRunning", err)
 	}
 }
