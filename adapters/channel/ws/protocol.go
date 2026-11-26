@@ -17,6 +17,7 @@ const (
 	TypeInput        = "input"
 	TypeDecide       = "approval.decide"
 	TypeCancel       = "task.cancel"
+	TypeInterrupt    = "interrupt"
 	TypeSessions     = "sessions"
 	TypeModel        = "model"
 	TypeRunJob       = "job.run"
@@ -57,6 +58,11 @@ type Cancel struct {
 	TaskID string `json:"task_id"`
 }
 
+// Interrupt stops whatever the conversation is running and keeps its queued messages.
+type Interrupt struct {
+	Conv string `json:"conv"`
+}
+
 // RunJob starts a configured job by name; its notices go to the job's own channels, not to this connection.
 type RunJob struct {
 	Name string `json:"name"`
@@ -91,6 +97,11 @@ func (f Decide) MarshalJSON() ([]byte, error) {
 func (f Cancel) MarshalJSON() ([]byte, error) {
 	type plain Cancel
 	return typed(TypeCancel, plain(f))
+}
+
+func (f Interrupt) MarshalJSON() ([]byte, error) {
+	type plain Interrupt
+	return typed(TypeInterrupt, plain(f))
 }
 
 func (f RunJob) MarshalJSON() ([]byte, error) {

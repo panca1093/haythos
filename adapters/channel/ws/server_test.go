@@ -23,15 +23,17 @@ import (
 )
 
 type fakeHandler struct {
-	mu        sync.Mutex
-	inputs    []app.Input
-	decisions []string
-	cancels   []string
-	jobs      []string
-	views     map[string]app.ConversationView
-	convs     []app.ConversationSummary
-	origins   map[string]string
-	failWith  error
+	mu           sync.Mutex
+	inputs       []app.Input
+	decisions    []string
+	cancels      []string
+	interrupts   []string
+	interruptErr error
+	jobs         []string
+	views        map[string]app.ConversationView
+	convs        []app.ConversationSummary
+	origins      map[string]string
+	failWith     error
 }
 
 func newFakeHandler() *fakeHandler {
@@ -57,6 +59,13 @@ func (h *fakeHandler) CancelDelegated(_ context.Context, taskID string) error {
 	defer h.mu.Unlock()
 	h.cancels = append(h.cancels, taskID)
 	return h.failWith
+}
+
+func (h *fakeHandler) Interrupt(_ context.Context, replyTo string) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.interrupts = append(h.interrupts, replyTo)
+	return h.interruptErr
 }
 
 func (h *fakeHandler) RunJob(_ context.Context, name string) (string, error) {
@@ -360,6 +369,56 @@ func TestCancelOwnTask(t *testing.T) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("handler never got the cancel")
+}
+
+func TestInterruptOwnConversation(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.subscribe("tui:me")
+	c.send(ws.Interrupt{Conv: "tui:me"})
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		h.mu.Lock()
+		got := append([]string(nil), h.interrupts...)
+		h.mu.Unlock()
+		if len(got) == 1 && got[0] == "tui:me" {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("handler never got the interrupt")
+}
+
+func TestInterruptRefusedForAnotherConversation(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.subscribe("tui:me")
+	c.send(ws.Interrupt{Conv: "tui:other"})
+	if f := c.expect(ws.TypeError); !strings.Contains(f.Message, "tui:me") {
+		t.Fatalf("error = %+v, want a refusal naming tui:me", f)
+	}
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if len(h.interrupts) != 0 {
+		t.Fatalf("handler interrupted %v; want none", h.interrupts)
+	}
+}
+
+func TestInterruptNothingRunningReplies(t *testing.T) {
+	t.Parallel()
+	h := newFakeHandler()
+	h.interruptErr = app.ErrNothingRunning
+	r := startServer(t, h)
+	c := dialRaw(t, r.socket)
+	c.subscribe("tui:me")
+	c.send(ws.Interrupt{Conv: "tui:me"})
+	if f := c.expect(ws.TypeError); !strings.Contains(f.Message, "nothing is running") {
+		t.Fatalf("error = %+v, want nothing is running", f)
+	}
 }
 
 func TestPublishOnlyToSubscribers(t *testing.T) {

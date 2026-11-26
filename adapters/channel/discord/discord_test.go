@@ -1,6 +1,7 @@
 package discord
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"slices"
@@ -102,6 +103,7 @@ func TestTextCommand(t *testing.T) {
 		{"/resume", "resume", true},
 		{"/settings", "settings", true},
 		{"/jobs", "jobs", true},
+		{"/stop", "stop", true},
 		{"/model", "", false},
 		{"/mention-only please", "", false},
 		{"/Jobs", "", false},
@@ -396,5 +398,39 @@ func TestJobsText(t *testing.T) {
 func TestToolActivityIsNotRenderedInDiscord(t *testing.T) {
 	if got := Render(app.Notice{Kind: app.NoticeTool, Text: "fs.read README.md"}); len(got) != 0 {
 		t.Fatalf("render = %+v, want nothing for tool activity", got)
+	}
+}
+
+type interruptHandler struct {
+	Handler
+	got []string
+	err error
+}
+
+func (h *interruptHandler) Interrupt(_ context.Context, replyTo string) error {
+	h.got = append(h.got, replyTo)
+	return h.err
+}
+
+func TestStopCommandInterruptsTheChannel(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name string
+		err  error
+		want string
+	}{
+		{"running", nil, "Stopping."},
+		{"nothing running", fmt.Errorf("interrupt: %w", app.ErrNothingRunning), "Nothing is running here."},
+		{"failure", errors.New("boom"), "Stop failed: boom"},
+	}
+	for _, tt := range tests {
+		h := &interruptHandler{err: tt.err}
+		c := &Channel{h: h}
+		if got := c.commandText(context.Background(), "stop", "chan-1"); got != tt.want {
+			t.Errorf("%s: reply = %q, want %q", tt.name, got, tt.want)
+		}
+		if !slices.Equal(h.got, []string{"chan-1"}) {
+			t.Errorf("%s: interrupted %v, want [chan-1]", tt.name, h.got)
+		}
 	}
 }
