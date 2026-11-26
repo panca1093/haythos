@@ -482,7 +482,7 @@ func (c ctxTools) Call(ctx context.Context, call task.ToolCall) (task.ToolResult
 	}
 }
 
-func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
+func TestInterruptCancelsAHungDispatchAndRecordsItOnTheLedger(t *testing.T) {
 	m := testfakes.NewModel(task.AssistantTurn{Calls: []task.ToolCall{{ID: "w1", Name: "note.write", Args: json.RawMessage(`{"to":"notes"}`)}}})
 	tools := ctxTools{testfakes.NewTools(task.ToolSpec{Name: "note.write", Write: true, TargetArg: "to", InputSchema: json.RawMessage(`{"type":"object"}`)}), make(chan struct{}), make(chan struct{})}
 	pol := policy.Policy{Tiers: map[string]policy.Tier{"note.write": policy.TierInternalWrite}, AutoWhenClean: []string{"note.write"}}
@@ -493,17 +493,15 @@ func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
 		done <- sent{id, err}
 	}()
 	recv(t, tools.dispatched)
-	stopped := interruptAsync(a, "c1")
-	close(tools.release)
-	if err := recv(t, stopped); err != nil {
+	if err := recv(t, interruptAsync(a, "c1")); err != nil {
 		t.Fatal(err)
 	}
 	s := recv(t, done)
 	if s.err != nil {
 		t.Fatal(s.err)
 	}
-	if row, ok, err := st.Get(context.Background(), s.id+"/w1"); err != nil || !ok || row.State != task.LedgerSucceeded {
-		t.Fatalf("ledger row = %+v (found %v, err %v), want the dispatch recorded as succeeded", row, ok, err)
+	if row, ok, err := st.Get(context.Background(), s.id+"/w1"); err != nil || !ok || row.State != task.LedgerOutcomeUnknown {
+		t.Fatalf("ledger row = %+v (found %v, err %v), want the cancelled dispatch recorded as outcome_unknown", row, ok, err)
 	}
 	sn := snap(t, a, s.id)
 	if sn.State != task.Failed || sn.Reason != "interrupted" {
@@ -512,11 +510,11 @@ func TestInterruptLetsADispatchFinishOnTheLedger(t *testing.T) {
 	var result bool
 	for _, h := range sn.History {
 		for _, r := range h.Results {
-			result = result || (r.CallID == "w1" && r.Content == "written")
+			result = result || (r.CallID == "w1" && r.IsError)
 		}
 	}
 	if !result {
-		t.Errorf("history has no result for w1")
+		t.Errorf("history has no error result for w1")
 	}
 	if m.Steps != 1 {
 		t.Errorf("model steps = %d, want no step after the interrupt", m.Steps)

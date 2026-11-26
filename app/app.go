@@ -408,8 +408,7 @@ func (a *App) run(ctx context.Context, id string) error {
 		}
 
 		if calls := unresolved(s.History); len(calls) > 0 {
-			// An interrupt lands at the ctx check above; a dispatch already started must finish and reach the ledger.
-			if err := a.execute(context.WithoutCancel(ctx), id, s, calls[0]); err != nil {
+			if err := a.execute(ctx, id, s, calls[0]); err != nil {
 				return err
 			}
 			continue
@@ -464,6 +463,8 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
 		OnExecute: func() { a.publishToolActivity(ctx, id, s.Created.ReplyTo, call) },
 	})
+	// An interrupt may cancel the tool call itself; what it did must still be recorded.
+	ctx = context.WithoutCancel(ctx)
 	switch {
 	case errors.Is(err, policy.ErrApprovalVoid):
 		if nerr := a.notify(ctx, id, "alert:void:"+call.ID, Notice{Kind: NoticeAlert, Text: "An approval was voided: " + err.Error()}); nerr != nil {
