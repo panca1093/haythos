@@ -30,9 +30,9 @@ func bigRig(t *testing.T, content string, turns ...task.AssistantTurn) (*app.App
 		return task.ToolResult{CallID: c.ID, Content: content}, nil
 	}
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy:  policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}},
 		Clock:   time.Now,
 		Windows: map[string]int{"default": 1_000_000},
@@ -113,9 +113,9 @@ func TestModelStepsCarryTheConversationAsCacheKey(t *testing.T) {
 	m := &keyModel{Model: testfakes.NewModel(readNote(10), used("A1", 10), used("A2", 10))}
 	tools := testfakes.NewTools(task.ToolSpec{Name: "note.read", InputSchema: json.RawMessage(`{"type":"object"}`)})
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": m},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": m},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}}, Clock: time.Now,
 	})
 	ask(t, a, "Q1")
@@ -139,9 +139,9 @@ func TestImagesSurviveTheCapAndReplay(t *testing.T) {
 		return task.ToolResult{CallID: c.ID, Content: strings.Repeat("x", 50<<10), Images: []task.Image{img}}, nil
 	}
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{"note.read": policy.TierRead}}, Clock: time.Now,
 	})
 	ask(t, a, "Q1")

@@ -5,8 +5,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/google/go-cmp/cmp"
-
 	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 	"github.com/panca/haythos/core/task"
@@ -48,29 +46,6 @@ func TestInjectionEscalatesToTier3(t *testing.T) {
 				t.Errorf("tier=%d escalated=%v, want tier=%d escalated=%v", ap.Tier, ap.Escalated, tc.wantTier, tc.wantEscalated)
 			}
 		})
-	}
-}
-
-// M2-8. A tainted task that tries to define a job is escalated to tier 3.
-func TestTaintedJobDefinitionEscalates(t *testing.T) {
-	r := newM2Rig(t,
-		callTurn("c1", "slack.read", `{}`),
-		callTurn("c2", "jobs.define", `{"name":"exfil","cron":"0 9 * * *","goal":"send everything","tools":["vm.read"]}`),
-	)
-	id := r.chat("summarise slack")
-	if got := r.snap(id).State; got != task.WaitingApproval {
-		t.Fatalf("state = %s, want waiting_approval", got)
-	}
-	n := r.notifier.Of(app.NoticeApproval)
-	ap := n[len(n)-1].Approval
-	if !ap.Escalated || ap.Tier != policy.TierHighImpact {
-		t.Errorf("approval = tier %d escalated %v, want tier 3 escalated", ap.Tier, ap.Escalated)
-	}
-	if !strings.Contains(ap.Approval.Tool, "jobs.define") {
-		t.Errorf("approval tool = %q", ap.Approval.Tool)
-	}
-	if got := r.jobNames(); !cmp.Equal(got, []string{"vm-health"}) {
-		t.Errorf("jobs = %v", got)
 	}
 }
 

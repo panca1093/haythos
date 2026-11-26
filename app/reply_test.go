@@ -21,10 +21,10 @@ func replyApp(t *testing.T, db string, n *testfakes.Notifier, turns ...task.Assi
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
-		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Policy:      policy.Policy{Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		Clock:       func() time.Time { return time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC) },
 		ApprovalTTL: time.Hour,
@@ -60,7 +60,7 @@ func TestTasksWithoutAnOriginHaveNoReplyTo(t *testing.T) {
 	ctx := context.Background()
 	n := &testfakes.Notifier{}
 	a := replyApp(t, t.TempDir()+"/haythos.db", n, task.AssistantTurn{Text: "report"})
-	id, err := a.CreateTask(ctx, app.Job{Name: "vm-health", Goal: "check", Model: "default"}, "")
+	id, err := a.CreateTask(ctx, app.Spec{Name: "vm-health", Goal: "check", Model: "default"}, "")
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

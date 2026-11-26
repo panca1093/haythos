@@ -40,9 +40,9 @@ func newTrustRig(t *testing.T, turns ...task.AssistantTurn) *trustRig {
 	reg.Register(task.ToolSpec{Name: "brain.remember", Write: true, InputSchema: json.RawMessage(`{"type":"object"}`)},
 		func(context.Context, []byte) (task.ToolResult, error) { return task.ToolResult{Content: "saved"}, nil })
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(turns...)},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.list", "file.read", "brain.remember"}},
-		Tools:      reg, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(turns...)},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"file.list", "file.read", "brain.remember"}},
+		Tools:  reg, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{
 			Version: "v1", AutoWhenClean: []string{"brain.remember"},
 			Tiers: map[string]policy.Tier{"file.list": policy.TierRead, "file.read": policy.TierRead, "brain.remember": policy.TierInternalWrite},

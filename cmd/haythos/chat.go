@@ -98,7 +98,7 @@ func printSummary(out io.Writer, s tui.Summary, now time.Time) {
 	if s.Pending > 0 {
 		lines = append(lines, fmt.Sprintf("%-10s %d izin belum diputuskan", "Menunggu:", s.Pending))
 	}
-	lines = append(lines, "Alfred tetap jalan di background (Discord dan job terjadwal aktif).")
+	lines = append(lines, "Alfred tetap jalan di background (Discord dan jadwal brain aktif).")
 	_, _ = fmt.Fprintln(out, strings.Join(lines, "\n"))
 }
 

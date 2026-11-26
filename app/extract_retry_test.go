@@ -50,9 +50,9 @@ func newExtractRig(t *testing.T, model *flakyExtractModel, clock *testfakes.Cloc
 	t.Cleanup(func() { _ = st.Close() })
 	brain := testfakes.NewBrain()
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Budget: task.Budget{Tokens: 1000000, Steps: 20}},
-		Tools:      testfakes.NewBrainTools(brain), Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{}, Brain: brain,
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Budget: task.Budget{Tokens: 1000000, Steps: 20}},
+		Tools:  testfakes.NewBrainTools(brain), Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{}, Brain: brain,
 		Policy: policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{
 			"brain.recall": policy.TierRead, "brain.remember": policy.TierRead,
 		}},

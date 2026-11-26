@@ -2,19 +2,15 @@ package config
 
 import (
 	"bytes"
-	"cmp"
 	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
-	"time"
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
-	"github.com/panca/haythos/core/task"
 )
 
 type Model struct {
@@ -38,7 +34,7 @@ type Runtime struct {
 	Kind    string   `yaml:"kind"`
 	Command string   `yaml:"command"`
 	Args    []string `yaml:"args"`
-	// Model and Mode are defaults; a job may override them.
+	// Model and Mode are defaults; a delegation may override them.
 	Model string `yaml:"model"`
 	Mode  string `yaml:"mode"`
 	// PassEnv names variables copied from the kernel's environment; Env is extra KEY=VALUE.
@@ -48,7 +44,7 @@ type Runtime struct {
 	CommandsAsk bool `yaml:"commands_ask"`
 	// ConfigOptions maps "model" and "mode" to the runtime's config option ids (acp only).
 	ConfigOptions map[string]string `yaml:"config_options"`
-	// Workdirs maps a name jobs refer to onto an absolute folder; nothing else is a valid workdir.
+	// Workdirs maps a name a delegation refers to onto an absolute folder; nothing else is a valid workdir.
 	Workdirs map[string]string `yaml:"workdirs"`
 	// Guard rules are added to policy.StarterRules unless StarterGuard is false.
 	Guard        []policy.GuardRule `yaml:"guard"`
@@ -244,105 +240,6 @@ func LoadPolicy(path string) (policy.Policy, error) {
 		}
 	}
 	return p, nil
-}
-
-type jobFile struct {
-	Name      string      `yaml:"name"`
-	Goal      string      `yaml:"goal"`
-	Model     string      `yaml:"model"`
-	Tools     []string    `yaml:"tools"`
-	Mode      string      `yaml:"mode"`
-	Trigger   app.Trigger `yaml:"trigger"`
-	Budget    task.Budget `yaml:"budget"`
-	Contract  string      `yaml:"contract"`
-	DeliverTo []string    `yaml:"deliver_to"`
-	Silent    bool        `yaml:"silent"`
-	// BrainSource is the provenance the kernel stamps on brain writes from this job.
-	BrainSource string `yaml:"brain_source"`
-	// Runtime delegates the job to a configured runtime; Workdir is a name from that runtime's workdirs.
-	Runtime *struct {
-		Alias   string `yaml:"alias"`
-		Workdir string `yaml:"workdir"`
-		Model   string `yaml:"model"`
-		Mode    string `yaml:"mode"`
-	} `yaml:"runtime"`
-	// Checks are authored here and in config only; chat-created jobs cannot carry them.
-	Checks []struct {
-		Name    string        `yaml:"name"`
-		Argv    []string      `yaml:"argv"`
-		Timeout time.Duration `yaml:"timeout"`
-	} `yaml:"checks"`
-}
-
-// LoadJobs reads every *.yaml in dir; runtimes resolve the runtime alias and workdir name of delegated jobs.
-func LoadJobs(dir string, runtimes map[string]Runtime) ([]app.Job, error) {
-	paths, err := filepath.Glob(filepath.Join(dir, "*.yaml"))
-	if err != nil {
-		return nil, fmt.Errorf("list jobs: %w", err)
-	}
-	var jobs []app.Job
-	for _, p := range paths {
-		var f jobFile
-		if err := decode(p, &f); err != nil {
-			return nil, err
-		}
-		if f.Runtime != nil {
-			j, err := delegatedJob(p, f, runtimes)
-			if err != nil {
-				return nil, err
-			}
-			jobs = append(jobs, j)
-			continue
-		}
-		if len(f.Checks) > 0 {
-			return nil, fmt.Errorf("%s: checks need a runtime", p)
-		}
-		if f.Name == "" || f.Goal == "" || len(f.Tools) == 0 {
-			return nil, fmt.Errorf("%s: name, goal and tools are required", p)
-		}
-		if f.Mode != "background" && f.Mode != "foreground" {
-			return nil, fmt.Errorf("%s: mode must be background or foreground, got %q", p, f.Mode)
-		}
-		if f.Budget.Tokens == 0 || f.Budget.Steps == 0 {
-			return nil, fmt.Errorf("%s: budget tokens and steps are required", p)
-		}
-		jobs = append(jobs, app.Job{
-			Name: f.Name, Goal: strings.TrimSpace(f.Goal), Model: f.Model, Tools: f.Tools,
-			Budget: f.Budget, Trigger: f.Trigger, DeliverTo: f.DeliverTo,
-			Silent: f.Silent, BrainSource: f.BrainSource,
-		})
-	}
-	return jobs, nil
-}
-
-func delegatedJob(path string, f jobFile, runtimes map[string]Runtime) (app.Job, error) {
-	rt, ok := runtimes[f.Runtime.Alias]
-	if !ok {
-		return app.Job{}, fmt.Errorf("%s: runtime %q is not defined in the config runtimes", path, f.Runtime.Alias)
-	}
-	dir, ok := rt.Workdirs[f.Runtime.Workdir]
-	if f.Name == "" || f.Goal == "" || !ok {
-		return app.Job{}, fmt.Errorf("%s: a delegated job needs name, goal and a workdir name listed under runtimes.%s.workdirs, got %q", path, f.Runtime.Alias, f.Runtime.Workdir)
-	}
-	j := app.Job{
-		Name: f.Name, Goal: strings.TrimSpace(f.Goal), Trigger: f.Trigger, DeliverTo: f.DeliverTo, Silent: f.Silent,
-		Runtime: f.Runtime.Alias, Workdir: dir,
-		RuntimeModel: cmp.Or(f.Runtime.Model, rt.Model), RuntimeMode: cmp.Or(f.Runtime.Mode, rt.Mode),
-	}
-	seen := map[string]bool{}
-	for _, c := range f.Checks {
-		switch {
-		case c.Name == "" || seen[c.Name]:
-			return app.Job{}, fmt.Errorf("%s: check names must be set and unique, got %q", path, c.Name)
-		case len(c.Argv) == 0 || c.Argv[0] == "":
-			return app.Job{}, fmt.Errorf("%s: check %s needs an argv list", path, c.Name)
-		case c.Timeout < 0 || c.Timeout > app.MaxCheckTimeout:
-			return app.Job{}, fmt.Errorf("%s: check %s timeout must be within %s", path, c.Name, app.MaxCheckTimeout)
-		}
-		seen[c.Name] = true
-		j.Checks = append(j.Checks, app.Check{Name: c.Name, Argv: c.Argv, Timeout: cmp.Or(c.Timeout, app.DefaultCheckTimeout)})
-	}
-	return j, nil
 }
 
 func contains(xs []string, x string) bool {

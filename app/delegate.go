@@ -93,19 +93,22 @@ type delegateFailure struct{ reason string }
 
 func (f delegateFailure) Error() string { return f.reason }
 
-// RunDelegated runs job on a runtime and blocks until the task is done or failed.
-func (a *App) RunDelegated(ctx context.Context, job Job, d Delegation) (string, error) {
+// RunDelegated runs d on a runtime and blocks until the task is done or failed.
+func (a *App) RunDelegated(ctx context.Context, d Delegation) (string, error) {
 	rt, err := a.delegateTarget(d)
 	if err != nil {
 		return "", err
 	}
-	job.Runtime = d.Runtime
-	id, err := a.createTask(ctx, newID(job.Name), job, d.Prompt, d.ReplyTo, d.Workdir)
+	spec := Spec{Name: "delegate", Goal: "Delegated work.", runtime: d.Runtime}
+	id, err := a.createTask(ctx, newID(spec.Name), spec, d.Prompt, d.ReplyTo, d.Workdir)
 	if err != nil {
 		return "", err
 	}
 	return id, a.runDelegated(ctx, id, rt, d)
 }
+
+// Wait blocks until every background delegated session has ended.
+func (a *App) Wait() { a.bg.Wait() }
 
 func (a *App) delegateTarget(d Delegation) (Runtime, error) {
 	rt, ok := a.d.Runtimes[d.Runtime]

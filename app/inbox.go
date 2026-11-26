@@ -282,7 +282,7 @@ func (a *App) createInboxTask(ctx context.Context, id string, in Input) error {
 	if len(existing) > 0 {
 		return nil
 	}
-	job := a.d.DefaultJob
+	job := a.d.Chat
 	if in.Model != "" {
 		job.Model = in.Model
 	}

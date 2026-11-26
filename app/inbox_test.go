@@ -66,9 +66,9 @@ func newInboxRig(t *testing.T, model app.Model, pol policy.Policy) *inboxRig {
 	r := &inboxRig{events: &testfakes.Events{}, ledger: testfakes.NewLedger(), notifier: &testfakes.Notifier{},
 		tools: testfakes.NewTools(task.ToolSpec{Name: "note.write", Write: true, TargetArg: "to", InputSchema: json.RawMessage(`{"type":"object"}`)})}
 	r.app = app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.write"}},
-		Tools:      r.tools, Events: r.events, Ledger: r.ledger, Notifier: r.notifier, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.write"}},
+		Tools:  r.tools, Events: r.events, Ledger: r.ledger, Notifier: r.notifier, Vault: testfakes.Vault{},
 		Policy: pol, Clock: func() time.Time { return time.Date(2026, 11, 26, 2, 0, 0, 0, time.UTC) },
 	})
 	return r
@@ -314,9 +314,9 @@ func openSQLiteApp(t *testing.T, db string, m app.Model, tools app.Tools, pol po
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": m},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read", "note.write"}},
-		Tools:      tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": m},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.read", "note.write"}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: pol, Hook: hook,
 	}), st
 }
@@ -622,9 +622,9 @@ func TestInterruptBeforeTheTaskExistsStopsIt(t *testing.T) {
 	m := newGateModel()
 	events := gatedCreate{&testfakes.Events{}, make(chan struct{}), make(chan struct{})}
 	a := app.New(app.Deps{
-		Models:     map[string]app.Model{"default": m},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
-		Tools:      testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": m},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:  testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{}},
 	})
 	done := make(chan sent, 1)
@@ -660,9 +660,9 @@ func TestInterruptAsTheTurnFinishesStopsNothing(t *testing.T) {
 	late, waited := make(chan error, 1), make(chan error, 1)
 	events := &testfakes.Events{}
 	a = app.New(app.Deps{
-		Models:     map[string]app.Model{"default": testfakes.NewModel(task.AssistantTurn{Text: "done"})},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default"},
-		Tools:      testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
+		Models: map[string]app.Model{"default": testfakes.NewModel(task.AssistantTurn{Text: "done"})},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default"},
+		Tools:  testfakes.NewTools(), Events: events, Ledger: testfakes.NewLedger(), Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Tiers: map[string]policy.Tier{}},
 		Hook: func(p string) error {
 			if p == "inbox.after_run" {

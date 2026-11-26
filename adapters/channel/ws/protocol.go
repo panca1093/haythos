@@ -20,7 +20,6 @@ const (
 	TypeInterrupt    = "interrupt"
 	TypeSessions     = "sessions"
 	TypeModel        = "model"
-	TypeRunJob       = "job.run"
 	TypeWelcome      = "welcome"
 	TypeHistory      = "history"
 	TypeNotice       = "notice"
@@ -63,11 +62,6 @@ type Interrupt struct {
 	Conv string `json:"conv"`
 }
 
-// RunJob starts a configured job by name; its notices go to the job's own channels, not to this connection.
-type RunJob struct {
-	Name string `json:"name"`
-}
-
 type Sessions struct{}
 
 type SelectModel struct {
@@ -102,11 +96,6 @@ func (f Cancel) MarshalJSON() ([]byte, error) {
 func (f Interrupt) MarshalJSON() ([]byte, error) {
 	type plain Interrupt
 	return typed(TypeInterrupt, plain(f))
-}
-
-func (f RunJob) MarshalJSON() ([]byte, error) {
-	type plain RunJob
-	return typed(TypeRunJob, plain(f))
 }
 
 func (Sessions) MarshalJSON() ([]byte, error) { return typed(TypeSessions, struct{}{}) }

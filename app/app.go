@@ -36,8 +36,7 @@ type Deps struct {
 	Windows map[string]int
 	// CompactAt is the share of the window at which a conversation is compacted; 0 means defaultCompactAt.
 	CompactAt   float64
-	DefaultJob  Job
-	Jobs        []Job
+	Chat        Spec
 	Tools       Tools
 	Events      EventStore
 	Ledger      Ledger
@@ -98,17 +97,6 @@ type approvalDecided struct {
 type noticeSent struct {
 	Key    string `json:"key"`
 	Target string `json:"target,omitempty"`
-}
-
-type originKey struct{}
-
-func withOrigin(ctx context.Context, replyTo string) context.Context {
-	return context.WithValue(ctx, originKey{}, replyTo)
-}
-
-func originFrom(ctx context.Context) string {
-	origin, _ := ctx.Value(originKey{}).(string)
-	return origin
 }
 
 type workdirKey struct{}
@@ -309,12 +297,12 @@ func newID(prefix string) string {
 	return prefix + "-" + hex.EncodeToString(b)
 }
 
-func (a *App) CreateTask(ctx context.Context, job Job, input string) (string, error) {
-	return a.createTask(ctx, newID(job.Name), job, input, "", "")
+func (a *App) CreateTask(ctx context.Context, spec Spec, input string) (string, error) {
+	return a.createTask(ctx, newID(spec.Name), spec, input, "", "")
 }
 
 // createTask is idempotent per id so the scheduler can retry after a crash.
-func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo, workdir string, prior ...task.Message) (string, error) {
+func (a *App) createTask(ctx context.Context, id string, job Spec, input, replyTo, workdir string, prior ...task.Message) (string, error) {
 	existing, err := a.d.Events.Load(ctx, id)
 	if err != nil {
 		return "", fmt.Errorf("check task %s: %w", id, err)
@@ -323,17 +311,17 @@ func (a *App) createTask(ctx context.Context, id string, job Job, input, replyTo
 		return id, nil
 	}
 	if job.Model == "" {
-		job.Model = a.d.DefaultJob.Model
+		job.Model = a.d.Chat.Model
 	}
 	brainSource := job.BrainSource
-	if job.Name == a.d.DefaultJob.Name {
+	if job.Name == a.d.Chat.Name {
 		brainSource = "owner/" + replyTo
 	}
 	steps := []struct {
 		typ     task.EventType
 		payload any
 	}{
-		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, ReplyTo: replyTo, Targets: job.DeliverTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.Runtime}},
+		{task.EvCreated, task.Created{Job: job.Name, Model: job.Model, Tools: job.Tools, Budget: job.Budget, ReplyTo: replyTo, BrainSource: brainSource, Silent: job.Silent, Workdir: workdir, Runtime: job.runtime}},
 		{task.EvState, task.StateChange{State: task.Pending}},
 		{task.EvMessage, task.Message{Role: task.RoleSystem, Text: job.Goal}},
 	}
@@ -457,7 +445,7 @@ func (a *App) execute(ctx context.Context, id string, s task.Snapshot, call task
 	if err != nil {
 		return fmt.Errorf("load task %s: %w", id, err)
 	}
-	tctx := context.WithValue(withOrigin(ctx, s.Created.ReplyTo), brainSourceKey{}, s.Created.BrainSource)
+	tctx := context.WithValue(ctx, brainSourceKey{}, s.Created.BrainSource)
 	out, err := a.gw.Execute(WithWorkdir(tctx, s.Created.Workdir), gateway.Request{
 		TaskID: id, Call: call, Allowlist: s.Created.Tools,
 		Tainted: s.Tainted, BrainSource: s.Created.BrainSource, Trusted: s.Trusted, Approval: grantedApproval(events, call.ID),
@@ -642,6 +630,7 @@ func (a *App) notify(ctx context.Context, id, key string, n Notice) error {
 	// Tasks without targets record Target "" so notices sent before targets existed still dedupe.
 	type dest struct{ record, replyTo string }
 	dests := []dest{{"", created.ReplyTo}}
+	// Only tasks created before jobs were removed (2026-11-26) carry targets.
 	if len(created.Targets) > 0 {
 		dests = nil
 		for _, t := range created.Targets {
@@ -741,22 +730,6 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "…"
-}
-
-func (a *App) RunJob(ctx context.Context, name string) (string, error) {
-	for _, j := range a.d.Jobs {
-		if j.Name == name && j.Runtime != "" {
-			return a.RunDelegated(ctx, j, delegationOf(j))
-		}
-		if j.Name == name {
-			id, err := a.CreateTask(ctx, j, "Run the scheduled job: "+j.Name)
-			if err != nil {
-				return "", err
-			}
-			return id, a.RunTask(ctx, id)
-		}
-	}
-	return "", fmt.Errorf("job %q not found", name)
 }
 
 // publishToolActivity tells the chat a tool is starting; it is progress only, so it is not recorded or retried.

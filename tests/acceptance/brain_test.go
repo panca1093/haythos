@@ -14,7 +14,6 @@ import (
 	"github.com/bwmarrin/discordgo"
 
 	"github.com/panca/haythos/adapters/channel/discord"
-	"github.com/panca/haythos/adapters/config"
 	"github.com/panca/haythos/adapters/store/sqlite"
 	"github.com/panca/haythos/adapters/testfakes"
 	"github.com/panca/haythos/app"
@@ -168,24 +167,11 @@ func (r *p3Rig) boot() {
 	}
 	r.t.Cleanup(func() { _ = st.Close() })
 	r.store = st
-	all, err := config.LoadJobs("../../jobs", nil)
-	if err != nil {
-		r.t.Fatalf("load jobs: %v", err)
-	}
-	var jobs []app.Job
-	for _, j := range all {
-		if strings.HasPrefix(j.Name, "brain-") {
-			jobs = append(jobs, j)
-		}
-	}
-	if len(jobs) != 2 {
-		r.t.Fatalf("brain jobs = %d, want brain-consolidate and brain-digest", len(jobs))
-	}
 	tools := testfakes.NewBrainTools(r.brain, task.ToolSpec{Name: "web.fetch", InputSchema: json.RawMessage(`{"type":"object"}`), Untrusted: true})
 	r.app = app.New(app.Deps{
-		Models:     map[string]app.Model{"default": r.model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"web.fetch"}, Budget: task.Budget{Tokens: 1000000, Steps: 20}},
-		Jobs:       jobs, Tools: tools, Events: st, Ledger: st, Notifier: r.notifier, Vault: testfakes.Vault{}, Brain: r.brain,
+		Models: map[string]app.Model{"default": r.model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"web.fetch"}, Budget: task.Budget{Tokens: 1000000, Steps: 20}},
+		Tools:  tools, Events: st, Ledger: st, Notifier: r.notifier, Vault: testfakes.Vault{}, Brain: r.brain,
 		Policy: policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{
 			"web.fetch": policy.TierRead, "brain.recall": policy.TierRead, "brain.remember": policy.TierRead, "brain.forget": policy.TierRead,
 		}},

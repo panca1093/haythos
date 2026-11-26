@@ -6,9 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
-	"time"
 
-	"github.com/panca/haythos/app"
 	"github.com/panca/haythos/core/policy"
 )
 
@@ -36,26 +34,10 @@ func TestShippedConfigLoads(t *testing.T) {
 	if _, ok := p.Tiers["self.about"]; ok {
 		t.Errorf("self.about should not be a policy tool")
 	}
-	jobs, err := LoadJobs("../../jobs", nil)
-	if err != nil || len(jobs) != 2 {
-		t.Fatalf("jobs: %+v err=%v", jobs, err)
-	}
-	if jobs[0].Name != "brain-consolidate" || !jobs[0].Silent || jobs[0].BrainSource != "auto/consolidate" || jobs[1].Name != "brain-digest" {
-		t.Fatalf("brain jobs: %+v err=%v", jobs[:2], err)
-	}
 }
 
 func TestRejectsUnknownFieldsAndBadValues(t *testing.T) {
 	dir := t.TempDir()
-	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\nbogus: 1\n")
-	if _, err := LoadJobs(dir, nil); err == nil {
-		t.Error("unknown field accepted")
-	}
-	dir = t.TempDir()
-	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: sideways\nbudget: {tokens: 1, steps: 1}\n")
-	if _, err := LoadJobs(dir, nil); err == nil {
-		t.Error("bad mode accepted")
-	}
 	p := write(t, dir, "p.yaml", "version: '1'\ntiers: {x: 9}\n")
 	if _, err := LoadPolicy(p); err == nil {
 		t.Error("tier 9 accepted")
@@ -194,15 +176,6 @@ func TestChatGPTKindLoads(t *testing.T) {
 	}
 }
 
-func TestJobDeliverTo(t *testing.T) {
-	dir := t.TempDir()
-	write(t, dir, "a.yaml", "name: a\ngoal: g\ntools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\ndeliver_to: ['123', dm]\n")
-	jobs, err := LoadJobs(dir, nil)
-	if err != nil || len(jobs) != 1 || !reflect.DeepEqual(jobs[0].DeliverTo, []string{"123", "dm"}) {
-		t.Fatalf("jobs = %+v, err = %v", jobs, err)
-	}
-}
-
 func TestClaudeCLIConfig(t *testing.T) {
 	for _, tc := range []struct{ name, body, want string }{
 		{"explicit command", "claude_cli: { command: /opt/claude }\n", "/opt/claude"},
@@ -313,48 +286,7 @@ func TestOpencodeBashPatternsMayAskOrDenyButNotAllow(t *testing.T) {
 	}
 }
 
-func TestRuntimeJobs(t *testing.T) {
-	rts := map[string]Runtime{"oc": {Kind: "acp", Command: "x", Model: "m1", Mode: "build", Workdirs: map[string]string{"scratch": "/work/scratch"}}}
-	const head = "name: j\ngoal: do it\ntrigger: { manual: true }\n"
-	ok := head + "runtime: { alias: oc, workdir: scratch, model: m2 }\nchecks:\n  - { name: t, argv: [go, test, ./...], timeout: 5m }\n  - { name: v, argv: [go, vet, ./...] }\n"
-	jobs, err := LoadJobs(writeJob(t, ok), rts)
-	if err != nil || len(jobs) != 1 {
-		t.Fatalf("jobs = %+v, err = %v", jobs, err)
-	}
-	j := jobs[0]
-	if j.Runtime != "oc" || j.Workdir != "/work/scratch" || j.RuntimeModel != "m2" || j.RuntimeMode != "build" {
-		t.Errorf("job = %+v, want alias oc, resolved workdir, own model, the runtime's mode", j)
-	}
-	if len(j.Checks) != 2 || j.Checks[0].Timeout != 5*time.Minute || j.Checks[1].Timeout != app.DefaultCheckTimeout || strings.Join(j.Checks[0].Argv, " ") != "go test ./..." {
-		t.Errorf("checks = %+v", j.Checks)
-	}
-
-	for name, body := range map[string]string{
-		"unknown alias":       head + "runtime: { alias: nope, workdir: scratch }\n",
-		"raw path as workdir": head + "runtime: { alias: oc, workdir: /etc }\n",
-		"missing workdir":     head + "runtime: { alias: oc }\n",
-		"checks without rt":   head + "tools: [t]\nmode: background\nbudget: {tokens: 1, steps: 1}\nchecks: [{ name: t, argv: [x] }]\n",
-		"empty argv":          head + "runtime: { alias: oc, workdir: scratch }\nchecks: [{ name: t, argv: [] }]\n",
-		"duplicate check":     head + "runtime: { alias: oc, workdir: scratch }\nchecks: [{ name: t, argv: [x] }, { name: t, argv: [y] }]\n",
-		"shell string argv":   head + "runtime: { alias: oc, workdir: scratch }\nchecks: [{ name: t, argv: 'go test ./...' }]\n",
-		"negative timeout":    head + "runtime: { alias: oc, workdir: scratch }\nchecks: [{ name: t, argv: [x], timeout: -1s }]\n",
-	} {
-		t.Run(name, func(t *testing.T) {
-			if _, err := LoadJobs(writeJob(t, body), rts); err == nil {
-				t.Error("accepted")
-			}
-		})
-	}
-}
-
-func writeJob(t *testing.T, body string) string {
-	t.Helper()
-	dir := t.TempDir()
-	write(t, dir, "j.yaml", body)
-	return dir
-}
-
-func TestExampleRuntimesBlockAndJobLoad(t *testing.T) {
+func TestExampleRuntimesBlockLoads(t *testing.T) {
 	b, err := os.ReadFile("../../config/haythos.example.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -379,10 +311,6 @@ func TestExampleRuntimesBlockAndJobLoad(t *testing.T) {
 	}
 	if m.Runtimes["opencode"].Kind != "acp" || m.Runtimes["claude"].Kind != "claudecli" {
 		t.Fatalf("runtimes = %+v", m.Runtimes)
-	}
-	jobs, err := LoadJobs("../../jobs/examples", m.Runtimes)
-	if err != nil || len(jobs) != 1 || jobs[0].Runtime != "claude" || jobs[0].Trigger.Cron != "" || !jobs[0].Trigger.Manual {
-		t.Fatalf("example job = %+v, err = %v, want a manual job on the claude alias", jobs, err)
 	}
 }
 

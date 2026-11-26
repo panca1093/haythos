@@ -164,7 +164,7 @@ type outcome struct {
 func (r *rig) run(ctx context.Context, checks ...app.Check) <-chan outcome {
 	out := make(chan outcome, 1)
 	go func() {
-		id, err := r.app.RunDelegated(ctx, app.Job{Name: "delegate", Goal: "Delegated work."}, app.Delegation{
+		id, err := r.app.RunDelegated(ctx, app.Delegation{
 			Runtime: "rt", Prompt: "do the thing", Workdir: r.workdir, Checks: checks,
 		})
 		out <- outcome{id, err}

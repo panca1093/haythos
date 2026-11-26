@@ -131,9 +131,9 @@ func newInstaller(home paths, args []string) (*service.Installer, error) {
 }
 
 // serveArgs are the flags this process got, made absolute, so a detached kernel reads the same files.
-func serveArgs(cfgPath, policyPath, jobsDir string) ([]string, error) {
+func serveArgs(cfgPath, policyPath string) ([]string, error) {
 	out := []string{}
-	for _, f := range []struct{ flag, path string }{{"-config", cfgPath}, {"-policy", policyPath}, {"-jobs", jobsDir}} {
+	for _, f := range []struct{ flag, path string }{{"-config", cfgPath}, {"-policy", policyPath}} {
 		abs, err := filepath.Abs(f.path)
 		if err != nil {
 			return nil, fmt.Errorf("resolve %s: %w", f.path, err)

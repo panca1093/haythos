@@ -23,11 +23,10 @@ func brainApp(t *testing.T, db string, br app.Brain, model *testfakes.Model, n *
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	return app.New(app.Deps{
-		Models:     map[string]app.Model{"default": model},
-		DefaultJob: app.Job{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
-		Jobs:       []app.Job{{Name: "nightly", Goal: "Do it.", Model: "default", Tools: []string{"note.add"}, Trigger: app.Trigger{Manual: true}}},
-		Tools:      testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
-		Events:     st, Ledger: st, Notifier: n, Vault: testfakes.Vault{}, Brain: br,
+		Models: map[string]app.Model{"default": model},
+		Chat:   app.Spec{Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"note.add"}},
+		Tools:  testfakes.NewTools(task.ToolSpec{Name: "note.add", Write: true, TargetArg: "id", InputSchema: json.RawMessage(`{"type":"object"}`)}),
+		Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{}, Brain: br,
 		Policy:      policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{"note.add": policy.TierInternalWrite}},
 		Clock:       func() time.Time { return time.Date(2026, 10, 28, 2, 0, 0, 0, time.UTC) },
 		ApprovalTTL: time.Hour,
@@ -121,10 +120,67 @@ func TestBrainBlockIsCappedAndEscaped(t *testing.T) {
 func TestBrainNotUsedForScheduledJobs(t *testing.T) {
 	br := &testfakes.Brain{Items: []app.BrainItem{{Slug: "a", Text: "alpha", Source: "import/mybook"}}}
 	m := testfakes.NewModel(task.AssistantTurn{Text: "done"})
-	if _, err := brainApp(t, t.TempDir()+"/h.db", br, m, &testfakes.Notifier{}).RunJob(context.Background(), "nightly"); err != nil {
-		t.Fatalf("run job: %v", err)
+	a := brainApp(t, t.TempDir()+"/h.db", br, m, &testfakes.Notifier{})
+	id, err := a.CreateTask(context.Background(), app.Spec{Name: "nightly", Goal: "Do it.", Model: "default", Tools: []string{"note.add"}}, "Run it.")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := a.RunTask(context.Background(), id); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	if len(br.Queries) != 0 {
 		t.Fatalf("scheduled job recalled %v, want no recall", br.Queries)
+	}
+}
+
+func TestBrainSchedulesKeepTheirMarksAcrossTheUpgrade(t *testing.T) {
+	ctx := context.Background()
+	db := t.TempDir() + "/h.db"
+	st, err := sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Marks as the YAML jobs wrote them; the clock below is 2026-10-28 09:00 WIB, after both runs of that day.
+	for _, m := range []struct {
+		typ, job string
+		at       time.Time
+	}{
+		{"job.armed", "brain-consolidate", time.Date(2026, 10, 26, 1, 0, 0, 0, time.UTC)},
+		{"job.armed", "brain-digest", time.Date(2026, 10, 26, 1, 0, 0, 0, time.UTC)},
+		{"job.fired", "brain-consolidate", time.Date(2026, 10, 27, 19, 0, 0, 0, time.UTC)},
+		{"job.fired", "brain-digest", time.Date(2026, 10, 28, 0, 0, 0, 0, time.UTC)},
+	} {
+		if _, err := st.Append(ctx, "_system", task.EventType(m.typ), map[string]any{"job": m.job, "at": m.at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	_ = st.Close()
+
+	n := &testfakes.Notifier{}
+	a := brainApp(t, db, &testfakes.Brain{}, testfakes.NewModel(), n)
+	if err := a.Tick(ctx); err != nil {
+		t.Fatalf("tick: %v", err)
+	}
+
+	st, err = sqlite.Open(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = st.Close() }()
+	sys, err := st.Load(ctx, "_system")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(sys) != 4 {
+		t.Errorf("system events = %d, want the 4 seeded marks and no re-arm or new fire", len(sys))
+	}
+	all, err := st.Since(ctx, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range all {
+		if e.Type == task.EvCreated {
+			t.Errorf("task %s created, want none", e.TaskID)
+		}
 	}
 }

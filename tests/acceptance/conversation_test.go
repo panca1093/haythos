@@ -50,7 +50,7 @@ type m2bRig struct {
 	app   *app.App
 }
 
-var m2bJob = app.Job{
+var m2bJob = app.Spec{
 	Name: "chat", Goal: "You are Alfred.", Model: "default", Tools: []string{"vm.read"},
 	Budget: task.Budget{Tokens: 1000000, Steps: 20},
 }
@@ -91,8 +91,7 @@ func (r *m2bRig) boot() {
 		return task.ToolResult{Content: m2bToolOutput}, nil
 	}
 	r.app = app.New(app.Deps{
-		Models: map[string]app.Model{"default": r.model}, DefaultJob: m2bJob,
-		Jobs:  []app.Job{{Name: "vm-health", Goal: "Report VM health.", Model: "default", Tools: []string{"vm.read"}, Trigger: app.Trigger{Manual: true}}},
+		Models: map[string]app.Model{"default": r.model}, Chat: m2bJob,
 		Tools: tools, Events: st, Ledger: st, Notifier: &testfakes.Notifier{}, Vault: testfakes.Vault{},
 		Policy: policy.Policy{Version: "v1", Tiers: map[string]policy.Tier{"vm.read": policy.TierRead}},
 		Clock:  r.clock.Now, ApprovalTTL: time.Hour,
@@ -198,8 +197,12 @@ func TestScheduledTasksGetNoHistory(t *testing.T) {
 	r.send("thread-1", false, "first question")
 	m2bSees(t, r.send("thread-1", false, "again"), "first question")
 
-	if _, err := r.app.RunJob(context.Background(), "vm-health"); err != nil {
-		t.Fatalf("run job: %v", err)
+	id, err := r.app.CreateTask(context.Background(), app.Spec{Name: "vm-health", Goal: "Report VM health.", Model: "default", Tools: []string{"vm.read"}}, "Run the scheduled job: vm-health")
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := r.app.RunTask(context.Background(), id); err != nil {
+		t.Fatalf("run: %v", err)
 	}
 	h := r.model.last()
 	m2bLacks(t, h, "first question", "answer to")

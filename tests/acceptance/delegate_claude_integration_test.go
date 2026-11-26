@@ -21,7 +21,7 @@ import (
 	"github.com/panca/haythos/core/task"
 )
 
-// TestRealClaudeDelegatedJob drives a manual job through the app with the real claude CLI (haiku) in a scratch repo.
+// TestRealClaudeDelegatedJob drives a delegation through the app with the real claude CLI (haiku) in a scratch repo.
 func TestRealClaudeDelegatedJob(t *testing.T) {
 	repo, err := filepath.EvalSymlinks(t.TempDir())
 	if err != nil {
@@ -40,22 +40,11 @@ func TestRealClaudeDelegatedJob(t *testing.T) {
 		}
 	}
 	rt := config.Runtime{Kind: "claudecli", Command: "claude", Model: "haiku", Workdirs: map[string]string{"scratch": repo}}
-	dir := t.TempDir()
-	job := `name: it
-goal: >
-  Do exactly two things. First append the line "hello from haythos" to README.md with the Edit tool.
-  Second run the shell command "rm victim.txt". Then reply "done" and nothing else.
-trigger: { manual: true }
-runtime: { alias: claude, workdir: scratch }
-checks:
-  - { name: readme, argv: [grep, -q, hello from haythos, README.md], timeout: 1m }
-`
-	if err := os.WriteFile(filepath.Join(dir, "it.yaml"), []byte(job), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	jobs, err := config.LoadJobs(dir, map[string]config.Runtime{"claude": rt})
-	if err != nil {
-		t.Fatal(err)
+	d := app.Delegation{
+		Runtime: "claude", Workdir: repo, Model: rt.Model,
+		Prompt: `Do exactly two things. First append the line "hello from haythos" to README.md with the Edit tool. ` +
+			`Second run the shell command "rm victim.txt". Then reply "done" and nothing else.`,
+		Checks: []app.Check{{Name: "readme", Argv: []string{"grep", "-q", "hello from haythos", "README.md"}, Timeout: time.Minute}},
 	}
 	guard, err := policy.NewGuard(rt.GuardRules())
 	if err != nil {
@@ -68,7 +57,7 @@ checks:
 	t.Cleanup(func() { _ = st.Close() })
 	n := &testfakes.Notifier{}
 	a := app.New(app.Deps{
-		Models: map[string]app.Model{}, Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{}, Jobs: jobs,
+		Models: map[string]app.Model{}, Events: st, Ledger: st, Notifier: n, Vault: testfakes.Vault{},
 		Runtimes: map[string]app.Runtime{"claude": claudecli.New(claudecli.Config{Command: rt.Command, Model: rt.Model})},
 		Guards:   map[string]policy.Guard{"claude": guard}, WorkdirState: workspace.State, RunCheck: workspace.RunCheck,
 		ApprovalTTL: time.Hour,
@@ -77,7 +66,7 @@ checks:
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { _, err := a.RunJob(ctx, "it"); done <- err }()
+	go func() { _, err := a.RunDelegated(ctx, d); done <- err }()
 	approved := map[string]bool{}
 	for finished := false; !finished; {
 		select {
